@@ -14,7 +14,7 @@ import (
 // Returns a channel that receives Frame values.
 // The channel is closed when StopScreencast is called or ctx is cancelled.
 func (r *browserRuntime) StartScreencast(ctx context.Context, quality int, fps int) (<-chan Frame, error) {
-	if r.State() != StateRunning {
+	if r.State != StateRunning {
 		return nil, ErrBrowserUnavailable
 	}
 
@@ -34,13 +34,13 @@ func (r *browserRuntime) StartScreencast(ctx context.Context, quality int, fps i
 
 	screenCtx, screenCancel := context.WithCancel(ctx)
 
-	r.liveviewMu.Lock()
+	r.liveviewMu.Lock
 	if r.screencastCancel != nil {
-		r.screencastCancel() // stop any existing screencast
+		r.screencastCancel // stop any existing screencast
 	}
 	r.screencastCancel = screenCancel
 	r.screencastCh = ch
-	r.liveviewMu.Unlock()
+	r.liveviewMu.Unlock
 
 	go r.screencastLoop(screenCtx, page, quality, fps, ch)
 
@@ -49,29 +49,29 @@ func (r *browserRuntime) StartScreencast(ctx context.Context, quality int, fps i
 
 // StopScreencast stops the CDP Screencast and closes the frame channel.
 func (r *browserRuntime) StopScreencast(ctx context.Context) error {
-	r.liveviewMu.Lock()
+	r.liveviewMu.Lock
 	cancel := r.screencastCancel
 	r.screencastCancel = nil
-	r.liveviewMu.Unlock()
+	r.liveviewMu.Unlock
 
 	if cancel != nil {
-		cancel()
+		cancel
 	}
 	return nil
 }
 
 // ensureLiveViewPage returns the persistent liveview page, creating it if needed.
 func (r *browserRuntime) ensureLiveViewPage(ctx context.Context) (*rod.Page, error) {
-	r.liveviewMu.Lock()
-	defer r.liveviewMu.Unlock()
+	r.liveviewMu.Lock
+	defer r.liveviewMu.Unlock
 
 	if r.liveviewPage != nil {
 		return r.liveviewPage, nil
 	}
 
-	r.browserMu.Lock()
+	r.browserMu.Lock
 	b := r.browser
-	r.browserMu.Unlock()
+	r.browserMu.Unlock
 
 	if b == nil {
 		return nil, ErrBrowserUnavailable
@@ -98,11 +98,11 @@ func (r *browserRuntime) screencastLoop(ctx context.Context, page *rod.Page, qua
 
 	// Start CDP screencast
 	startEvt := proto.PageStartScreencast{
-		Format:        proto.PageStartScreencastFormatJpeg,
-		Quality:       &q,
-		MaxWidth:      &w,
-		MaxHeight:     &h,
-		EveryNthFrame: &nth,
+		Format: proto.PageStartScreencastFormatJpeg
+		Quality: &q
+		MaxWidth: &w
+		MaxHeight: &h
+		EveryNthFrame: &nth
 	}
 	err := startEvt.Call(page)
 	if err != nil {
@@ -110,25 +110,25 @@ func (r *browserRuntime) screencastLoop(ctx context.Context, page *rod.Page, qua
 		return
 	}
 
-	defer func() {
+	defer func {
 		stopEvt := proto.PageStopScreencast{}
 		_ = stopEvt.Call(page)
-	}()
+	}
 
 	// EachEvent registers event handlers and returns a wait function.
 	// The wait function blocks until the context is done.
 	wait := page.EachEvent(func(e *proto.PageScreencastFrame) {
 		select {
-		case <-ctx.Done():
+		case <-ctx.Done:
 			return
 		default:
 		}
 
 		no := atomic.AddInt64(&frameNo, 1)
 		frame := Frame{
-			Data:      e.Data,
-			Timestamp: time.Now(),
-			FrameNo:   no,
+			Data: e.Data
+			Timestamp: time.Now
+			FrameNo: no
 		}
 		if e.Metadata != nil {
 			frame.Width = int(e.Metadata.DeviceWidth)
@@ -137,7 +137,7 @@ func (r *browserRuntime) screencastLoop(ctx context.Context, page *rod.Page, qua
 
 		select {
 		case ch <- frame:
-		case <-ctx.Done():
+		case <-ctx.Done:
 			return
 		default:
 			// Drop frame if channel full (non-blocking)
@@ -150,13 +150,13 @@ func (r *browserRuntime) screencastLoop(ctx context.Context, page *rod.Page, qua
 
 	// Keep running until context cancelled
 	done := make(chan struct{})
-	go func() {
+	go func {
 		defer close(done)
-		wait()
-	}()
+		wait
+	}
 
 	select {
-	case <-ctx.Done():
+	case <-ctx.Done:
 	case <-done:
 	}
 }
@@ -173,7 +173,7 @@ func (r *browserRuntime) RequestTakeover(ctx context.Context) error {
 
 // ReleaseTakeover releases the TakeoverLock and publishes TakeoverStateChanged.
 func (r *browserRuntime) ReleaseTakeover(ctx context.Context) error {
-	r.takeoverLock.Release()
+	r.takeoverLock.Release
 	r.bus.Publish(EventTakeoverStateChanged{Active: false})
 	logger.Info("takeover released")
 	return nil

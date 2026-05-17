@@ -20,13 +20,13 @@ func intPtr(v int) *int { return &v }
 // withPage creates a fresh isolated Page, executes fn, then closes the page.
 // Returns ErrBrowserUnavailable if runtime is not in StateRunning.
 func (r *browserRuntime) withPage(ctx context.Context, fn func(*rod.Page) error) error {
-	if r.State() != StateRunning {
+	if r.State != StateRunning {
 		return ErrBrowserUnavailable
 	}
 
-	r.browserMu.Lock()
+	r.browserMu.Lock
 	b := r.browser
-	r.browserMu.Unlock()
+	r.browserMu.Unlock
 
 	if b == nil {
 		return ErrBrowserUnavailable
@@ -34,7 +34,7 @@ func (r *browserRuntime) withPage(ctx context.Context, fn func(*rod.Page) error)
 
 	// Create page with ctx-aware cancel
 	pageCtx, pageCancel := context.WithCancel(ctx)
-	defer pageCancel()
+	defer pageCancel
 
 	r.registerActiveCancel(pageCancel)
 	defer r.unregisterActiveCancel(pageCancel)
@@ -44,7 +44,7 @@ func (r *browserRuntime) withPage(ctx context.Context, fn func(*rod.Page) error)
 		return fmt.Errorf("create page: %w", err)
 	}
 	page = page.Context(pageCtx)
-	defer func() { _ = page.Close() }()
+	defer func { _ = page.Close }
 
 	return fn(page)
 }
@@ -57,16 +57,16 @@ func (r *browserRuntime) Navigate(ctx context.Context, url string, waitLoad bool
 		var statusCode int
 		page.MustSetExtraHeaders("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
 
-		router := page.HijackRequests()
-		defer router.Stop()
+		router := page.HijackRequests
+		defer router.Stop
 
 		router.MustAdd("*", func(ctx *rod.Hijack) {
-			ctx.MustLoadResponse()
-			if ctx.Request.URL().String() == url {
-				statusCode = ctx.Response.Payload().ResponseCode
+			ctx.MustLoadResponse
+			if ctx.Request.URL.String == url {
+				statusCode = ctx.Response.Payload.ResponseCode
 			}
 		})
-		go router.Run()
+		go router.Run
 
 		err := page.Navigate(url)
 		if err != nil {
@@ -75,10 +75,10 @@ func (r *browserRuntime) Navigate(ctx context.Context, url string, waitLoad bool
 		}
 
 		if waitLoad {
-			_ = page.WaitLoad()
+			_ = page.WaitLoad
 		}
 
-		info, _ := page.Info()
+		info, _ := page.Info
 		title := ""
 		finalURL := url
 		if info != nil {
@@ -91,9 +91,9 @@ func (r *browserRuntime) Navigate(ctx context.Context, url string, waitLoad bool
 		}
 
 		result = NavigateResult{
-			Status: statusCode,
-			Title:  title,
-			URL:    finalURL,
+			Status: statusCode
+			Title: title
+			URL: finalURL
 		}
 		return nil
 	})
@@ -136,7 +136,7 @@ func (r *browserRuntime) Type(ctx context.Context, selector, text string, clearF
 		}
 
 		if clearFirst {
-			if err := el.SelectAllText(); err == nil {
+			if err := el.SelectAllText; err == nil {
 				_ = el.Input("")
 			}
 		}
@@ -146,24 +146,24 @@ func (r *browserRuntime) Type(ctx context.Context, selector, text string, clearF
 
 // Screenshot captures a JPEG screenshot of the current page.
 // Returns raw JPEG bytes (not base64).
-func (r *browserRuntime) Screenshot(ctx context.Context, fullPage bool, quality int) ([]byte, error) {
+func (r *browserRuntime) Screenshot(ctx context.Context, fullPage bool, quality int) (byte, error) {
 	if quality <= 0 {
 		quality = 80
 	}
 
-	var data []byte
+	var data byte
 	err := r.withPage(ctx, func(page *rod.Page) error {
 		// Check context before proceeding
 		select {
-		case <-ctx.Done():
-			return ctx.Err()
+		case <-ctx.Done:
+			return ctx.Err
 		default:
 		}
 
 		var err error
 		req := &proto.PageCaptureScreenshot{
-			Format:  proto.PageCaptureScreenshotFormatJpeg,
-			Quality: intPtr(quality),
+			Format: proto.PageCaptureScreenshotFormatJpeg
+			Quality: intPtr(quality)
 		}
 		data, err = page.Screenshot(fullPage, req)
 		return err
@@ -184,9 +184,9 @@ func (r *browserRuntime) Extract(ctx context.Context, selector string, multiple 
 				return fmt.Errorf("%w: %s", ErrElementNotFound, selector)
 			}
 			result.Count = len(els)
-			var items []string
+			var items string
 			for _, el := range els {
-				txt, _ := el.Text()
+				txt, _ := el.Text
 				items = append(items, txt)
 			}
 			result.Items = items
@@ -194,19 +194,19 @@ func (r *browserRuntime) Extract(ctx context.Context, selector string, multiple 
 				result.Text = items[0]
 			}
 			// First element HTML
-			html, _ := els[0].HTML()
+			html, _ := els[0].HTML
 			result.HTML = html
 		} else {
 			el, err := page.Element(selector)
 			if err != nil {
 				return fmt.Errorf("%w: %s", ErrElementNotFound, selector)
 			}
-			text, _ := el.Text()
-			html, _ := el.HTML()
+			text, _ := el.Text
+			html, _ := el.HTML
 			result = ExtractResult{
-				Text:  text,
-				HTML:  html,
-				Count: 1,
+				Text: text
+				HTML: html
+				Count: 1
 			}
 		}
 		return nil
@@ -265,70 +265,70 @@ func (r *browserRuntime) WaitForSelector(ctx context.Context, selector string, t
 
 // RegisterTools registers all 7 browser_* tools into the TS-03 ToolRegistry.
 func (r *browserRuntime) RegisterTools(registry tool.ToolRegistry) error {
-	tools := []tool.ToolDefinition{
+	tools := tool.ToolDefinition{
 		{
-			Name:        "browser_navigate",
-			Description: "导航浏览器到指定 URL，返回页面标题和状态码",
-			Parameters:  json.RawMessage(`{"type":"object","properties":{"url":{"type":"string","description":"目标 URL"},"wait_load":{"type":"boolean","default":true}},"required":["url"]}`),
-			EffectClass: tool.EffectClassWrite,
-			Source:      tool.ToolSourceSystem,
-			Priority:    1,
-			Handler:     r.toolNavigate,
-		},
+			Name: "browser_navigate"
+			Description: "导航浏览器到指定 URL，返回页面标题和状态码"
+			Parameters: json.RawMessage(`{"type":"object","properties":{"url":{"type":"string","description":"目标 URL"},"wait_load":{"type":"boolean","default":true}},"required":["url"]}`)
+			EffectClass: tool.EffectClassWrite
+			Source: tool.ToolSourceSystem
+			Priority: 1
+			Handler: r.toolNavigate
+		}
 		{
-			Name:        "browser_click",
-			Description: "点击页面上匹配 CSS selector 的元素",
-			Parameters:  json.RawMessage(`{"type":"object","properties":{"selector":{"type":"string"},"timeout_ms":{"type":"integer","default":5000}},"required":["selector"]}`),
-			EffectClass: tool.EffectClassWrite,
-			Source:      tool.ToolSourceSystem,
-			Priority:    1,
-			Handler:     r.toolClick,
-		},
+			Name: "browser_click"
+			Description: "点击页面上匹配 CSS selector 的元素"
+			Parameters: json.RawMessage(`{"type":"object","properties":{"selector":{"type":"string"},"timeout_ms":{"type":"integer","default":5000}},"required":["selector"]}`)
+			EffectClass: tool.EffectClassWrite
+			Source: tool.ToolSourceSystem
+			Priority: 1
+			Handler: r.toolClick
+		}
 		{
-			Name:        "browser_type",
-			Description: "向元素输入文本（非密码字段）",
-			Parameters:  json.RawMessage(`{"type":"object","properties":{"selector":{"type":"string"},"text":{"type":"string"},"clear_first":{"type":"boolean","default":true}},"required":["selector","text"]}`),
-			EffectClass: tool.EffectClassWrite,
-			Source:      tool.ToolSourceSystem,
-			Priority:    1,
-			Handler:     r.toolType,
-		},
+			Name: "browser_type"
+			Description: "向元素输入文本（非密码字段）"
+			Parameters: json.RawMessage(`{"type":"object","properties":{"selector":{"type":"string"},"text":{"type":"string"},"clear_first":{"type":"boolean","default":true}},"required":["selector","text"]}`)
+			EffectClass: tool.EffectClassWrite
+			Source: tool.ToolSourceSystem
+			Priority: 1
+			Handler: r.toolType
+		}
 		{
-			Name:        "browser_screenshot",
-			Description: "对当前页面截图，返回 base64 编码 JPEG",
-			Parameters:  json.RawMessage(`{"type":"object","properties":{"full_page":{"type":"boolean","default":false},"quality":{"type":"integer","default":80}}}`),
-			EffectClass: tool.EffectClassRead,
-			Source:      tool.ToolSourceSystem,
-			Priority:    1,
-			Handler:     r.toolScreenshot,
-		},
+			Name: "browser_screenshot"
+			Description: "对当前页面截图，返回 base64 编码 JPEG"
+			Parameters: json.RawMessage(`{"type":"object","properties":{"full_page":{"type":"boolean","default":false},"quality":{"type":"integer","default":80}}}`)
+			EffectClass: tool.EffectClassRead
+			Source: tool.ToolSourceSystem
+			Priority: 1
+			Handler: r.toolScreenshot
+		}
 		{
-			Name:        "browser_extract",
-			Description: "提取页面元素的文本和 HTML 内容",
-			Parameters:  json.RawMessage(`{"type":"object","properties":{"selector":{"type":"string"},"multiple":{"type":"boolean","default":false}},"required":["selector"]}`),
-			EffectClass: tool.EffectClassRead,
-			Source:      tool.ToolSourceSystem,
-			Priority:    1,
-			Handler:     r.toolExtract,
-		},
+			Name: "browser_extract"
+			Description: "提取页面元素的文本和 HTML 内容"
+			Parameters: json.RawMessage(`{"type":"object","properties":{"selector":{"type":"string"},"multiple":{"type":"boolean","default":false}},"required":["selector"]}`)
+			EffectClass: tool.EffectClassRead
+			Source: tool.ToolSourceSystem
+			Priority: 1
+			Handler: r.toolExtract
+		}
 		{
-			Name:        "browser_evaluate",
-			Description: "在页面上下文执行 JavaScript，返回结果",
-			Parameters:  json.RawMessage(`{"type":"object","properties":{"js":{"type":"string","description":"JavaScript 表达式或语句"}},"required":["js"]}`),
-			EffectClass: tool.EffectClassWrite,
-			Source:      tool.ToolSourceSystem,
-			Priority:    1,
-			Handler:     r.toolEvaluate,
-		},
+			Name: "browser_evaluate"
+			Description: "在页面上下文执行 JavaScript，返回结果"
+			Parameters: json.RawMessage(`{"type":"object","properties":{"js":{"type":"string","description":"JavaScript 表达式或语句"}},"required":["js"]}`)
+			EffectClass: tool.EffectClassWrite
+			Source: tool.ToolSourceSystem
+			Priority: 1
+			Handler: r.toolEvaluate
+		}
 		{
-			Name:        "browser_wait",
-			Description: "等待 CSS selector 匹配的元素出现在 DOM 中",
-			Parameters:  json.RawMessage(`{"type":"object","properties":{"selector":{"type":"string"},"timeout_ms":{"type":"integer","default":10000},"visible":{"type":"boolean","default":false}},"required":["selector"]}`),
-			EffectClass: tool.EffectClassRead,
-			Source:      tool.ToolSourceSystem,
-			Priority:    1,
-			Handler:     r.toolWait,
-		},
+			Name: "browser_wait"
+			Description: "等待 CSS selector 匹配的元素出现在 DOM 中"
+			Parameters: json.RawMessage(`{"type":"object","properties":{"selector":{"type":"string"},"timeout_ms":{"type":"integer","default":10000},"visible":{"type":"boolean","default":false}},"required":["selector"]}`)
+			EffectClass: tool.EffectClassRead
+			Source: tool.ToolSourceSystem
+			Priority: 1
+			Handler: r.toolWait
+		}
 	}
 
 	for _, def := range tools {
@@ -343,8 +343,8 @@ func (r *browserRuntime) RegisterTools(registry tool.ToolRegistry) error {
 
 func (r *browserRuntime) toolNavigate(ctx context.Context, input json.RawMessage) (tool.ToolResult, error) {
 	var params struct {
-		URL      string `json:"url"`
-		WaitLoad *bool  `json:"wait_load"`
+		URL string `json:"url"`
+		WaitLoad *bool `json:"wait_load"`
 	}
 	if err := json.Unmarshal(input, &params); err != nil {
 		return tool.ToolResult{Error: "invalid parameters"}, nil
@@ -356,21 +356,21 @@ func (r *browserRuntime) toolNavigate(ctx context.Context, input json.RawMessage
 
 	result, err := r.Navigate(ctx, params.URL, waitLoad)
 	if err != nil {
-		return tool.ToolResult{Error: err.Error()}, nil
+		return tool.ToolResult{Error: err.Error}, nil
 	}
 
 	out, _ := json.Marshal(result)
 	return tool.ToolResult{
-		Output:      fmt.Sprintf("Navigated to %s (status=%d, title=%q)", result.URL, result.Status, result.Title),
-		OutputJSON:  out,
-		EffectClass: tool.EffectClassWrite,
+		Output: fmt.Sprintf("Navigated to %s (status=%d, title=%q)", result.URL, result.Status, result.Title)
+		OutputJSON: out
+		EffectClass: tool.EffectClassWrite
 	}, nil
 }
 
 func (r *browserRuntime) toolClick(ctx context.Context, input json.RawMessage) (tool.ToolResult, error) {
 	var params struct {
-		Selector  string `json:"selector"`
-		TimeoutMs int    `json:"timeout_ms"`
+		Selector string `json:"selector"`
+		TimeoutMs int `json:"timeout_ms"`
 	}
 	if err := json.Unmarshal(input, &params); err != nil {
 		return tool.ToolResult{Error: "invalid parameters"}, nil
@@ -380,22 +380,22 @@ func (r *browserRuntime) toolClick(ctx context.Context, input json.RawMessage) (
 	}
 
 	if err := r.Click(ctx, params.Selector, params.TimeoutMs); err != nil {
-		return tool.ToolResult{Error: err.Error()}, nil
+		return tool.ToolResult{Error: err.Error}, nil
 	}
 
 	out, _ := json.Marshal(map[string]bool{"success": true})
 	return tool.ToolResult{
-		Output:      fmt.Sprintf("Clicked element: %s", params.Selector),
-		OutputJSON:  out,
-		EffectClass: tool.EffectClassWrite,
+		Output: fmt.Sprintf("Clicked element: %s", params.Selector)
+		OutputJSON: out
+		EffectClass: tool.EffectClassWrite
 	}, nil
 }
 
 func (r *browserRuntime) toolType(ctx context.Context, input json.RawMessage) (tool.ToolResult, error) {
 	var params struct {
-		Selector   string `json:"selector"`
-		Text       string `json:"text"`
-		ClearFirst *bool  `json:"clear_first"`
+		Selector string `json:"selector"`
+		Text string `json:"text"`
+		ClearFirst *bool `json:"clear_first"`
 	}
 	if err := json.Unmarshal(input, &params); err != nil {
 		return tool.ToolResult{Error: "invalid parameters"}, nil
@@ -406,21 +406,21 @@ func (r *browserRuntime) toolType(ctx context.Context, input json.RawMessage) (t
 	}
 
 	if err := r.Type(ctx, params.Selector, params.Text, clearFirst); err != nil {
-		return tool.ToolResult{Error: err.Error()}, nil
+		return tool.ToolResult{Error: err.Error}, nil
 	}
 
 	out, _ := json.Marshal(map[string]bool{"success": true})
 	return tool.ToolResult{
-		Output:      fmt.Sprintf("Typed text into: %s", params.Selector),
-		OutputJSON:  out,
-		EffectClass: tool.EffectClassWrite,
+		Output: fmt.Sprintf("Typed text into: %s", params.Selector)
+		OutputJSON: out
+		EffectClass: tool.EffectClassWrite
 	}, nil
 }
 
 func (r *browserRuntime) toolScreenshot(ctx context.Context, input json.RawMessage) (tool.ToolResult, error) {
 	var params struct {
 		FullPage *bool `json:"full_page"`
-		Quality  int   `json:"quality"`
+		Quality int `json:"quality"`
 	}
 	if err := json.Unmarshal(input, &params); err != nil {
 		return tool.ToolResult{Error: "invalid parameters"}, nil
@@ -435,31 +435,31 @@ func (r *browserRuntime) toolScreenshot(ctx context.Context, input json.RawMessa
 
 	// Check context before taking screenshot
 	select {
-	case <-ctx.Done():
+	case <-ctx.Done:
 		return tool.ToolResult{Error: "context cancelled"}, nil
 	default:
 	}
 
 	data, err := r.Screenshot(ctx, fullPage, params.Quality)
 	if err != nil {
-		return tool.ToolResult{Error: err.Error()}, nil
+		return tool.ToolResult{Error: err.Error}, nil
 	}
 
 	b64 := base64.StdEncoding.EncodeToString(data)
 	out, _ := json.Marshal(map[string]any{
-		"image_base64": b64,
+		"image_base64": b64
 	})
 	return tool.ToolResult{
-		Output:      fmt.Sprintf("Screenshot captured (%d bytes)", len(data)),
-		OutputJSON:  out,
-		EffectClass: tool.EffectClassRead,
+		Output: fmt.Sprintf("Screenshot captured (%d bytes)", len(data))
+		OutputJSON: out
+		EffectClass: tool.EffectClassRead
 	}, nil
 }
 
 func (r *browserRuntime) toolExtract(ctx context.Context, input json.RawMessage) (tool.ToolResult, error) {
 	var params struct {
 		Selector string `json:"selector"`
-		Multiple bool   `json:"multiple"`
+		Multiple bool `json:"multiple"`
 	}
 	if err := json.Unmarshal(input, &params); err != nil {
 		return tool.ToolResult{Error: "invalid parameters"}, nil
@@ -467,14 +467,14 @@ func (r *browserRuntime) toolExtract(ctx context.Context, input json.RawMessage)
 
 	result, err := r.Extract(ctx, params.Selector, params.Multiple)
 	if err != nil {
-		return tool.ToolResult{Error: err.Error()}, nil
+		return tool.ToolResult{Error: err.Error}, nil
 	}
 
 	out, _ := json.Marshal(result)
 	return tool.ToolResult{
-		Output:      fmt.Sprintf("Extracted %d element(s) matching %s", result.Count, params.Selector),
-		OutputJSON:  out,
-		EffectClass: tool.EffectClassRead,
+		Output: fmt.Sprintf("Extracted %d element(s) matching %s", result.Count, params.Selector)
+		OutputJSON: out
+		EffectClass: tool.EffectClassRead
 	}, nil
 }
 
@@ -488,22 +488,22 @@ func (r *browserRuntime) toolEvaluate(ctx context.Context, input json.RawMessage
 
 	result, err := r.Evaluate(ctx, params.JS)
 	if err != nil {
-		return tool.ToolResult{Error: err.Error()}, nil
+		return tool.ToolResult{Error: err.Error}, nil
 	}
 
 	out, _ := json.Marshal(map[string]any{"result": result})
 	return tool.ToolResult{
-		Output:      fmt.Sprintf("JS evaluated: result=%v", result),
-		OutputJSON:  out,
-		EffectClass: tool.EffectClassWrite,
+		Output: fmt.Sprintf("JS evaluated: result=%v", result)
+		OutputJSON: out
+		EffectClass: tool.EffectClassWrite
 	}, nil
 }
 
 func (r *browserRuntime) toolWait(ctx context.Context, input json.RawMessage) (tool.ToolResult, error) {
 	var params struct {
-		Selector  string `json:"selector"`
-		TimeoutMs int    `json:"timeout_ms"`
-		Visible   bool   `json:"visible"`
+		Selector string `json:"selector"`
+		TimeoutMs int `json:"timeout_ms"`
+		Visible bool `json:"visible"`
 	}
 	if err := json.Unmarshal(input, &params); err != nil {
 		return tool.ToolResult{Error: "invalid parameters"}, nil
@@ -512,20 +512,20 @@ func (r *browserRuntime) toolWait(ctx context.Context, input json.RawMessage) (t
 		params.TimeoutMs = 10000
 	}
 
-	start := time.Now()
+	start := time.Now
 	found, err := r.WaitForSelector(ctx, params.Selector, params.TimeoutMs, params.Visible)
 	if err != nil {
-		return tool.ToolResult{Error: err.Error()}, nil
+		return tool.ToolResult{Error: err.Error}, nil
 	}
 
-	elapsed := time.Since(start).Milliseconds()
+	elapsed := time.Since(start).Milliseconds
 	out, _ := json.Marshal(map[string]any{
-		"found":      found,
-		"elapsed_ms": elapsed,
+		"found": found
+		"elapsed_ms": elapsed
 	})
 	return tool.ToolResult{
-		Output:      fmt.Sprintf("Wait for %s: found=%v elapsed=%dms", params.Selector, found, elapsed),
-		OutputJSON:  out,
-		EffectClass: tool.EffectClassRead,
+		Output: fmt.Sprintf("Wait for %s: found=%v elapsed=%dms", params.Selector, found, elapsed)
+		OutputJSON: out
+		EffectClass: tool.EffectClassRead
 	}, nil
 }

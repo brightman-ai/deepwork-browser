@@ -2,35 +2,35 @@
 
 // Package browser — macOS Workspace via SkyLight CGSPrivate API (V2: fullscreen + fast switchback).
 //
-// Strategy V2 (DDC-I-22, BRR-13, PoC /tmp/sls_fs_sw2 verified 2026-04-19, TH-0419):
+// Strategy V2 :
 //
-//  1. SLSCopyManagedDisplaySpaces → capture displayUUID + currentSpaceID
-//     (Human's original Space).
-//  2. LaunchInSpace:
-//     a. fork Chrome with --start-fullscreen (added in chrome_launcher.go).
-//        macOS deterministically creates a NEW fullscreen Space (type=4) for it.
-//     b. macOS auto-shifts view to that fullscreen Space (~3s animation).
-//     c. POLL dw_ws_inspect every 30ms: as soon as currentSpace != original,
-//        immediately call SLSManagedDisplaySetCurrentSpace(uuid, original).
-//        → switchback latency = (animation start) + ≤30ms detection + 1 syscall.
-//     d. Chrome remains alive in its own fullscreen Space, invisible to Human.
+// 1. SLSCopyManagedDisplaySpaces → capture displayUUID + currentSpaceID
+// (Human's original Space).
+// 2. LaunchInSpace:
+// a. fork Chrome with --start-fullscreen (added in chrome_launcher.go).
+// macOS deterministically creates a NEW fullscreen Space (type=4) for it.
+// b. macOS auto-shifts view to that fullscreen Space (~3s animation).
+// c. POLL dw_ws_inspect every 30ms: as soon as currentSpace != original
+// immediately call SLSManagedDisplaySetCurrentSpace(uuid, original).
+// → switchback latency = (animation start) + ≤30ms detection + 1 syscall.
+// d. Chrome remains alive in its own fullscreen Space, invisible to Human.
 //
 // Why V2 over V1 (switch-launch-switchback):
-//   - V1 (DDC-I-21) became unreliable on macOS 26: SLSManagedDisplaySetCurrentSpace
-//     is no-op for Desktop→Desktop transitions. Chrome ended up on Human's Space.
-//   - PoC (/tmp/sls_fs_sw2) confirmed: SLS-set still works for fullscreen→Desktop.
-//   - --start-fullscreen creates a Space deterministically (no "non-current Space"
-//     prerequisite), so Human no longer needs ≥2 Spaces in Mission Control.
+// - V1 became unreliable on macOS 26: SLSManagedDisplaySetCurrentSpace
+// is no-op for Desktop→Desktop transitions. Chrome ended up on Human's Space.
+// - PoC (/tmp/sls_fs_sw2) confirmed: SLS-set still works for fullscreen→Desktop.
+// - --start-fullscreen creates a Space deterministically (no "non-current Space"
+// prerequisite), so Human no longer needs ≥2 Spaces in Mission Control.
 //
 // Why not SLSMoveWindowsToManagedSpace: cross-process window writes are silent
 // no-ops under SIP-enabled macOS Sequoia/Tahoe. Own-process Chrome inherits the
 // fullscreen Space at NSWindow creation time — SIP-safe.
 //
 // Constraints:
-//   - User sees ~1-3s of fullscreen animation as macOS shifts view; then snaps
-//     back. Chrome's own Space persists (visible in Mission Control).
+// - User sees ~1-3s of fullscreen animation as macOS shifts view; then snaps
+// back. Chrome's own Space persists (visible in Mission Control).
 //
-// [Ref: DDC-I-10, DDC-I-11, DDC-I-21, DDC-I-22, BRR-07, BRR-12, BRR-13]
+//
 
 package browser
 
@@ -43,100 +43,100 @@ package browser
 #include <CoreGraphics/CoreGraphics.h>
 
 // ─── SkyLight private types ───────────────────────────────────────────────────
-typedef int      CGSConnectionID;
+typedef int CGSConnectionID;
 typedef uint64_t CGSSpaceID;
 
 typedef CGSConnectionID (*SLSMainConnectionID_t)(void);
-typedef CFArrayRef      (*SLSCopyManagedDisplaySpaces_t)(CGSConnectionID cid);
-typedef void            (*SLSManagedDisplaySetCurrentSpace_t)(CGSConnectionID cid, CFStringRef displayUUID, CGSSpaceID spaceID);
+typedef CFArrayRef (*SLSCopyManagedDisplaySpaces_t)(CGSConnectionID cid);
+typedef void (*SLSManagedDisplaySetCurrentSpace_t)(CGSConnectionID cid, CFStringRef displayUUID, CGSSpaceID spaceID);
 
 // ─── Global function pointers (loaded once via dw_ws_init) ───────────────────
-static void                              *g_slsLib = NULL;
-static SLSMainConnectionID_t              g_main   = NULL;
-static SLSCopyManagedDisplaySpaces_t      g_copy   = NULL;
-static SLSManagedDisplaySetCurrentSpace_t g_set    = NULL;
+static void *g_slsLib = NULL;
+static SLSMainConnectionID_t g_main = NULL;
+static SLSCopyManagedDisplaySpaces_t g_copy = NULL;
+static SLSManagedDisplaySetCurrentSpace_t g_set = NULL;
 
 // dw_ws_init loads SkyLight symbols. Returns 0 on success. Idempotent.
-int dw_ws_init() {
-    if (g_slsLib) return 0;
-    g_slsLib = dlopen("/System/Library/PrivateFrameworks/SkyLight.framework/SkyLight",
-                      RTLD_LAZY | RTLD_LOCAL);
-    if (!g_slsLib) return 1;
-    g_main = (SLSMainConnectionID_t)              dlsym(g_slsLib, "SLSMainConnectionID");
-    g_copy = (SLSCopyManagedDisplaySpaces_t)      dlsym(g_slsLib, "SLSCopyManagedDisplaySpaces");
-    g_set  = (SLSManagedDisplaySetCurrentSpace_t) dlsym(g_slsLib, "SLSManagedDisplaySetCurrentSpace");
-    if (!g_main || !g_copy || !g_set) return 2;
-    return 0;
+int dw_ws_init {
+ if (g_slsLib) return 0;
+ g_slsLib = dlopen("/System/Library/PrivateFrameworks/SkyLight.framework/SkyLight"
+ RTLD_LAZY | RTLD_LOCAL);
+ if (!g_slsLib) return 1;
+ g_main = (SLSMainConnectionID_t) dlsym(g_slsLib, "SLSMainConnectionID");
+ g_copy = (SLSCopyManagedDisplaySpaces_t) dlsym(g_slsLib, "SLSCopyManagedDisplaySpaces");
+ g_set = (SLSManagedDisplaySetCurrentSpace_t) dlsym(g_slsLib, "SLSManagedDisplaySetCurrentSpace");
+ if (!g_main || !g_copy || !g_set) return 2;
+ return 0;
 }
 
-// dw_ws_inspect populates *outUUIDBuf with the first display's UUID (UTF-8),
+// dw_ws_inspect populates *outUUIDBuf with the first display's UUID (UTF-8)
 // *outCurrent with its current Space ID, and *outTarget with the first
 // non-current normal (type 0) Space ID. Returns 0 on success.
-//   uuidBufSz: caller-allocated buffer size (≥64 recommended)
+// uuidBufSz: caller-allocated buffer size (≥64 recommended)
 int dw_ws_inspect(char *outUUIDBuf, int uuidBufSz, uint64_t *outCurrent, uint64_t *outTarget) {
-    if (!g_main || !g_copy) return 1;
-    if (outUUIDBuf && uuidBufSz > 0) outUUIDBuf[0] = '\0';
-    *outCurrent = 0;
-    *outTarget  = 0;
+ if (!g_main || !g_copy) return 1;
+ if (outUUIDBuf && uuidBufSz > 0) outUUIDBuf[0] = '\0';
+ *outCurrent = 0;
+ *outTarget = 0;
 
-    CGSConnectionID cid = g_main();
-    CFArrayRef displays = g_copy(cid);
-    if (!displays) return 2;
+ CGSConnectionID cid = g_main;
+ CFArrayRef displays = g_copy(cid);
+ if (!displays) return 2;
 
-    CFIndex nDisp = CFArrayGetCount(displays);
-    for (CFIndex i = 0; i < nDisp; i++) {
-        CFDictionaryRef disp = CFArrayGetValueAtIndex(displays, i);
+ CFIndex nDisp = CFArrayGetCount(displays);
+ for (CFIndex i = 0; i < nDisp; i++) {
+ CFDictionaryRef disp = CFArrayGetValueAtIndex(displays, i);
 
-        // First display only — UUID + current
-        if (i == 0) {
-            CFStringRef uuid = CFDictionaryGetValue(disp, CFSTR("Display Identifier"));
-            if (uuid && outUUIDBuf) {
-                CFStringGetCString(uuid, outUUIDBuf, uuidBufSz, kCFStringEncodingUTF8);
-            }
-            CFDictionaryRef curDict = CFDictionaryGetValue(disp, CFSTR("Current Space"));
-            if (curDict) {
-                CFNumberRef cur = CFDictionaryGetValue(curDict, CFSTR("ManagedSpaceID"));
-                if (cur) CFNumberGetValue(cur, kCFNumberSInt64Type, outCurrent);
-            }
-        }
+ // First display only — UUID + current
+ if (i == 0) {
+ CFStringRef uuid = CFDictionaryGetValue(disp, CFSTR("Display Identifier"));
+ if (uuid && outUUIDBuf) {
+ CFStringGetCString(uuid, outUUIDBuf, uuidBufSz, kCFStringEncodingUTF8);
+ }
+ CFDictionaryRef curDict = CFDictionaryGetValue(disp, CFSTR("Current Space"));
+ if (curDict) {
+ CFNumberRef cur = CFDictionaryGetValue(curDict, CFSTR("ManagedSpaceID"));
+ if (cur) CFNumberGetValue(cur, kCFNumberSInt64Type, outCurrent);
+ }
+ }
 
-        // Pick target from first display's Spaces
-        if (i == 0) {
-            CFArrayRef spaces = CFDictionaryGetValue(disp, CFSTR("Spaces"));
-            if (spaces) {
-                CFIndex nSp = CFArrayGetCount(spaces);
-                for (CFIndex j = 0; j < nSp; j++) {
-                    CFDictionaryRef sp = CFArrayGetValueAtIndex(spaces, j);
-                    int spType = -1;
-                    CFNumberRef tn = CFDictionaryGetValue(sp, CFSTR("type"));
-                    if (tn) CFNumberGetValue(tn, kCFNumberIntType, &spType);
-                    // type 0 = normal user Space; type 4 = fullscreen (skip)
-                    if (spType != 0 && spType != -1) continue;
-                    uint64_t sid = 0;
-                    CFNumberRef idn = CFDictionaryGetValue(sp, CFSTR("ManagedSpaceID"));
-                    if (idn) CFNumberGetValue(idn, kCFNumberSInt64Type, &sid);
-                    if (sid != 0 && sid != *outCurrent) {
-                        *outTarget = sid;
-                        break;
-                    }
-                }
-            }
-        }
-    }
+ // Pick target from first display's Spaces
+ if (i == 0) {
+ CFArrayRef spaces = CFDictionaryGetValue(disp, CFSTR("Spaces"));
+ if (spaces) {
+ CFIndex nSp = CFArrayGetCount(spaces);
+ for (CFIndex j = 0; j < nSp; j++) {
+ CFDictionaryRef sp = CFArrayGetValueAtIndex(spaces, j);
+ int spType = -1;
+ CFNumberRef tn = CFDictionaryGetValue(sp, CFSTR("type"));
+ if (tn) CFNumberGetValue(tn, kCFNumberIntType, &spType);
+ // type 0 = normal user Space; type 4 = fullscreen (skip)
+ if (spType != 0 && spType != -1) continue;
+ uint64_t sid = 0;
+ CFNumberRef idn = CFDictionaryGetValue(sp, CFSTR("ManagedSpaceID"));
+ if (idn) CFNumberGetValue(idn, kCFNumberSInt64Type, &sid);
+ if (sid != 0 && sid != *outCurrent) {
+ *outTarget = sid;
+ break;
+ }
+ }
+ }
+ }
+ }
 
-    CFRelease(displays);
-    return 0;
+ CFRelease(displays);
+ return 0;
 }
 
 // dw_ws_set_space switches the given display's current Space.
 // Returns 0 on success.
 int dw_ws_set_space(const char *uuidUTF8, uint64_t spaceID) {
-    if (!g_main || !g_set || !uuidUTF8) return 1;
-    CFStringRef uuid = CFStringCreateWithCString(NULL, uuidUTF8, kCFStringEncodingUTF8);
-    if (!uuid) return 2;
-    g_set(g_main(), uuid, (CGSSpaceID)spaceID);
-    CFRelease(uuid);
-    return 0;
+ if (!g_main || !g_set || !uuidUTF8) return 1;
+ CFStringRef uuid = CFStringCreateWithCString(NULL, uuidUTF8, kCFStringEncodingUTF8);
+ if (!uuid) return 2;
+ g_set(g_main, uuid, (CGSSpaceID)spaceID);
+ CFRelease(uuid);
+ return 0;
 }
 
 // dw_ws_count_visible_windows_for_pid counts normal-layer windows owned by
@@ -146,48 +146,48 @@ int dw_ws_set_space(const char *uuidUTF8, uint64_t spaceID) {
 // titles need permission, which we don't read).
 //
 // Filtering:
-//   - kCGWindowListOptionOnScreenOnly: only windows on the active Space
-//   - ownerPID == pid: belong to spawned Chrome
-//   - layer == 0: normal app windows (filter out menubar/dock/popups)
-//   - bounds.width >= 200 && height >= 200: filter zero-size hidden windows
+// - kCGWindowListOptionOnScreenOnly: only windows on the active Space
+// - ownerPID == pid: belong to spawned Chrome
+// - layer == 0: normal app windows (filter out menubar/dock/popups)
+// - bounds.width >= 200 && height >= 200: filter zero-size hidden windows
 //
 // Returns count (0 if no qualifying window yet, ≥1 once Chrome window
 // is fully composited and bound to current Space).
 int dw_ws_count_visible_windows_for_pid(int pid) {
-    CFArrayRef windows = CGWindowListCopyWindowInfo(
-        kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements,
-        kCGNullWindowID);
-    if (!windows) return 0;
-    int count = 0;
-    CFIndex n = CFArrayGetCount(windows);
-    for (CFIndex i = 0; i < n; i++) {
-        CFDictionaryRef w = (CFDictionaryRef)CFArrayGetValueAtIndex(windows, i);
+ CFArrayRef windows = CGWindowListCopyWindowInfo(
+ kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements
+ kCGNullWindowID);
+ if (!windows) return 0;
+ int count = 0;
+ CFIndex n = CFArrayGetCount(windows);
+ for (CFIndex i = 0; i < n; i++) {
+ CFDictionaryRef w = (CFDictionaryRef)CFArrayGetValueAtIndex(windows, i);
 
-        CFNumberRef ownerRef = (CFNumberRef)CFDictionaryGetValue(w, kCGWindowOwnerPID);
-        if (!ownerRef) continue;
-        int owner = 0;
-        CFNumberGetValue(ownerRef, kCFNumberIntType, &owner);
-        if (owner != pid) continue;
+ CFNumberRef ownerRef = (CFNumberRef)CFDictionaryGetValue(w, kCGWindowOwnerPID);
+ if (!ownerRef) continue;
+ int owner = 0;
+ CFNumberGetValue(ownerRef, kCFNumberIntType, &owner);
+ if (owner != pid) continue;
 
-        // Layer 0 = normal app window (Chrome browser windows).
-        // Layer != 0: menubar, dock, popups — skip.
-        CFNumberRef layerRef = (CFNumberRef)CFDictionaryGetValue(w, kCGWindowLayer);
-        int layer = 1;
-        if (layerRef) CFNumberGetValue(layerRef, kCFNumberIntType, &layer);
-        if (layer != 0) continue;
+ // Layer 0 = normal app window (Chrome browser windows).
+ // Layer != 0: menubar, dock, popups — skip.
+ CFNumberRef layerRef = (CFNumberRef)CFDictionaryGetValue(w, kCGWindowLayer);
+ int layer = 1;
+ if (layerRef) CFNumberGetValue(layerRef, kCFNumberIntType, &layer);
+ if (layer != 0) continue;
 
-        // bounds.width/height threshold filters Chrome's helper/zero-size windows.
-        CFDictionaryRef boundsDict = (CFDictionaryRef)CFDictionaryGetValue(w, kCGWindowBounds);
-        if (boundsDict) {
-            CGRect r;
-            if (CGRectMakeWithDictionaryRepresentation(boundsDict, &r)) {
-                if (r.size.width < 200 || r.size.height < 200) continue;
-            }
-        }
-        count++;
-    }
-    CFRelease(windows);
-    return count;
+ // bounds.width/height threshold filters Chrome's helper/zero-size windows.
+ CFDictionaryRef boundsDict = (CFDictionaryRef)CFDictionaryGetValue(w, kCGWindowBounds);
+ if (boundsDict) {
+ CGRect r;
+ if (CGRectMakeWithDictionaryRepresentation(boundsDict, &r)) {
+ if (r.size.width < 200 || r.size.height < 200) continue;
+ }
+ }
+ count++;
+ }
+ CFRelease(windows);
+ return count;
 }
 */
 import "C"
@@ -222,30 +222,30 @@ const visibleWindowCheckWindow = 2500 * time.Millisecond
 const visibleWindowPollInterval = 75 * time.Millisecond
 
 // darwinWorkspace implements Workspace for macOS via SkyLight (D1 strategy).
-// [darwin-specific bug class: DDC-I-12]
+// [darwin-specific bug class: ]
 type darwinWorkspace struct {
-	mu          sync.Mutex
-	loaded      bool
+	mu sync.Mutex
+	loaded bool
 	displayUUID string // first display's UUID (CFString → UTF-8)
-	currentSp   int64  // Space the Human is on (we switch back to this)
-	targetSp    int64  // Space we launch Chrome into
+	currentSp int64 // Space the Human is on (we switch back to this)
+	targetSp int64 // Space we launch Chrome into
 }
 
 // NewWorkspace returns a macOS-native Workspace using SkyLight private APIs.
-func NewWorkspace() Workspace {
+func NewWorkspace Workspace {
 	return &darwinWorkspace{}
 }
 
 // ensureLoaded loads SkyLight + populates UUID + spaces (idempotent).
-func (w *darwinWorkspace) ensureLoaded() error {
+func (w *darwinWorkspace) ensureLoaded error {
 	if w.loaded {
 		return nil
 	}
-	if rc := C.dw_ws_init(); rc != 0 {
+	if rc := C.dw_ws_init; rc != 0 {
 		return fmt.Errorf("workspace: SkyLight dlopen failed (code %d)", rc)
 	}
 
-	if err := w.refreshSpaceSnapshotLocked(); err != nil {
+	if err := w.refreshSpaceSnapshotLocked; err != nil {
 		return err
 	}
 	w.loaded = true
@@ -257,7 +257,7 @@ func (w *darwinWorkspace) ensureLoaded() error {
 // Caching this only once is wrong: the Human may move Deepwork to another Space
 // between launches, and the switchback target must be the Space they are
 // actually using now.
-func (w *darwinWorkspace) refreshSpaceSnapshotLocked() error {
+func (w *darwinWorkspace) refreshSpaceSnapshotLocked error {
 	var uuidBuf [128]C.char
 	var current, target C.uint64_t
 	rc := C.dw_ws_inspect(&uuidBuf[0], C.int(len(uuidBuf)), &current, &target)
@@ -278,10 +278,10 @@ func (w *darwinWorkspace) refreshSpaceSnapshotLocked() error {
 }
 
 // EnsureSpace populates the cached UUID + Space IDs and returns target.
-func (w *darwinWorkspace) EnsureSpace() (int64, error) {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	if err := w.ensureLoaded(); err != nil {
+func (w *darwinWorkspace) EnsureSpace (int64, error) {
+	w.mu.Lock
+	defer w.mu.Unlock
+	if err := w.ensureLoaded; err != nil {
 		return 0, err
 	}
 	return w.targetSp, nil
@@ -302,37 +302,37 @@ func (w *darwinWorkspace) setSpace(spaceID int64) error {
 // to the original Space as soon as macOS shifts view to Chrome's new Space.
 //
 // Sequence (V2):
-//  1. Capture original Space ID (Human's current Space).
-//  2. Fork Chrome via startChromeProcess. chrome_launcher.go has already
-//     appended --start-fullscreen for darwin human mode.
-//  3. Race loop: poll dw_ws_inspect every 30ms.
-//     - As soon as currentSpace != original → fire SLSManagedDisplaySetCurrentSpace
-//     to snap view back. Total switchback latency ≈ animation start +
-//     ≤30ms detection + 1 syscall.
-//     - If view never shifts within viewShiftTimeout, log warning and force a
-//     switchback anyway (defensive — rare cases where Chrome failed to enter
-//     fullscreen, e.g. user denied window permission).
-//  4. Chrome lives on in its own fullscreen Space; CDP is fully usable from
-//     the now-restored Human view (input/keyboard go via CDP, not pixels).
+// 1. Capture original Space ID (Human's current Space).
+// 2. Fork Chrome via startChromeProcess. chrome_launcher.go has already
+// appended --start-fullscreen for darwin human mode.
+// 3. Race loop: poll dw_ws_inspect every 30ms.
+// - As soon as currentSpace != original → fire SLSManagedDisplaySetCurrentSpace
+// to snap view back. Total switchback latency ≈ animation start +
+// ≤30ms detection + 1 syscall.
+// - If view never shifts within viewShiftTimeout, log warning and force a
+// switchback anyway (defensive — rare cases where Chrome failed to enter
+// fullscreen, e.g. user denied window permission).
+// 4. Chrome lives on in its own fullscreen Space; CDP is fully usable from
+// the now-restored Human view (input/keyboard go via CDP, not pixels).
 //
 // On launch failure: the partial Chrome process (if any) is already killed
 // inside startChromeProcess. We do NOT need a switchback (no view shift
 // occurred without Chrome's fullscreen Space).
 //
-// [Ref: TH-0419 — V2 fullscreen+switchback, DDC-I-22, BRR-13]
+//
 func (w *darwinWorkspace) LaunchChromeInSpace(spec ChromeLaunchSpec) (ChromeHandle, error) {
-	w.mu.Lock()
-	if err := w.ensureLoaded(); err != nil {
-		w.mu.Unlock()
+	w.mu.Lock
+	if err := w.ensureLoaded; err != nil {
+		w.mu.Unlock
 		return nil, err
 	}
-	if err := w.refreshSpaceSnapshotLocked(); err != nil {
-		w.mu.Unlock()
+	if err := w.refreshSpaceSnapshotLocked; err != nil {
+		w.mu.Unlock
 		return nil, err
 	}
 	original := w.currentSp
 	displayUUID := w.displayUUID
-	w.mu.Unlock()
+	w.mu.Unlock
 	log.Printf("[WORKSPACE-OSX] launch request captured current Space %d on display=%s", original, displayUUID)
 
 	// Step 1: fork Chrome (own-process exec; --start-fullscreen already in args).
@@ -342,7 +342,7 @@ func (w *darwinWorkspace) LaunchChromeInSpace(spec ChromeLaunchSpec) (ChromeHand
 	}
 
 	// Step 2: race to detect view shift to Chrome's fullscreen Space, then snap back.
-	t0 := time.Now()
+	t0 := time.Now
 	shifted, shiftedTo, waitErr := w.waitViewShifted(original, viewShiftTimeout)
 	switch {
 	case waitErr != nil && shifted:
@@ -351,18 +351,18 @@ func (w *darwinWorkspace) LaunchChromeInSpace(spec ChromeLaunchSpec) (ChromeHand
 	case !shifted:
 		log.Printf("[WORKSPACE-OSX] WARNING: view did not shift away from Space %d within %v (pid=%d) — Chrome may not have entered fullscreen", original, viewShiftTimeout, h.pid)
 	default:
-		log.Printf("[WORKSPACE-OSX] view shifted %d → %d after %dms (pid=%d), snapping back", original, shiftedTo, time.Since(t0).Milliseconds(), h.pid)
+		log.Printf("[WORKSPACE-OSX] view shifted %d → %d after %dms (pid=%d), snapping back", original, shiftedTo, time.Since(t0).Milliseconds, h.pid)
 	}
 
 	// Step 3: switch view back to original (always — defensive even if no shift detected).
 	if backErr := w.setSpace(original); backErr != nil {
 		log.Printf("[WORKSPACE-OSX] WARNING: switch back to Space %d failed: %v", original, backErr)
 	} else {
-		log.Printf("[WORKSPACE-OSX] view back to Space %d (total: %dms)", original, time.Since(t0).Milliseconds())
+		log.Printf("[WORKSPACE-OSX] view back to Space %d (total: %dms)", original, time.Since(t0).Milliseconds)
 	}
 
 	if err := w.verifyChromeHiddenFromCurrentSpace(h.pid, original, time.Since(t0)); err != nil {
-		_ = h.Kill()
+		_ = h.Kill
 		return nil, err
 	}
 	return h, nil
@@ -375,7 +375,7 @@ func (w *darwinWorkspace) LaunchChromeInSpace(spec ChromeLaunchSpec) (ChromeHand
 // Returns (shifted=true, newSpaceID, nil) on success; (false, 0, err) on timeout.
 // Switchback latency is dominated by viewShiftPollInterval — keep it small.
 func (w *darwinWorkspace) waitViewShifted(original int64, timeout time.Duration) (bool, int64, error) {
-	deadline := time.Now().Add(timeout)
+	deadline := time.Now.Add(timeout)
 	attempts := 0
 	for {
 		attempts++
@@ -387,7 +387,7 @@ func (w *darwinWorkspace) waitViewShifted(original int64, timeout time.Duration)
 				return true, cur, nil
 			}
 		}
-		if time.Now().After(deadline) {
+		if time.Now.After(deadline) {
 			return false, 0, fmt.Errorf("no view shift from Space %d within %v (%d polls)", original, timeout, attempts)
 		}
 		time.Sleep(viewShiftPollInterval)
@@ -400,7 +400,7 @@ func (w *darwinWorkspace) waitViewShifted(original int64, timeout time.Duration)
 // less surprising than silently leaving a full browser over Deepwork.
 func (w *darwinWorkspace) verifyChromeHiddenFromCurrentSpace(pid int, original int64, elapsed time.Duration) error {
 	time.Sleep(visibleWindowSettleDelay)
-	deadline := time.Now().Add(visibleWindowCheckWindow)
+	deadline := time.Now.Add(visibleWindowCheckWindow)
 	lastCount := 0
 	polls := 0
 	for {
@@ -408,9 +408,9 @@ func (w *darwinWorkspace) verifyChromeHiddenFromCurrentSpace(pid int, original i
 		_ = w.setSpace(original)
 		count := int(C.dw_ws_count_visible_windows_for_pid(C.int(pid)))
 		lastCount = count
-		if time.Now().After(deadline) {
+		if time.Now.After(deadline) {
 			if count > 0 {
-				return fmt.Errorf("workspace: Chrome pid %d has %d visible window(s) on restored Space %d after %dms", pid, count, original, elapsed.Milliseconds())
+				return fmt.Errorf("workspace: Chrome pid %d has %d visible window(s) on restored Space %d after %dms", pid, count, original, elapsed.Milliseconds)
 			}
 			log.Printf("[WORKSPACE-OSX] verified Chrome hidden from current Space pid=%d space=%d polls=%d visible_windows=%d", pid, original, polls, lastCount)
 			return nil
@@ -420,9 +420,9 @@ func (w *darwinWorkspace) verifyChromeHiddenFromCurrentSpace(pid int, original i
 }
 
 // Close releases cached state. The isolation Space itself persists.
-func (w *darwinWorkspace) Close() error {
-	w.mu.Lock()
-	defer w.mu.Unlock()
+func (w *darwinWorkspace) Close error {
+	w.mu.Lock
+	defer w.mu.Unlock
 	w.loaded = false
 	w.displayUUID = ""
 	w.currentSp = 0

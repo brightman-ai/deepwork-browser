@@ -6,9 +6,9 @@ import (
 )
 
 const (
-	DefaultViewportWidth  = 1920
+	DefaultViewportWidth = 1920
 	DefaultViewportHeight = 1080
-	DefaultMaxTabs        = 10
+	DefaultMaxTabs = 10
 
 	// ChromeInitialPageURL is Chrome/CDP's startup sentinel page. It is a
 	// runtime state, not product state: callers must not use it to infer user
@@ -18,62 +18,62 @@ const (
 
 const (
 	BrowserPoolDefaultIdleTimeout = 5 * time.Minute
-	BrowserPoolShutdownGrace      = 5 * time.Second
-	BrowserPoolMaxShutdownGrace   = 30 * time.Second
-	BrowserPoolMinReapInterval    = 15 * time.Second
-	BrowserPoolReleaseTimeout     = 5 * time.Second
-	BrowserPoolChromeWarmup       = 15 * time.Second
-	BrowserPoolCDPActionTimeout   = 5 * time.Second
-	ProfileOwnerMuxHostKillGrace  = 2 * time.Second
-	ProfileOwnerChromeKillGrace   = 1 * time.Second
-	ProcessExitPollInterval       = 50 * time.Millisecond
-	ChromeReadyPollInterval       = 150 * time.Millisecond
-	ChromeVersionRequestTimeout   = 2 * time.Second
-	ChromeTargetsRequestTimeout   = 3 * time.Second
-	ChromeCDPStartupAttempts      = 20
-	ChromeCDPStartupPollInterval  = 500 * time.Millisecond
+	BrowserPoolShutdownGrace = 5 * time.Second
+	BrowserPoolMaxShutdownGrace = 30 * time.Second
+	BrowserPoolMinReapInterval = 15 * time.Second
+	BrowserPoolReleaseTimeout = 5 * time.Second
+	BrowserPoolChromeWarmup = 15 * time.Second
+	BrowserPoolCDPActionTimeout = 5 * time.Second
+	ProfileOwnerMuxHostKillGrace = 2 * time.Second
+	ProfileOwnerChromeKillGrace = 1 * time.Second
+	ProcessExitPollInterval = 50 * time.Millisecond
+	ChromeReadyPollInterval = 150 * time.Millisecond
+	ChromeVersionRequestTimeout = 2 * time.Second
+	ChromeTargetsRequestTimeout = 3 * time.Second
+	ChromeCDPStartupAttempts = 20
+	ChromeCDPStartupPollInterval = 500 * time.Millisecond
 
-	BrowserMuxHostDefaultIdleTTL             = 10 * time.Minute
-	BrowserMuxHostReadyTimeout               = 45 * time.Second
-	BrowserMuxHostLaunchReadyTimeout         = 30 * time.Second
-	BrowserMuxHostControlRequestTimeout      = 5 * time.Second
-	BrowserMuxHostShutdownTimeout            = 3 * time.Second
-	BrowserMuxHostReadyPollInterval          = 250 * time.Millisecond
-	BrowserMuxHostProcessPollInterval        = 100 * time.Millisecond
-	BrowserMuxHostHealthPollInterval         = 2 * time.Second
-	BrowserMuxHostIdleCheckInterval          = 5 * time.Second
-	BrowserMuxHostWindowEnforceTimeout       = 10 * time.Second
-	BrowserMuxHostWindowContainmentTimeout   = 2500 * time.Millisecond
-	BrowserMuxHostForegroundGuardTimeout     = 1500 * time.Millisecond
+	BrowserMuxHostDefaultIdleTTL = 10 * time.Minute
+	BrowserMuxHostReadyTimeout = 45 * time.Second
+	BrowserMuxHostLaunchReadyTimeout = 30 * time.Second
+	BrowserMuxHostControlRequestTimeout = 5 * time.Second
+	BrowserMuxHostShutdownTimeout = 3 * time.Second
+	BrowserMuxHostReadyPollInterval = 250 * time.Millisecond
+	BrowserMuxHostProcessPollInterval = 100 * time.Millisecond
+	BrowserMuxHostHealthPollInterval = 2 * time.Second
+	BrowserMuxHostIdleCheckInterval = 5 * time.Second
+	BrowserMuxHostWindowEnforceTimeout = 10 * time.Second
+	BrowserMuxHostWindowContainmentTimeout = 2500 * time.Millisecond
+	BrowserMuxHostForegroundGuardTimeout = 1500 * time.Millisecond
 	BrowserMuxHostForegroundContainmentCheck = 750 * time.Millisecond
-	BrowserMuxHostSnapshotContainmentCheck   = 200 * time.Millisecond
-	VirtualDisplayRegistrationDelay          = 1 * time.Second
-	VirtualDisplayContainmentPollInterval    = 75 * time.Millisecond
+	BrowserMuxHostSnapshotContainmentCheck = 200 * time.Millisecond
+	VirtualDisplayRegistrationDelay = 1 * time.Second
+	VirtualDisplayContainmentPollInterval = 75 * time.Millisecond
 )
 
 const (
-	TargetClaimWindow              = 2 * time.Second
-	TargetWindowOpenHintTTL        = 2 * time.Second
-	TargetMaxAttributionHints      = 8
-	TargetWarmTimeout              = 10 * time.Second
-	TargetPageListenerTimeout      = 5 * time.Second
-	TargetActivateTimeout          = 2500 * time.Millisecond
-	TargetMaterializeTimeout       = 1500 * time.Millisecond
-	TargetDiscoveryTimeout         = 8 * time.Second
-	TargetCreateTimeout            = 5 * time.Second
-	TargetCreateWaitTimeout        = 12 * time.Second
-	TargetCloseLocalWaitTimeout    = 1200 * time.Millisecond
-	TargetCloseLocalPollInterval   = 25 * time.Millisecond
-	TargetBootstrapCleanupWindow   = 5 * time.Second
+	TargetClaimWindow = 2 * time.Second
+	TargetWindowOpenHintTTL = 2 * time.Second
+	TargetMaxAttributionHints = 8
+	TargetWarmTimeout = 10 * time.Second
+	TargetPageListenerTimeout = 5 * time.Second
+	TargetActivateTimeout = 2500 * time.Millisecond
+	TargetMaterializeTimeout = 1500 * time.Millisecond
+	TargetDiscoveryTimeout = 8 * time.Second
+	TargetCreateTimeout = 5 * time.Second
+	TargetCreateWaitTimeout = 12 * time.Second
+	TargetCloseLocalWaitTimeout = 1200 * time.Millisecond
+	TargetCloseLocalPollInterval = 25 * time.Millisecond
+	TargetBootstrapCleanupWindow = 5 * time.Second
 	TargetPostActionDiscoveryDelay = 500 * time.Millisecond
-	TargetWindowOpenRefreshDelay   = 250 * time.Millisecond
-	DevToolsRequestTimeout         = 5 * time.Second
+	TargetWindowOpenRefreshDelay = 250 * time.Millisecond
+	DevToolsRequestTimeout = 5 * time.Second
 )
 
-var TargetBootstrapCleanupDelays = []time.Duration{
-	350 * time.Millisecond,
-	1500 * time.Millisecond,
-	3500 * time.Millisecond,
+var TargetBootstrapCleanupDelays = time.Duration{
+	350 * time.Millisecond
+	1500 * time.Millisecond
+	3500 * time.Millisecond
 }
 
 func NormalizeTargetCreateURL(raw string) string {
@@ -97,8 +97,8 @@ func IsUserPageTargetURL(raw string) bool {
 }
 
 type PageTargetSelection struct {
-	ID     string
-	URL    string
+	ID string
+	URL string
 	Reason string
 }
 
@@ -146,7 +146,7 @@ func URLsEquivalent(a, b string) bool {
 
 func URLOrigin(rawURL string) string {
 	rawURL = strings.TrimSpace(rawURL)
-	for _, prefix := range []string{"http://", "https://", "ws://", "wss://"} {
+	for _, prefix := range string{"http://", "https://", "ws://", "wss://"} {
 		if after, found := strings.CutPrefix(rawURL, prefix); found {
 			if idx := strings.IndexByte(after, '/'); idx >= 0 {
 				return prefix + after[:idx]
@@ -160,7 +160,7 @@ func URLOrigin(rawURL string) string {
 // SelectAttachablePageTarget chooses the page target that best represents the
 // user's current browser state. It never treats ChromeInitialPageURL as user
 // intent; that URL is only a Chrome startup sentinel.
-func SelectAttachablePageTarget(targets []map[string]interface{}, expectedURL, fallbackID string) PageTargetSelection {
+func SelectAttachablePageTarget(targets map[string]interface{}, expectedURL, fallbackID string) PageTargetSelection {
 	var sameOrigin PageTargetSelection
 	var firstUserPage PageTargetSelection
 	var fallback PageTargetSelection

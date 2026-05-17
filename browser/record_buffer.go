@@ -1,6 +1,6 @@
 package browser
 
-// record_buffer.go — Recording 缓冲区 [CAP-BS09-C5 §3.5, SK-D4, SK-D5]
+// record_buffer.go — Recording 缓冲区 
 //
 // RecordBuffer 接收来自 InputGateway 的事件 tap，组装为 RecordTrace。
 // 零侵入设计: 仅在 recording 为 true 时执行，不影响 InputGateway 主路径。
@@ -20,9 +20,9 @@ import (
 // RecordTarget 描述操作目标的 A11y 元数据。
 type RecordTarget struct {
 	Selector string `json:"selector"`
-	Role     string `json:"role"`
-	Name     string `json:"name"`
-	Tag      string `json:"tag"`
+	Role string `json:"role"`
+	Name string `json:"name"`
+	Tag string `json:"tag"`
 }
 
 // RecordXY 记录操作坐标。
@@ -33,23 +33,23 @@ type RecordXY struct {
 
 // RecordStep 是 trace 中的单个操作步骤。
 type RecordStep struct {
-	Seq            int           `json:"seq"`
-	Action         string        `json:"action"`          // "click" | "type" | "keypress" | "scroll"
-	Target         *RecordTarget `json:"target,omitempty"`
-	Text           string        `json:"text,omitempty"`
-	Key            string        `json:"key,omitempty"`
-	Coordinates    *RecordXY     `json:"coordinates,omitempty"`
-	TimestampMs    int64         `json:"timestamp_ms"`
-	SnapshotBefore string        `json:"snapshot_before,omitempty"`
+	Seq int `json:"seq"`
+	Action string `json:"action"` // "click" | "type" | "keypress" | "scroll"
+	Target *RecordTarget `json:"target,omitempty"`
+	Text string `json:"text,omitempty"`
+	Key string `json:"key,omitempty"`
+	Coordinates *RecordXY `json:"coordinates,omitempty"`
+	TimestampMs int64 `json:"timestamp_ms"`
+	SnapshotBefore string `json:"snapshot_before,omitempty"`
 }
 
 // RecordTrace 是完整的操作录制记录。
 type RecordTrace struct {
-	Domain     string       `json:"domain"`
-	StartURL   string       `json:"start_url"`
-	StartTime  time.Time    `json:"start_time"`
-	DurationMs int64        `json:"duration_ms"`
-	Steps      []RecordStep `json:"steps"`
+	Domain string `json:"domain"`
+	StartURL string `json:"start_url"`
+	StartTime time.Time `json:"start_time"`
+	DurationMs int64 `json:"duration_ms"`
+	Steps RecordStep `json:"steps"`
 }
 
 // ============================================================
@@ -59,86 +59,86 @@ type RecordTrace struct {
 // RecordBuffer 接收 InputGateway 事件 tap，按步骤组装录制 trace。
 // 线程安全: 所有公开方法均加锁。
 type RecordBuffer struct {
-	mu         sync.Mutex
-	recording  bool
-	trace      RecordTrace
-	startTime  time.Time
-	seq        int
-	snapshotFn func(x, y float64) string // 获取操作 target A11y 子树的回调 (SK-D5)
+	mu sync.Mutex
+	recording bool
+	trace RecordTrace
+	startTime time.Time
+	seq int
+	snapshotFn func(x, y float64) string // 获取操作 target A11y 子树的回调 
 }
 
 // NewRecordBuffer 创建 RecordBuffer 实例（初始非录制状态）。
-func NewRecordBuffer() *RecordBuffer {
+func NewRecordBuffer *RecordBuffer {
 	return &RecordBuffer{}
 }
 
 // Start 开始录制，重置状态。连续两次 Start 会重置为新录制。
 func (rb *RecordBuffer) Start(domain, url string) {
-	rb.mu.Lock()
-	defer rb.mu.Unlock()
+	rb.mu.Lock
+	defer rb.mu.Unlock
 
-	now := time.Now()
+	now := time.Now
 	rb.recording = true
 	rb.startTime = now
 	rb.seq = 0
 	rb.trace = RecordTrace{
-		Domain:    domain,
-		StartURL:  url,
-		StartTime: now,
-		Steps:     []RecordStep{},
+		Domain: domain
+		StartURL: url
+		StartTime: now
+		Steps: RecordStep{}
 	}
 }
 
 // Stop 停止录制，计算 duration，返回 trace 快照。
 // 未录制时返回空 trace，不 panic。
-func (rb *RecordBuffer) Stop() RecordTrace {
-	rb.mu.Lock()
-	defer rb.mu.Unlock()
+func (rb *RecordBuffer) Stop RecordTrace {
+	rb.mu.Lock
+	defer rb.mu.Unlock
 
 	if !rb.recording {
 		return RecordTrace{}
 	}
 
 	rb.recording = false
-	rb.trace.DurationMs = time.Since(rb.startTime).Milliseconds()
+	rb.trace.DurationMs = time.Since(rb.startTime).Milliseconds
 
 	// 返回 trace 副本
 	snapshot := rb.trace
-	snapshot.Steps = make([]RecordStep, len(rb.trace.Steps))
+	snapshot.Steps = make(RecordStep, len(rb.trace.Steps))
 	copy(snapshot.Steps, rb.trace.Steps)
 	return snapshot
 }
 
 // IsRecording 返回当前是否正在录制。
-func (rb *RecordBuffer) IsRecording() bool {
-	rb.mu.Lock()
-	defer rb.mu.Unlock()
+func (rb *RecordBuffer) IsRecording bool {
+	rb.mu.Lock
+	defer rb.mu.Unlock
 	return rb.recording
 }
 
-// SetSnapshotFn 注入 A11y 快照回调（DDC-I-24: 操作 target 最小子树）。
+// SetSnapshotFn 注入 A11y 快照回调（: 操作 target 最小子树）。
 func (rb *RecordBuffer) SetSnapshotFn(fn func(x, y float64) string) {
-	rb.mu.Lock()
-	defer rb.mu.Unlock()
+	rb.mu.Lock
+	defer rb.mu.Unlock
 	rb.snapshotFn = fn
 }
 
 // StepCount 返回当前已记录的 step 数量。
-func (rb *RecordBuffer) StepCount() int {
-	rb.mu.Lock()
-	defer rb.mu.Unlock()
+func (rb *RecordBuffer) StepCount int {
+	rb.mu.Lock
+	defer rb.mu.Unlock
 	return len(rb.trace.Steps)
 }
 
 // ExportJSON 将当前 trace 序列化为 JSON。
-func (rb *RecordBuffer) ExportJSON() ([]byte, error) {
-	rb.mu.Lock()
+func (rb *RecordBuffer) ExportJSON (byte, error) {
+	rb.mu.Lock
 	snapshot := rb.trace
-	snapshot.Steps = make([]RecordStep, len(rb.trace.Steps))
+	snapshot.Steps = make(RecordStep, len(rb.trace.Steps))
 	copy(snapshot.Steps, rb.trace.Steps)
-	rb.mu.Unlock()
+	rb.mu.Unlock
 
-	return json.MarshalIndent(snapshot, "", "  ")
+	return json.MarshalIndent(snapshot, "", " ")
 }
 
 // ============================================================
@@ -149,8 +149,8 @@ func (rb *RecordBuffer) ExportJSON() ([]byte, error) {
 // 仅 mousePressed 转为 "click" step（mouseReleased/mouseMoved 忽略）。
 // 调用前不需要持锁（内部加锁）。
 func (rb *RecordBuffer) AppendMouseEvent(event *InputEvent) {
-	rb.mu.Lock()
-	defer rb.mu.Unlock()
+	rb.mu.Lock
+	defer rb.mu.Unlock
 
 	if !rb.recording {
 		return
@@ -161,7 +161,7 @@ func (rb *RecordBuffer) AppendMouseEvent(event *InputEvent) {
 		return
 	}
 
-	now := time.Now()
+	now := time.Now
 	rb.seq++
 
 	var snapshotBefore string
@@ -170,14 +170,14 @@ func (rb *RecordBuffer) AppendMouseEvent(event *InputEvent) {
 	}
 
 	step := RecordStep{
-		Seq:    rb.seq,
-		Action: "click",
+		Seq: rb.seq
+		Action: "click"
 		Coordinates: &RecordXY{
-			X: event.X,
-			Y: event.Y,
-		},
-		TimestampMs:    now.UnixMilli(),
-		SnapshotBefore: snapshotBefore,
+			X: event.X
+			Y: event.Y
+		}
+		TimestampMs: now.UnixMilli
+		SnapshotBefore: snapshotBefore
 	}
 
 	rb.trace.Steps = append(rb.trace.Steps, step)
@@ -188,8 +188,8 @@ func (rb *RecordBuffer) AppendMouseEvent(event *InputEvent) {
 // 其他事件 (keyUp/char) 忽略。
 // 调用前不需要持锁（内部加锁）。
 func (rb *RecordBuffer) AppendKeyEvent(event *InputEvent) {
-	rb.mu.Lock()
-	defer rb.mu.Unlock()
+	rb.mu.Lock
+	defer rb.mu.Unlock
 
 	if !rb.recording {
 		return
@@ -200,13 +200,13 @@ func (rb *RecordBuffer) AppendKeyEvent(event *InputEvent) {
 		return
 	}
 
-	now := time.Now()
+	now := time.Now
 
 	if isPrintableKey(event.Key) {
 		// 可打印字符: 尝试合并到上一个 "type" step（2s 内）
 		if len(rb.trace.Steps) > 0 {
 			last := &rb.trace.Steps[len(rb.trace.Steps)-1]
-			if last.Action == "type" && (now.UnixMilli()-last.TimestampMs) < 2000 {
+			if last.Action == "type" && (now.UnixMilli-last.TimestampMs) < 2000 {
 				last.Text += event.Key
 				return
 			}
@@ -214,19 +214,19 @@ func (rb *RecordBuffer) AppendKeyEvent(event *InputEvent) {
 		// 新建 "type" step
 		rb.seq++
 		rb.trace.Steps = append(rb.trace.Steps, RecordStep{
-			Seq:         rb.seq,
-			Action:      "type",
-			Text:        event.Key,
-			TimestampMs: now.UnixMilli(),
+			Seq: rb.seq
+			Action: "type"
+			Text: event.Key
+			TimestampMs: now.UnixMilli
 		})
 	} else {
 		// 特殊键: "keypress"
 		rb.seq++
 		rb.trace.Steps = append(rb.trace.Steps, RecordStep{
-			Seq:         rb.seq,
-			Action:      "keypress",
-			Key:         event.Key,
-			TimestampMs: now.UnixMilli(),
+			Seq: rb.seq
+			Action: "keypress"
+			Key: event.Key
+			TimestampMs: now.UnixMilli
 		})
 	}
 }

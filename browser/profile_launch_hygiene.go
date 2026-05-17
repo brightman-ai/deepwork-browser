@@ -18,11 +18,11 @@ func PrepareProfileForControlledLaunch(profileDir string) error {
 	// Modern Chrome stores tab/session restore state under Default/Sessions.
 	_ = os.RemoveAll(filepath.Join(profileDir, "Default", "Sessions"))
 	// Older Chrome variants used these files.
-	for _, rel := range []string{
-		filepath.Join("Default", "Current Session"),
-		filepath.Join("Default", "Current Tabs"),
-		filepath.Join("Default", "Last Session"),
-		filepath.Join("Default", "Last Tabs"),
+	for _, rel := range string{
+		filepath.Join("Default", "Current Session")
+		filepath.Join("Default", "Current Tabs")
+		filepath.Join("Default", "Last Session")
+		filepath.Join("Default", "Last Tabs")
 	} {
 		_ = os.Remove(filepath.Join(profileDir, rel))
 	}
@@ -60,7 +60,7 @@ func markChromeProfileExitedCleanly(prefPath string) error {
 	// resurrecting old window bounds while preserving site data.
 	session["restore_on_startup"] = float64(5)
 
-	updated, err := json.MarshalIndent(prefs, "", "  ")
+	updated, err := json.MarshalIndent(prefs, "", " ")
 	if err != nil {
 		return err
 	}

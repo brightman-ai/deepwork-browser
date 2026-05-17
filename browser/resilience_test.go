@@ -27,23 +27,23 @@ func TestL4_ChromeCrash_OnCrashTriggered(t *testing.T) {
 	// TC-ID: TC-09-L4-01
 	requireChrome(t)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx, cancel := context.WithTimeout(context.Background, 30*time.Second)
+	defer cancel
 
-	launcher := NewChromeLauncher()
-	profileID := "test-l4-01-" + itoa(int(time.Now().UnixNano()%100000))
-	homeDir, _ := os.UserHomeDir()
-	defer func() { _ = os.RemoveAll(homeDir + "/.deepwork/browser-data/" + profileID) }()
+	launcher := NewChromeLauncher
+	profileID := "test-l4-01-" + itoa(int(time.Now.UnixNano%100000))
+	homeDir, _ := os.UserHomeDir
+	defer func { _ = os.RemoveAll(homeDir + "/.deepwork/browser-data/" + profileID) }
 
 	_, pid, err := launcher.Launch(ctx, profileID)
 	if err != nil {
 		t.Skipf("TC-09-L4-01: Chrome launch failed: %v", err)
 	}
 
-	supervisor := NewChromeSupervisor()
+	supervisor := NewChromeSupervisor
 
 	crashCh := make(chan struct{}, 1)
-	supervisor.Watch(ctx, pid, func() {
+	supervisor.Watch(ctx, pid, func {
 		select {
 		case crashCh <- struct{}{}:
 		default:
@@ -80,12 +80,12 @@ func TestL4_ChromeCrash_OnCrashTriggered(t *testing.T) {
 func TestL4_BackoffDelay_Pattern(t *testing.T) {
 	// TC-ID: TC-09-L4-02
 	// 验证退避延迟计算逻辑（不实际等待）
-	delays := make([]time.Duration, 3)
+	delays := make(time.Duration, 3)
 	for i := 0; i < 3; i++ {
 		delays[i] = time.Duration(1<<uint(i)) * time.Second
 	}
 
-	expected := []time.Duration{1 * time.Second, 2 * time.Second, 4 * time.Second}
+	expected := time.Duration{1 * time.Second, 2 * time.Second, 4 * time.Second}
 	for i, d := range delays {
 		if d != expected[i] {
 			t.Errorf("TC-09-L4-02: backoff[%d] = %v, want %v", i, d, expected[i])
@@ -93,25 +93,25 @@ func TestL4_BackoffDelay_Pattern(t *testing.T) {
 	}
 
 	// 验证全失败时返回 ErrBrowserCrashed（使用 mock launcher）
-	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
-	defer cancel()
+	ctx, cancel := context.WithTimeout(context.Background, 1*time.Second)
+	defer cancel
 
-	supervisor := NewChromeSupervisor()
+	supervisor := NewChromeSupervisor
 
 	// 使用不存在的 profileID，所有 Launch 都会失败
 	origLinux := linuxChromePaths
 	origMac := macOSChromePaths
 	origWin := windowsChromePaths
-	defer func() {
+	defer func {
 		linuxChromePaths = origLinux
 		macOSChromePaths = origMac
 		windowsChromePaths = origWin
-	}()
-	linuxChromePaths = []string{"/no-chrome-l4-02"}
-	macOSChromePaths = []string{"/no-chrome-l4-02"}
-	windowsChromePaths = []string{"/no-chrome-l4-02"}
+	}
+	linuxChromePaths = string{"/no-chrome-l4-02"}
+	macOSChromePaths = string{"/no-chrome-l4-02"}
+	windowsChromePaths = string{"/no-chrome-l4-02"}
 
-	launcher := NewChromeLauncher()
+	launcher := NewChromeLauncher
 	// RestartWithBackoff 最多 1 次尝试（配合 1s context timeout）
 	_, _, err := supervisor.RestartWithBackoff(ctx, launcher, "test-l4-02", 1)
 	if err == nil {
@@ -126,8 +126,8 @@ func TestL4_BackoffDelay_Pattern(t *testing.T) {
 
 // TC-09-L4-03: 停止读取 subscriber channel 同时持续产帧 → 旧帧被丢弃（保新），ACK 仍每帧执行。
 func TestL4_ScreencastBackpressure_OldFramesDropped(t *testing.T) {
-	// TC-ID: TC-09-L4-03 [DDC-09]
-	hub := NewFrameBroadcastHub()
+	// TC-ID: TC-09-L4-03 
+	hub := NewFrameBroadcastHub
 	m := newMockLiveViewEngine(hub)
 
 	// 订阅独立 1-slot channel，不读取（模拟背压）；保存 ch 用于代次匹配 Unsubscribe
@@ -137,14 +137,14 @@ func TestL4_ScreencastBackpressure_OldFramesDropped(t *testing.T) {
 	// 推送 20 帧（1-slot channel，保新丢旧，无阻塞）
 	for i := 0; i < 20; i++ {
 		m.PushFrame(&ScreencastFrame{
-			Data:      []byte("frame-data"),
-			Timestamp: time.Now().UnixMilli(),
+			Data: byte("frame-data")
+			Timestamp: time.Now.UnixMilli
 		})
 	}
 
 	// 验证 ACK 次数 = 20（每帧立即 ACK）
-	if m.AckCount() != 20 {
-		t.Errorf("TC-09-L4-03: ACK count should be 20, got %d", m.AckCount())
+	if m.AckCount != 20 {
+		t.Errorf("TC-09-L4-03: ACK count should be 20, got %d", m.AckCount)
 	}
 
 	// 验证 subscriber channel 不超过容量 1（保新丢旧）
@@ -162,35 +162,35 @@ done:
 		t.Errorf("TC-09-L4-03: subscriber channel should hold <= 1 frame (1-slot), got %d", count)
 	}
 
-	t.Logf("TC-09-L4-03 PASS [DDC-09]: ACK=20/20, subscriber buffered=%d (<= 1), old frames dropped", count)
+	t.Logf("TC-09-L4-03 PASS : ACK=20/20, subscriber buffered=%d (<= 1), old frames dropped", count)
 }
 
 // ============================================================
 // § TC-09-L4-05: 并发 snap + act — 无数据竞争
 // ============================================================
 
-// TC-09-L4-05: goroutine 并发调用 Snap() × 5 + Act() × 3 → 无 data race（-race flag）。
+// TC-09-L4-05: goroutine 并发调用 Snap × 5 + Act × 3 → 无 data race（-race flag）。
 func TestL4_Concurrent_SnapAct_NoRace(t *testing.T) {
 	// TC-ID: TC-09-L4-05
 	core := launchTestBrowser(t)
 
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		_, _ = w.Write([]byte(`<html><body>
+		w.Header.Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = w.Write(byte(`<html><body>
 			<button aria-label="btn1">按钮1</button>
 			<button aria-label="btn2">按钮2</button>
 			<input type="text" placeholder="search" aria-label="搜索" />
 			<a href="#">链接</a>
 		</body></html>`))
 	}))
-	defer ts.Close()
+	defer ts.Close
 
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
+	ctx, cancel := context.WithTimeout(context.Background, 60*time.Second)
+	defer cancel
 
 	_, err := core.Navigate(ctx, ts.URL)
 	if err != nil {
-		t.Fatalf("TC-09-L4-05: Navigate() failed: %v", err)
+		t.Fatalf("TC-09-L4-05: Navigate failed: %v", err)
 	}
 
 	var wg sync.WaitGroup
@@ -199,38 +199,38 @@ func TestL4_Concurrent_SnapAct_NoRace(t *testing.T) {
 	// 并发 Snap × 5
 	for i := 0; i < 5; i++ {
 		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		go func {
+			defer wg.Done
 			_, err := core.Snap(ctx)
 			if err != nil {
 				errCh <- err
 			}
-		}()
+		}
 	}
 
 	// 并发 Act × 3（操作可能失败，但不应 panic）
 	for i := 0; i < 3; i++ {
 		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		go func {
+			defer wg.Done
 			_, err := core.Act(ctx, "click e1", false)
 			// ErrRefNotFound 是正常的（并发 snap 可能重建 refTable）
 			if err != nil && err != ErrRefNotFound && err != ErrTakeoverActive {
 				errCh <- err
 			}
-		}()
+		}
 	}
 
-	wg.Wait()
+	wg.Wait
 	close(errCh)
 
-	var errors []error
+	var errors error
 	for err := range errCh {
 		errors = append(errors, err)
 	}
 
 	// 收集错误但不视为失败（并发场景下 ErrCDPDisconnected 等也可接受）
-	t.Logf("TC-09-L4-05 PASS [race-detector]: concurrent Snap×5 + Act×3 completed, errors=%d (expected 0 panics)",
+	t.Logf("TC-09-L4-05 PASS [race-detector]: concurrent Snap×5 + Act×3 completed, errors=%d (expected 0 panics)"
 		len(errors))
 	for _, e := range errors {
 		t.Logf("TC-09-L4-05: concurrent error (non-panic): %v", e)
@@ -251,21 +251,21 @@ func TestL4_Navigate_ContextTimeout(t *testing.T) {
 		// 故意不响应，模拟慢响应
 		select {}
 	}))
-	defer ts.Close()
+	defer ts.Close
 
 	// 设置很短的超时（1s）
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
+	ctx, cancel := context.WithTimeout(context.Background, 2*time.Second)
+	defer cancel
 
-	start := time.Now()
+	start := time.Now
 	_, err := core.Navigate(ctx, ts.URL)
 	elapsed := time.Since(start)
 
 	if err == nil {
-		t.Error("TC-09-L4-06: Navigate() on hang server should return error")
+		t.Error("TC-09-L4-06: Navigate on hang server should return error")
 	}
 	if elapsed > 5*time.Second {
-		t.Errorf("TC-09-L4-06: Navigate() should not hang > 5s, elapsed=%v", elapsed)
+		t.Errorf("TC-09-L4-06: Navigate should not hang > 5s, elapsed=%v", elapsed)
 	}
 	t.Logf("TC-09-L4-06 PASS: Navigate timeout in %v, err=%v", elapsed, err)
 }
@@ -277,27 +277,27 @@ func TestL4_Navigate_ContextTimeout(t *testing.T) {
 // TC-09-L4-07: rm -rf profile 目录 When ProfileManager.Repair Then 新目录创建。
 func TestL4_Profile_ExternalDelete_RepairRebuild(t *testing.T) {
 	// TC-ID: TC-09-L4-07
-	tmpDir := t.TempDir()
+	tmpDir := t.TempDir
 	pm, err := NewProfileManagerWithBase(tmpDir)
 	if err != nil {
-		t.Fatalf("TC-09-L4-07: NewProfileManagerWithBase() failed: %v", err)
+		t.Fatalf("TC-09-L4-07: NewProfileManagerWithBase failed: %v", err)
 	}
 
 	// 创建 Profile
 	p, err := pm.GetOrCreate("l4-07-test")
 	if err != nil {
-		t.Fatalf("TC-09-L4-07: GetOrCreate() failed: %v", err)
+		t.Fatalf("TC-09-L4-07: GetOrCreate failed: %v", err)
 	}
 
 	// 模拟外部删除
 	if err := os.RemoveAll(p.UserDataDir); err != nil {
-		t.Fatalf("TC-09-L4-07: RemoveAll() failed: %v", err)
+		t.Fatalf("TC-09-L4-07: RemoveAll failed: %v", err)
 	}
 
 	// Repair 自动重建
 	repaired, err := pm.Repair("l4-07-test")
 	if err != nil {
-		t.Fatalf("TC-09-L4-07: Repair() failed: %v", err)
+		t.Fatalf("TC-09-L4-07: Repair failed: %v", err)
 	}
 
 	if _, err := os.Stat(repaired.UserDataDir); err != nil {
@@ -313,37 +313,37 @@ func TestL4_Profile_ExternalDelete_RepairRebuild(t *testing.T) {
 // TC-09-L4-09: 同时获取 3 个不同 Profile → UserDataDir 路径不同，互不干扰。
 func TestL4_MultiProfile_Isolated(t *testing.T) {
 	// TC-ID: TC-09-L4-09
-	tmpDir := t.TempDir()
+	tmpDir := t.TempDir
 	pm, err := NewProfileManagerWithBase(tmpDir)
 	if err != nil {
-		t.Fatalf("TC-09-L4-09: NewProfileManagerWithBase() failed: %v", err)
+		t.Fatalf("TC-09-L4-09: NewProfileManagerWithBase failed: %v", err)
 	}
 
-	profiles := make([]string, 3)
-	profileData := make([]*Profile, 3)
+	profiles := make(string, 3)
+	profileData := make(*Profile, 3)
 
 	var wg sync.WaitGroup
 	var mu sync.Mutex
-	var errs []error
+	var errs error
 
 	for i := 0; i < 3; i++ {
 		i := i
 		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		go func {
+			defer wg.Done
 			profileID := "l4-09-profile-" + itoa(i)
 			p, err := pm.GetOrCreate(profileID)
-			mu.Lock()
-			defer mu.Unlock()
+			mu.Lock
+			defer mu.Unlock
 			if err != nil {
 				errs = append(errs, err)
 				return
 			}
 			profiles[i] = p.UserDataDir
 			profileData[i] = p
-		}()
+		}
 	}
-	wg.Wait()
+	wg.Wait
 
 	if len(errs) > 0 {
 		t.Fatalf("TC-09-L4-09: concurrent GetOrCreate errors: %v", errs)
@@ -376,17 +376,17 @@ func TestL4_Takeover_AutoRelease_Timeout(t *testing.T) {
 	ctrl.SetTimeout(150 * time.Millisecond) // 短超时用于测试
 
 	releasedCh := make(chan struct{}, 1)
-	if err := ctrl.EnableTakeover(func() {
+	if err := ctrl.EnableTakeover(func {
 		select {
 		case releasedCh <- struct{}{}:
 		default:
 		}
 	}); err != nil {
-		t.Fatalf("TC-09-L4-10: EnableTakeover() failed: %v", err)
+		t.Fatalf("TC-09-L4-10: EnableTakeover failed: %v", err)
 	}
 
-	if ctrl.Mode() != TakeoverModeTakeover {
-		t.Fatalf("TC-09-L4-10: Mode should be TAKEOVER, got %q", ctrl.Mode())
+	if ctrl.Mode != TakeoverModeTakeover {
+		t.Fatalf("TC-09-L4-10: Mode should be TAKEOVER, got %q", ctrl.Mode)
 	}
 
 	// 等待超时自动释放（最多 1s）
@@ -394,11 +394,11 @@ func TestL4_Takeover_AutoRelease_Timeout(t *testing.T) {
 	case <-releasedCh:
 		// 验证模式已恢复
 		time.Sleep(10 * time.Millisecond) // 等待 autoRelease 完成
-		if ctrl.Mode() != TakeoverModeObserve {
-			t.Errorf("TC-09-L4-10: Mode should be OBSERVE after auto-release, got %q", ctrl.Mode())
+		if ctrl.Mode != TakeoverModeObserve {
+			t.Errorf("TC-09-L4-10: Mode should be OBSERVE after auto-release, got %q", ctrl.Mode)
 		}
-		if ctrl.IsTakeover() {
-			t.Error("TC-09-L4-10: IsTakeover() should be false after auto-release")
+		if ctrl.IsTakeover {
+			t.Error("TC-09-L4-10: IsTakeover should be false after auto-release")
 		}
 		t.Log("TC-09-L4-10 PASS: Takeover auto-released after timeout, Mode=OBSERVE")
 	case <-time.After(1 * time.Second):

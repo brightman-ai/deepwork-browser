@@ -1,25 +1,25 @@
-// Package browser — startup recovery: 启动期 Chrome profile 健康检查 [v2 Phase_v2_4]
+// Package browser — startup recovery: 启动期 Chrome profile 健康检查 [v2 ]
 //
 // 来源:
-//   - CAP-BS09-C4 §3.5 (启动期 Recovery 4 步协议)
-//   - BP-BS-09 §V2.D (Phase_v2_4 实施范围)
+// - (启动期 Recovery 4 步协议)
+// - ( 实施范围)
 //
 // 协议 (4 步, 在 startChromeLocked 启动 Chrome 之前执行):
-//  1. Singleton lock 残留检测: 解析 SingletonLock symlink 拿 PID;
-//     PID 已死 → 删除残留; PID 仍活 → 强杀 (orphan, 上次崩溃未清理)
-//  2. profile health check: stat user-data-dir/Cookies + 校验 SQLite header (前 16 字节)
-//  3. 损坏 → 整体重命名为 user-data-dir.broken/{timestamp}/ (隔离不污染下次)
-//     ProfileManager 会在下次自动重建 (空 profile_dir → Chrome 首次启动行为)
-//  4. 返回 nil (健康) 或 error (隔离/清理失败)
+// 1. Singleton lock 残留检测: 解析 SingletonLock symlink 拿 PID;
+// PID 已死 → 删除残留; PID 仍活 → 强杀 (orphan, 上次崩溃未清理)
+// 2. profile health check: stat user-data-dir/Cookies + 校验 SQLite header (前 16 字节)
+// 3. 损坏 → 整体重命名为 user-data-dir.broken/{timestamp}/ (隔离不污染下次)
+// ProfileManager 会在下次自动重建 (空 profile_dir → Chrome 首次启动行为)
+// 4. 返回 nil (健康) 或 error (隔离/清理失败)
 //
 // 不在范围:
-//   - .dw-pid 文件机制 — chromedp 不暴露 Chrome 进程 PID; 当前用 SingletonLock 反查代替
-//   - ProfileManager.Repair — 隔离后重建逻辑由 Pool 自然 lazy launch 接管
+// - .dw-pid 文件机制 — chromedp 不暴露 Chrome 进程 PID; 当前用 SingletonLock 反查代替
+// - ProfileManager.Repair — 隔离后重建逻辑由 Pool 自然 lazy launch 接管
 //
 // audit 事件 (log only, 与 GracefulShutdown 风格对齐):
-//   - "startup_recovery_lock_cleaned"  — Singleton 残留已删除
-//   - "startup_recovery_orphan_killed" — orphan Chrome 强杀
-//   - "startup_recovery_quarantined"   — profile 损坏隔离
+// - "startup_recovery_lock_cleaned" — Singleton 残留已删除
+// - "startup_recovery_orphan_killed" — orphan Chrome 强杀
+// - "startup_recovery_quarantined" — profile 损坏隔离
 package browser
 
 import (
@@ -37,7 +37,7 @@ import (
 
 // SQLite 文件 magic header (前 16 字节, 含 NUL 结尾).
 // Cookies / Local Storage 等核心 profile 数据库均以此开头.
-var sqliteMagicHeader = []byte("SQLite format 3\x00")
+var sqliteMagicHeader = byte("SQLite format 3\x00")
 
 // Chrome SingletonLock symlink target 格式: "{hostname}-{PID}".
 // 例: "MacBook-Pro-12345" → PID=12345.
@@ -46,43 +46,43 @@ var singletonLockTargetRE = regexp.MustCompile(`-(\d+)$`)
 const deepworkProfileOwnerFile = ".deepwork-browser-owner.json"
 
 type deepworkProfileOwner struct {
-	OwnerPID              int    `json:"owner_pid"`
-	ChromePID             int    `json:"chrome_pid"`
-	CDPPort               int    `json:"cdp_port,omitempty"`
-	IdentityKey           string `json:"identity_key,omitempty"`
-	BrowserSessionID      string `json:"browser_session_id,omitempty"`
-	SessionKind           string `json:"session_kind,omitempty"`
-	BrowserMuxHostID      string `json:"browser_mux_host_id,omitempty"`
-	BrowserMuxHostPID     int    `json:"browser_mux_host_pid,omitempty"`
-	RuntimeID             string `json:"runtime_id,omitempty"`
-	BrowserRunID          string `json:"browser_run_id,omitempty"`
-	ProfileID             string `json:"profile_id,omitempty"`
-	DisplayBackend        string `json:"display_backend,omitempty"`
-	DisplayID             uint32 `json:"display_id,omitempty"`
-	DisplayVerified       bool   `json:"display_verified,omitempty"`
-	ChromeWindowContained bool   `json:"chrome_window_contained,omitempty"`
-	CreatedAt             string `json:"created_at,omitempty"`
+	OwnerPID int `json:"owner_pid"`
+	ChromePID int `json:"chrome_pid"`
+	CDPPort int `json:"cdp_port,omitempty"`
+	IdentityKey string `json:"identity_key,omitempty"`
+	BrowserSessionID string `json:"browser_session_id,omitempty"`
+	SessionKind string `json:"session_kind,omitempty"`
+	BrowserMuxHostID string `json:"browser_mux_host_id,omitempty"`
+	BrowserMuxHostPID int `json:"browser_mux_host_pid,omitempty"`
+	RuntimeID string `json:"runtime_id,omitempty"`
+	BrowserRunID string `json:"browser_run_id,omitempty"`
+	ProfileID string `json:"profile_id,omitempty"`
+	DisplayBackend string `json:"display_backend,omitempty"`
+	DisplayID uint32 `json:"display_id,omitempty"`
+	DisplayVerified bool `json:"display_verified,omitempty"`
+	ChromeWindowContained bool `json:"chrome_window_contained,omitempty"`
+	CreatedAt string `json:"created_at,omitempty"`
 }
 
 type ProfileOwnerMetadata struct {
-	BrowserSessionID      string
-	SessionKind           BrowserSessionKind
-	BrowserMuxHostID      string
-	BrowserMuxHostPID     int
-	RuntimeID             string
-	BrowserRunID          string
-	ProfileID             string
-	DisplayBackend        string
-	DisplayID             uint32
-	DisplayVerified       bool
+	BrowserSessionID string
+	SessionKind BrowserSessionKind
+	BrowserMuxHostID string
+	BrowserMuxHostPID int
+	RuntimeID string
+	BrowserRunID string
+	ProfileID string
+	DisplayBackend string
+	DisplayID uint32
+	DisplayVerified bool
 	ChromeWindowContained bool
 }
 
 // RunStartupRecovery 在 Chrome 启动前对 profileDir 做 4 步健康检查 (CAP §3.5).
 //
 // 调用方:
-//   - BrowserPool.startChromeLocked (进程内 service 模式, IdentityKey 来自 Registry)
-//   - dw-browser open (CLI 短命模式, IdentityKey 用 "dw-cli-{sessionID}" 仅作 audit 标签)
+// - BrowserPool.startChromeLocked (进程内 service 模式, IdentityKey 来自 Registry)
+// - dw-browser open (CLI 短命模式, IdentityKey 用 "dw-cli-{sessionID}" 仅作 audit 标签)
 //
 // 返回 nil → profile 可直接启动 Chrome.
 // 返回 err → 上层决定是否致命 (隔离失败应 abort, 清理失败可继续).
@@ -131,7 +131,7 @@ func RecoverBrowserRuntimeState(dataDir string) error {
 			return nil
 		}
 		return fmt.Errorf("stat browser profile root: %w", err)
-	} else if !st.IsDir() {
+	} else if !st.IsDir {
 		return nil
 	}
 
@@ -142,7 +142,7 @@ func RecoverBrowserRuntimeState(dataDir string) error {
 		if walkErr != nil {
 			return walkErr
 		}
-		if entry.IsDir() || entry.Name() != deepworkProfileOwnerFile {
+		if entry.IsDir || entry.Name != deepworkProfileOwnerFile {
 			return nil
 		}
 		scanned++
@@ -151,7 +151,7 @@ func RecoverBrowserRuntimeState(dataDir string) error {
 		if err := cleanDeepworkProfileOwner(profileDir, identityKey); err != nil {
 			if isLiveProfileOwnerError(err) {
 				skippedLive++
-				log.Printf("[BROWSER-RECOVERY] AUDIT: startup_recovery_sweep_live_owner_skipped identity=%s profile_dir=%s err=%v",
+				log.Printf("[BROWSER-RECOVERY] AUDIT: startup_recovery_sweep_live_owner_skipped identity=%s profile_dir=%s err=%v"
 					identityKey, profileDir, err)
 				return nil
 			}
@@ -164,7 +164,7 @@ func RecoverBrowserRuntimeState(dataDir string) error {
 		return err
 	}
 	if scanned > 0 {
-		log.Printf("[BROWSER-RECOVERY] AUDIT: startup_recovery_sweep_done root=%s scanned=%d recovered=%d skipped_live=%d",
+		log.Printf("[BROWSER-RECOVERY] AUDIT: startup_recovery_sweep_done root=%s scanned=%d recovered=%d skipped_live=%d"
 			root, scanned, recovered, skippedLive)
 	}
 	return nil
@@ -190,7 +190,7 @@ func isLiveProfileOwnerError(err error) bool {
 	if err == nil {
 		return false
 	}
-	msg := err.Error()
+	msg := err.Error
 	return strings.Contains(msg, "profile_owned_by_live_browser_mux_host") ||
 		strings.Contains(msg, "profile_owned_by_live_deepwork")
 }
@@ -206,44 +206,44 @@ func cleanDeepworkProfileOwner(profileDir string, identityKey IdentityKey) error
 		return fmt.Errorf("read profile owner marker: %w", err)
 	}
 
-	chromeAlive := marker.ChromePID > 0 && marker.ChromePID != os.Getpid() && isPIDAlive(marker.ChromePID)
+	chromeAlive := marker.ChromePID > 0 && marker.ChromePID != os.Getpid && isPIDAlive(marker.ChromePID)
 	hostMarker := strings.TrimSpace(marker.BrowserMuxHostID) != "" || marker.BrowserMuxHostPID > 0
-	hostAlive := marker.BrowserMuxHostPID > 0 && marker.BrowserMuxHostPID != os.Getpid() && isPIDAlive(marker.BrowserMuxHostPID)
+	hostAlive := marker.BrowserMuxHostPID > 0 && marker.BrowserMuxHostPID != os.Getpid && isPIDAlive(marker.BrowserMuxHostPID)
 	if hostMarker && hostAlive && !chromeAlive {
-		log.Printf("[BROWSER-RECOVERY] AUDIT: startup_recovery_stale_browser_mux_host_killed identity=%s browser_mux_host_id=%s browser_mux_host_pid=%d chrome_pid=%d profile_dir=%s",
+		log.Printf("[BROWSER-RECOVERY] AUDIT: startup_recovery_stale_browser_mux_host_killed identity=%s browser_mux_host_id=%s browser_mux_host_pid=%d chrome_pid=%d profile_dir=%s"
 			identityKey, marker.BrowserMuxHostID, marker.BrowserMuxHostPID, marker.ChromePID, profileDir)
 		killAndWait(marker.BrowserMuxHostPID, ProfileOwnerMuxHostKillGrace)
-		hostAlive = marker.BrowserMuxHostPID > 0 && marker.BrowserMuxHostPID != os.Getpid() && isPIDAlive(marker.BrowserMuxHostPID)
+		hostAlive = marker.BrowserMuxHostPID > 0 && marker.BrowserMuxHostPID != os.Getpid && isPIDAlive(marker.BrowserMuxHostPID)
 	}
 	if hostMarker && hostAlive && chromeAlive {
-		return fmt.Errorf("profile_owned_by_live_browser_mux_host: profile=%s browser_mux_host_id=%s browser_mux_host_pid=%d chrome_pid=%d chrome_alive=%t",
+		return fmt.Errorf("profile_owned_by_live_browser_mux_host: profile=%s browser_mux_host_id=%s browser_mux_host_pid=%d chrome_pid=%d chrome_alive=%t"
 			profileDir, marker.BrowserMuxHostID, marker.BrowserMuxHostPID, marker.ChromePID, chromeAlive)
 	}
 
-	ownerAlive := marker.OwnerPID > 0 && marker.OwnerPID != os.Getpid() && isPIDAlive(marker.OwnerPID)
+	ownerAlive := marker.OwnerPID > 0 && marker.OwnerPID != os.Getpid && isPIDAlive(marker.OwnerPID)
 	if !hostMarker && ownerAlive && chromeAlive {
 		return fmt.Errorf("profile_owned_by_live_deepwork: profile=%s owner_pid=%d chrome_pid=%d", profileDir, marker.OwnerPID, marker.ChromePID)
 	}
 
 	if marker.OwnerPID > 0 && ownerAlive && !chromeAlive {
-		log.Printf("[BROWSER-RECOVERY] AUDIT: startup_recovery_legacy_owner_marker_cleaned identity=%s owner_pid=%d chrome_pid=%d profile_dir=%s",
+		log.Printf("[BROWSER-RECOVERY] AUDIT: startup_recovery_legacy_owner_marker_cleaned identity=%s owner_pid=%d chrome_pid=%d profile_dir=%s"
 			identityKey, marker.OwnerPID, marker.ChromePID, profileDir)
 	}
 
 	if chromeAlive {
-		log.Printf("[BROWSER-RECOVERY] AUDIT: startup_recovery_owner_orphan_killed identity=%s owner_pid=%d chrome_pid=%d",
+		log.Printf("[BROWSER-RECOVERY] AUDIT: startup_recovery_owner_orphan_killed identity=%s owner_pid=%d chrome_pid=%d"
 			identityKey, marker.OwnerPID, marker.ChromePID)
 		killAndWait(marker.ChromePID, ProfileOwnerChromeKillGrace)
 	}
 
 	for _, pid := range platformFindChromePIDsByProfileDir(profileDir) {
-		if pid <= 0 || pid == os.Getpid() || pid == marker.ChromePID {
+		if pid <= 0 || pid == os.Getpid || pid == marker.ChromePID {
 			continue
 		}
 		if !isPIDAlive(pid) {
 			continue
 		}
-		log.Printf("[BROWSER-RECOVERY] AUDIT: startup_recovery_profile_process_killed identity=%s pid=%d profile_dir=%s",
+		log.Printf("[BROWSER-RECOVERY] AUDIT: startup_recovery_profile_process_killed identity=%s pid=%d profile_dir=%s"
 			identityKey, pid, profileDir)
 		killAndWait(pid, ProfileOwnerChromeKillGrace)
 	}
@@ -265,28 +265,28 @@ func WriteProfileOwnerMarkerWithMetadata(profileDir string, identityKey Identity
 	if err := os.MkdirAll(profileDir, 0755); err != nil {
 		return err
 	}
-	ownerPID := os.Getpid()
+	ownerPID := os.Getpid
 	if meta.BrowserMuxHostPID > 0 {
 		ownerPID = meta.BrowserMuxHostPID
 	}
 	body, err := json.MarshalIndent(deepworkProfileOwner{
-		OwnerPID:              ownerPID,
-		ChromePID:             chromePID,
-		CDPPort:               cdpPort,
-		IdentityKey:           string(identityKey),
-		BrowserSessionID:      meta.BrowserSessionID,
-		SessionKind:           string(meta.SessionKind),
-		BrowserMuxHostID:      meta.BrowserMuxHostID,
-		BrowserMuxHostPID:     meta.BrowserMuxHostPID,
-		RuntimeID:             meta.RuntimeID,
-		BrowserRunID:          meta.BrowserRunID,
-		ProfileID:             meta.ProfileID,
-		DisplayBackend:        meta.DisplayBackend,
-		DisplayID:             meta.DisplayID,
-		DisplayVerified:       meta.DisplayVerified,
-		ChromeWindowContained: meta.ChromeWindowContained,
-		CreatedAt:             time.Now().UTC().Format(time.RFC3339Nano),
-	}, "", "  ")
+		OwnerPID: ownerPID
+		ChromePID: chromePID
+		CDPPort: cdpPort
+		IdentityKey: string(identityKey)
+		BrowserSessionID: meta.BrowserSessionID
+		SessionKind: string(meta.SessionKind)
+		BrowserMuxHostID: meta.BrowserMuxHostID
+		BrowserMuxHostPID: meta.BrowserMuxHostPID
+		RuntimeID: meta.RuntimeID
+		BrowserRunID: meta.BrowserRunID
+		ProfileID: meta.ProfileID
+		DisplayBackend: meta.DisplayBackend
+		DisplayID: meta.DisplayID
+		DisplayVerified: meta.DisplayVerified
+		ChromeWindowContained: meta.ChromeWindowContained
+		CreatedAt: time.Now.UTC.Format(time.RFC3339Nano)
+	}, "", " ")
 	if err != nil {
 		return err
 	}
@@ -306,8 +306,8 @@ func RemoveProfileOwnerMarker(profileDir string, identityKey IdentityKey) {
 
 func killAndWait(pid int, grace time.Duration) {
 	_ = killPIDGraceful(pid)
-	deadline := time.Now().Add(grace)
-	for time.Now().Before(deadline) {
+	deadline := time.Now.Add(grace)
+	for time.Now.Before(deadline) {
 		if !isPIDAlive(pid) {
 			return
 		}
@@ -321,15 +321,15 @@ func killAndWait(pid int, grace time.Duration) {
 // cleanSingletonLocks 处理 user-data-dir/Singleton* 残留.
 //
 // Chrome 在 user-data-dir 下创建 3 个 singleton 文件:
-//   - SingletonLock      (symlink → "hostname-PID", 用于跨进程互斥)
-//   - SingletonCookie    (类似)
-//   - SingletonSocket    (Unix socket)
+// - SingletonLock (symlink → "hostname-PID", 用于跨进程互斥)
+// - SingletonCookie (类似)
+// - SingletonSocket (Unix socket)
 //
 // 协议:
-//   - SingletonLock 可解析 PID:
-//     PID 已死 (kill -0 失败) → 直接删除残留 (audit: lock_cleaned)
-//     PID 仍活 → orphan Chrome (上次 Pool 强杀失败) → 强杀 + 删除 (audit: orphan_killed)
-//   - 其他 Singleton* → 直接删除 (无独立 PID 信息, 与 Lock 同进程绑定)
+// - SingletonLock 可解析 PID:
+// PID 已死 (kill -0 失败) → 直接删除残留 (audit: lock_cleaned)
+// PID 仍活 → orphan Chrome (上次 Pool 强杀失败) → 强杀 + 删除 (audit: orphan_killed)
+// - 其他 Singleton* → 直接删除 (无独立 PID 信息, 与 Lock 同进程绑定)
 func cleanSingletonLocks(profileDir string, identityKey IdentityKey) error {
 	lockPath := filepath.Join(profileDir, "SingletonLock")
 
@@ -389,10 +389,10 @@ func isPIDAlive(pid int) bool {
 // checkAndQuarantineProfile 校验 profileDir 健康度, 损坏 → 隔离.
 //
 // 健康判定 (任一不通过 → 损坏):
-//   - profileDir 存在但非目录 → 损坏 (异常状态)
-//   - Cookies 文件存在但 SQLite header 损坏 → 损坏
-//   - profileDir 不存在 / 完全空 → 健康 (首次启动语义, Chrome 自建)
-//   - Cookies 不存在但 profileDir 有其他文件 → 健康 (Chrome 首次未访问站点的正常状态)
+// - profileDir 存在但非目录 → 损坏 (异常状态)
+// - Cookies 文件存在但 SQLite header 损坏 → 损坏
+// - profileDir 不存在 / 完全空 → 健康 (首次启动语义, Chrome 自建)
+// - Cookies 不存在但 profileDir 有其他文件 → 健康 (Chrome 首次未访问站点的正常状态)
 //
 // 隔离动作: rename profileDir → {profileDir}.broken/{timestamp}/
 // 隔离后原 profileDir 不存在, Chrome 启动会自动重建 (相当于全新 profile, Human 需重新登录).
@@ -404,14 +404,14 @@ func checkAndQuarantineProfile(profileDir string, identityKey IdentityKey) error
 	if err != nil {
 		return fmt.Errorf("stat profile_dir: %w", err)
 	}
-	if !st.IsDir() {
+	if !st.IsDir {
 		return quarantineProfile(profileDir, identityKey, "profile_dir is not a directory")
 	}
 
 	// Cookies SQLite header 校验
 	cookiesPath := filepath.Join(profileDir, "Cookies")
-	if cookiesSt, statErr := os.Stat(cookiesPath); statErr == nil && !cookiesSt.IsDir() {
-		if cookiesSt.Size() == 0 {
+	if cookiesSt, statErr := os.Stat(cookiesPath); statErr == nil && !cookiesSt.IsDir {
+		if cookiesSt.Size == 0 {
 			// 空 Cookies 文件 = Chrome 启动中崩溃, 视为损坏
 			return quarantineProfile(profileDir, identityKey, "Cookies file is empty (likely crashed during init)")
 		}
@@ -421,9 +421,9 @@ func checkAndQuarantineProfile(profileDir string, identityKey IdentityKey) error
 			log.Printf("[BROWSER-RECOVERY] identity=%s cannot open Cookies for header check: %v", identityKey, openErr)
 			return nil
 		}
-		header := make([]byte, len(sqliteMagicHeader))
+		header := make(byte, len(sqliteMagicHeader))
 		n, readErr := f.Read(header)
-		_ = f.Close()
+		_ = f.Close
 		if readErr != nil || n != len(sqliteMagicHeader) {
 			return quarantineProfile(profileDir, identityKey, fmt.Sprintf("Cookies header read short (n=%d, err=%v)", n, readErr))
 		}
@@ -436,9 +436,9 @@ func checkAndQuarantineProfile(profileDir string, identityKey IdentityKey) error
 }
 
 func clearChromeCrashRestoreState(profileDir string, identityKey IdentityKey) {
-	for _, path := range []string{
-		filepath.Join(profileDir, "Local State"),
-		filepath.Join(profileDir, "Default", "Preferences"),
+	for _, path := range string{
+		filepath.Join(profileDir, "Local State")
+		filepath.Join(profileDir, "Default", "Preferences")
 	} {
 		changed, err := rewriteChromeCleanExitJSON(path)
 		if err != nil {
@@ -483,7 +483,7 @@ func rewriteChromeCleanExitJSON(path string) (bool, error) {
 	if !changed {
 		return false, nil
 	}
-	next, err := json.MarshalIndent(data, "", "  ")
+	next, err := json.MarshalIndent(data, "", " ")
 	if err != nil {
 		return false, err
 	}
@@ -494,8 +494,8 @@ func rewriteChromeCleanExitJSON(path string) (bool, error) {
 // quarantineProfile 将损坏的 profileDir 重命名到 {profileDir}.broken/{timestamp}/.
 //
 // 注:
-//   - .broken/ 目录不自动清理 (CAP §3.5 约束: Human 决定何时删除以避免误删可恢复数据)
-//   - rename 失败 → 致命错误 (Chrome 启动会撞同名 dir, 必须 abort)
+// - .broken/ 目录不自动清理 (CAP §3.5 约束: Human 决定何时删除以避免误删可恢复数据)
+// - rename 失败 → 致命错误 (Chrome 启动会撞同名 dir, 必须 abort)
 func quarantineProfile(profileDir string, identityKey IdentityKey, reason string) error {
 	parent := filepath.Dir(profileDir)
 	base := filepath.Base(profileDir)
@@ -503,7 +503,7 @@ func quarantineProfile(profileDir string, identityKey IdentityKey, reason string
 	if err := os.MkdirAll(brokenRoot, 0755); err != nil {
 		return fmt.Errorf("create broken root: %w", err)
 	}
-	target := filepath.Join(brokenRoot, time.Now().UTC().Format("20060102T150405Z"))
+	target := filepath.Join(brokenRoot, time.Now.UTC.Format("20060102T150405Z"))
 	if err := os.Rename(profileDir, target); err != nil {
 		return fmt.Errorf("quarantine rename %s → %s: %w", profileDir, target, err)
 	}

@@ -1,5 +1,5 @@
 // Package browser — Cookie 加解密共享工具函数。
-// [Ref: CAP-BS09-C4 §3.2b, TC-C4-07]
+//
 package browser
 
 import (
@@ -10,7 +10,7 @@ import (
 
 // aes128CBCDecrypt AES-128-CBC 解密（IV 为 16 个空格）。
 // 供各平台 platformDecryptV10 调用。
-func aes128CBCDecrypt(key, data []byte) (string, error) {
+func aes128CBCDecrypt(key, data byte) (string, error) {
 	if len(key) != 16 {
 		return "", fmt.Errorf("%w: invalid key length %d", ErrCookieDecryptFailed, len(key))
 	}
@@ -24,10 +24,10 @@ func aes128CBCDecrypt(key, data []byte) (string, error) {
 	}
 
 	// Chrome 使用固定 IV: 16 个空格 (0x20)
-	iv := []byte("                ")
+	iv := byte(" ")
 	mode := cipher.NewCBCDecrypter(block, iv)
 
-	plaintext := make([]byte, len(data))
+	plaintext := make(byte, len(data))
 	mode.CryptBlocks(plaintext, data)
 
 	plaintext = pkcs7Unpad(plaintext)
@@ -35,7 +35,7 @@ func aes128CBCDecrypt(key, data []byte) (string, error) {
 }
 
 // pkcs7Unpad 移除 PKCS7 padding。
-func pkcs7Unpad(data []byte) []byte {
+func pkcs7Unpad(data byte) byte {
 	if len(data) == 0 {
 		return data
 	}

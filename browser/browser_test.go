@@ -15,49 +15,49 @@ import (
 // § Phase 0: Z0 Gate 测试
 // ============================================================
 
-// TC-09-U-21: 无浏览器时返回 ErrBrowserNotFound。
+// : 无浏览器时返回 ErrBrowserNotFound。
 func TestFindChrome_NoBrowser_ReturnsErrBrowserNotFound(t *testing.T) {
-	// TC-ID: TC-09-U-21
+	// TC-ID: 
 	// 当 Chrome 已安装时跳过此测试（验证检测逻辑在无 Chrome 环境下的行为）
 	// 实际环境无浏览器时才执行断言
 	origLinux := linuxChromePaths
 	origMac := macOSChromePaths
 	origWin := windowsChromePaths
-	defer func() {
+	defer func {
 		linuxChromePaths = origLinux
 		macOSChromePaths = origMac
 		windowsChromePaths = origWin
-	}()
-	linuxChromePaths = []string{"/nonexistent/chrome/path123"}
-	macOSChromePaths = []string{"/nonexistent/chrome/path123"}
-	windowsChromePaths = []string{"/nonexistent/chrome/path123"}
+	}
+	linuxChromePaths = string{"/nonexistent/chrome/path123"}
+	macOSChromePaths = string{"/nonexistent/chrome/path123"}
+	windowsChromePaths = string{"/nonexistent/chrome/path123"}
 
 	// 同时需要 PATH 中没有 chrome（使用不存在名称验证）
 	// 由于无法 mock exec.LookPath，改为验证: 当 Chrome 已安装时，FindChrome 应成功
 	// 当无 Chrome 时（所有路径都不存在），应返回 ErrBrowserNotFound
-	launcher := NewChromeLauncher()
-	_, err := launcher.FindChrome()
+	launcher := NewChromeLauncher
+	_, err := launcher.FindChrome
 
 	// 根据实际情况：有 Chrome → err == nil；无 Chrome → ErrBrowserNotFound
 	if err != nil && err != ErrBrowserNotFound {
 		t.Errorf("when Chrome absent, expected ErrBrowserNotFound, got %v", err)
 	}
 	// 此测试主要验证: 返回 ErrBrowserNotFound（不返回其他类型错误）
-	t.Logf("TC-09-U-21: FindChrome() = err: %v (ErrBrowserNotFound on no-chrome systems)", err)
+	t.Logf(": FindChrome = err: %v (ErrBrowserNotFound on no-chrome systems)", err)
 }
 
-// TC-09-U-20: Linux Chrome 路径检测顺序验证。
+// : Linux Chrome 路径检测顺序验证。
 func TestFindChrome_LinuxDetectionOrder(t *testing.T) {
-	// TC-ID: TC-09-U-20
+	// TC-ID: 
 	if len(linuxChromePaths) < 4 {
 		t.Fatalf("expected at least 4 Linux Chrome paths, got %d", len(linuxChromePaths))
 	}
 
-	expected := []string{
-		"/usr/bin/google-chrome-stable",
-		"/usr/bin/google-chrome",
-		"/usr/bin/chromium-browser",
-		"/snap/bin/chromium",
+	expected := string{
+		"/usr/bin/google-chrome-stable"
+		"/usr/bin/google-chrome"
+		"/usr/bin/chromium-browser"
+		"/snap/bin/chromium"
 	}
 	for i, p := range expected {
 		if i >= len(linuxChromePaths) {
@@ -70,21 +70,21 @@ func TestFindChrome_LinuxDetectionOrder(t *testing.T) {
 	}
 }
 
-// TC-09-U-16: 编译独立性验证 — BrowserCore interface 存在且 8 个错误变量完整。
+// : 编译独立性验证 — BrowserCore interface 存在且 8 个错误变量完整。
 func TestCoreInterface_ErrorsComplete(t *testing.T) {
-	// TC-ID: TC-09-U-16
-	errors := []struct {
+	// TC-ID: 
+	errors := struct {
 		name string
-		err  error
+		err error
 	}{
-		{"ErrBrowserNotFound", ErrBrowserNotFound},
-		{"ErrBrowserCrashed", ErrBrowserCrashed},
-		{"ErrCDPDisconnected", ErrCDPDisconnected},
-		{"ErrActFailed", ErrActFailed},
-		{"ErrRefNotFound", ErrRefNotFound},
-		{"ErrTakeoverActive", ErrTakeoverActive},
-		{"ErrPasswordField", ErrPasswordField},
-		{"ErrSnapshotEmpty", ErrSnapshotEmpty},
+		{"ErrBrowserNotFound", ErrBrowserNotFound}
+		{"ErrBrowserCrashed", ErrBrowserCrashed}
+		{"ErrCDPDisconnected", ErrCDPDisconnected}
+		{"ErrActFailed", ErrActFailed}
+		{"ErrRefNotFound", ErrRefNotFound}
+		{"ErrTakeoverActive", ErrTakeoverActive}
+		{"ErrPasswordField", ErrPasswordField}
+		{"ErrSnapshotEmpty", ErrSnapshotEmpty}
 	}
 	for _, e := range errors {
 		if e.err == nil {
@@ -97,23 +97,23 @@ func TestCoreInterface_ErrorsComplete(t *testing.T) {
 // § Phase 1: C1 Chrome 生命周期 (L1 单元测试)
 // ============================================================
 
-// TC-09-U-22: Watch API 存在（ctx cancel 场景全验证需真实 Chrome）。
+// : Watch API 存在（ctx cancel 场景全验证需真实 Chrome）。
 func TestChromeSupervisor_WatchAPIExists(t *testing.T) {
-	// TC-ID: TC-09-U-22
-	sup := NewChromeSupervisor()
+	// TC-ID: 
+	sup := NewChromeSupervisor
 	if sup == nil {
-		t.Fatal("NewChromeSupervisor() returned nil")
+		t.Fatal("NewChromeSupervisor returned nil")
 	}
 	// 完整行为（ctx cancel → onCrash 不触发）需真实进程 [L2 集成测试]
-	t.Log("TC-09-U-22: Watch API exists — full verification requires real Chrome process (L2)")
+	t.Log(": Watch API exists — full verification requires real Chrome process (L2)")
 }
 
-// TC-09-U-23: 崩溃退避延迟模式验证 (1s/2s/4s)。
+// : 崩溃退避延迟模式验证 (1s/2s/4s)。
 func TestRestartWithBackoff_DelayPattern(t *testing.T) {
-	// TC-ID: TC-09-U-23
+	// TC-ID: 
 	for i := 0; i < 3; i++ {
 		delay := time.Duration(1<<uint(i)) * time.Second
-		expected := []time.Duration{1 * time.Second, 2 * time.Second, 4 * time.Second}
+		expected := time.Duration{1 * time.Second, 2 * time.Second, 4 * time.Second}
 		if delay != expected[i] {
 			t.Errorf("backoff attempt %d: got %v, want %v", i, delay, expected[i])
 		}
@@ -121,31 +121,31 @@ func TestRestartWithBackoff_DelayPattern(t *testing.T) {
 }
 
 func TestInferFingerprintPresetID(t *testing.T) {
-	tests := []struct {
+	tests := struct {
 		name string
 		opts browserOptions
 		want string
 	}{
 		{
-			name: "explicit preset wins",
-			opts: browserOptions{presetID: PresetIPhoneSafariUA},
-			want: PresetIPhoneSafariUA,
-		},
+			name: "explicit preset wins"
+			opts: browserOptions{presetID: PresetIPhoneSafariUA}
+			want: PresetIPhoneSafariUA
+		}
 		{
-			name: "iphone ua maps to safari ua simulation",
-			opts: browserOptions{userAgent: "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X)", hasUA: true},
-			want: PresetIPhoneSafariUA,
-		},
+			name: "iphone ua maps to safari ua simulation"
+			opts: browserOptions{userAgent: "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X)", hasUA: true}
+			want: PresetIPhoneSafariUA
+		}
 		{
-			name: "touch small viewport falls back to safari ua simulation",
-			opts: browserOptions{touch: true, hasViewport: true, viewportW: 393, viewportH: 852},
-			want: PresetIPhoneSafariUA,
-		},
+			name: "touch small viewport falls back to safari ua simulation"
+			opts: browserOptions{touch: true, hasViewport: true, viewportW: 393, viewportH: 852}
+			want: PresetIPhoneSafariUA
+		}
 	}
 
 	for _, tc := range tests {
 		if got := inferFingerprintPresetID(tc.opts); got != tc.want {
-			t.Fatalf("%s: inferFingerprintPresetID() = %q, want %q", tc.name, got, tc.want)
+			t.Fatalf("%s: inferFingerprintPresetID = %q, want %q", tc.name, got, tc.want)
 		}
 	}
 }
@@ -154,29 +154,29 @@ func TestInferFingerprintPresetID(t *testing.T) {
 // § Phase 2: C2 语义感知与操作 (L1 单元测试)
 // ============================================================
 
-// TC-09-U-05: 合法 action 语法解析正确（click/type/scroll）。
+// : 合法 action 语法解析正确（click/type/scroll）。
 func TestParseAction_ValidSyntax(t *testing.T) {
-	// TC-ID: TC-09-U-05
-	cases := []struct {
-		input   string
-		wantOp  string
+	// TC-ID: 
+	cases := struct {
+		input string
+		wantOp string
 		wantRef string
 		wantVal string
 	}{
-		{"click e3", "click", "e3", ""},
-		{"clickat #browser-liveview 92% 8%", "clickat", "#browser-liveview", ""},
-		{"clickat #browser-takeover-layer 0.5 0.5", "clickat", "#browser-takeover-layer", ""},
-		{"tap button:'接管'", "tap", "button:'接管'", ""},
-		{"tapat #browser-liveview 92% 8%", "tapat", "#browser-liveview", ""},
-		{"type e5 'hello'", "type", "e5", "hello"},
-		{"scroll down", "scroll", "down", ""},
-		{"scroll up", "scroll", "up", ""},
-		{"hover e7", "hover", "e7", ""},
-		{"select e4 'opt2'", "select", "e4", "opt2"},
-		{"type e1 'hello world'", "type", "e1", "hello world"},
-		{"fill #notes ''", "fill", "#notes", ""},
-		{"fill #notes '   '", "fill", "#notes", "   "},
-		{"select #preset ''", "select", "#preset", ""},
+		{"click e3", "click", "e3", ""}
+		{"clickat #browser-liveview 92% 8%", "clickat", "#browser-liveview", ""}
+		{"clickat #browser-takeover-layer 0.5 0.5", "clickat", "#browser-takeover-layer", ""}
+		{"tap button:'接管'", "tap", "button:'接管'", ""}
+		{"tapat #browser-liveview 92% 8%", "tapat", "#browser-liveview", ""}
+		{"type e5 'hello'", "type", "e5", "hello"}
+		{"scroll down", "scroll", "down", ""}
+		{"scroll up", "scroll", "up", ""}
+		{"hover e7", "hover", "e7", ""}
+		{"select e4 'opt2'", "select", "e4", "opt2"}
+		{"type e1 'hello world'", "type", "e1", "hello world"}
+		{"fill #notes ''", "fill", "#notes", ""}
+		{"fill #notes ' '", "fill", "#notes", " "}
+		{"select #preset ''", "select", "#preset", ""}
 	}
 
 	for _, tc := range cases {
@@ -203,19 +203,19 @@ func TestParseAction_ValidSyntax(t *testing.T) {
 	}
 }
 
-// TC-09-U-06: 非法语法返回 ErrActFailed，不 panic。
+// : 非法语法返回 ErrActFailed，不 panic。
 func TestParseAction_InvalidSyntax_ReturnsErrActFailed(t *testing.T) {
-	// TC-ID: TC-09-U-06
-	cases := []string{
-		"",
-		"unknown_op",
-		"click",                           // missing ref
-		"clickat #browser-liveview 92%",   // missing y
+	// TC-ID: 
+	cases := string{
+		""
+		"unknown_op"
+		"click", // missing ref
+		"clickat #browser-liveview 92%", // missing y
 		"clickat #browser-liveview 92 8%", // invalid x format
-		"tap",                             // missing ref
-		"tapat #browser-liveview 92%",     // missing y
-		"tapat #browser-liveview 92 8%",   // invalid x format
-		"type e1",                         // missing value
+		"tap", // missing ref
+		"tapat #browser-liveview 92%", // missing y
+		"tapat #browser-liveview 92 8%", // invalid x format
+		"type e1", // missing value
 	}
 
 	for _, input := range cases {
@@ -225,7 +225,7 @@ func TestParseAction_InvalidSyntax_ReturnsErrActFailed(t *testing.T) {
 				t.Errorf("ParseAction(%q) should return error, got parsed=%+v", input, parsed)
 				return
 			}
-			if !strings.Contains(err.Error(), ErrActFailed.Error()) {
+			if !strings.Contains(err.Error, ErrActFailed.Error) {
 				t.Errorf("error should wrap ErrActFailed, got: %v", err)
 			}
 		})
@@ -233,19 +233,19 @@ func TestParseAction_InvalidSyntax_ReturnsErrActFailed(t *testing.T) {
 }
 
 func TestParseNormalizedCoordinate(t *testing.T) {
-	cases := []struct {
-		input   string
-		want    float64
+	cases := struct {
+		input string
+		want float64
 		wantErr bool
 	}{
-		{"0", 0, false},
-		{"0.5", 0.5, false},
-		{"1", 1, false},
-		{"92%", 0.92, false},
-		{"100%", 1, false},
-		{"120%", 0, true},
-		{"1.2", 0, true},
-		{"92", 0, true},
+		{"0", 0, false}
+		{"0.5", 0.5, false}
+		{"1", 1, false}
+		{"92%", 0.92, false}
+		{"100%", 1, false}
+		{"120%", 0, true}
+		{"1.2", 0, true}
+		{"92", 0, true}
 	}
 
 	for _, tc := range cases {
@@ -267,9 +267,9 @@ func TestParseNormalizedCoordinate(t *testing.T) {
 	}
 }
 
-// TC-09-U-01: SPA 页面过滤，button/input/link 保留，generic 排除。
+// : SPA 页面过滤，button/input/link 保留，generic 排除。
 func TestExtractInteractableRefs_FilterRoles(t *testing.T) {
-	// TC-ID: TC-09-U-01
+	// TC-ID: 
 	if !interactableRoles["button"] {
 		t.Error("interactableRoles should contain 'button'")
 	}
@@ -287,13 +287,13 @@ func TestExtractInteractableRefs_FilterRoles(t *testing.T) {
 	}
 }
 
-// TC-09-U-02: compact 输出 TokenEst < 2000；格式含 "[{N}. role 'name']"（TH-0405-p7c 新格式）。
+// : compact 输出 TokenEst < 2000；格式含 "[{N}. role 'name']"（ 新格式）。
 func TestBuildCompactText_Format(t *testing.T) {
-	// TC-ID: TC-09-U-02
-	refs := []ElementRef{
-		{Ref: "e1", Role: "button", Name: "Submit", Interactable: true},
-		{Ref: "e2", Role: "textbox", Placeholder: "Search...", Interactable: true},
-		{Ref: "e3", Role: "link", Name: "Home", Interactable: true},
+	// TC-ID: 
+	refs := ElementRef{
+		{Ref: "e1", Role: "button", Name: "Submit", Interactable: true}
+		{Ref: "e2", Role: "textbox", Placeholder: "Search...", Interactable: true}
+		{Ref: "e3", Role: "link", Name: "Home", Interactable: true}
 	}
 
 	text := buildCompactText(refs)
@@ -315,24 +315,24 @@ func TestBuildCompactText_Format(t *testing.T) {
 	}
 }
 
-// TC-09-U-03: Refs < 3 fallback 阈值验证。
+// : Refs < 3 fallback 阈值验证。
 func TestSnapshotEngine_FallbackThreshold(t *testing.T) {
-	// TC-ID: TC-09-U-03
+	// TC-ID: 
 	// 验证 SnapshotType 字符串常量
-	types := []string{"a11y", "dom_fallback", "screenshot_fallback", "progressive_loading"}
+	types := string{"a11y", "dom_fallback", "screenshot_fallback", "progressive_loading"}
 	for _, st := range types {
 		if st == "" {
 			t.Errorf("SnapshotType %q should not be empty", st)
 		}
 	}
 	// 阈值: len(refs) < 3 → fallback（代码层面确认）
-	t.Log("TC-09-U-03: fallback threshold = 3, SnapshotType constants validated")
+	t.Log(": fallback threshold = 3, SnapshotType constants validated")
 }
 
 // TC-09-U-03P: 主浏览器场景下，页面加载/水合期间的空 A11y 不应变成硬失败。
 func TestSnapshotEngine_ProgressiveLoadingSnapshot(t *testing.T) {
-	e := newSnapshotEngine()
-	snap := e.progressiveFallback(context.Background(), "https://example.test/", "Example", "a11y_unavailable:dom_empty", nil)
+	e := newSnapshotEngine
+	snap := e.progressiveFallback(context.Background, "https://example.test/", "Example", "a11y_unavailable:dom_empty", nil)
 	if snap == nil {
 		t.Fatal("progressive snapshot should not be nil")
 	}
@@ -356,13 +356,13 @@ func TestSnapshotEngine_ProgressiveLoadingSnapshot(t *testing.T) {
 	}
 }
 
-// TC-09-U-26: Refs 按 DFS 顺序分配，compact text 按序号 1. 2. 3. 排列（TH-0405-p7c 新格式）。
+// : Refs 按 DFS 顺序分配，compact text 按序号 1. 2. 3. 排列（ 新格式）。
 func TestRefNaming_DFSOrder(t *testing.T) {
-	// TC-ID: TC-09-U-26
-	refs := []ElementRef{
-		{Ref: "e1", Role: "button", Name: "First"},
-		{Ref: "e2", Role: "link", Name: "Second"},
-		{Ref: "e3", Role: "textbox", Name: "Third"},
+	// TC-ID: 
+	refs := ElementRef{
+		{Ref: "e1", Role: "button", Name: "First"}
+		{Ref: "e2", Role: "link", Name: "Second"}
+		{Ref: "e3", Role: "textbox", Name: "Third"}
 	}
 	text := buildCompactText(refs)
 
@@ -378,19 +378,19 @@ func TestRefNaming_DFSOrder(t *testing.T) {
 	}
 }
 
-// TC-09-U-27: Ref 过期（RefTable 为空）返回 false（不 panic）。
+// : Ref 过期（RefTable 为空）返回 false（不 panic）。
 func TestSnapshotEngine_RefNotFound(t *testing.T) {
-	// TC-ID: TC-09-U-27
-	engine := newSnapshotEngine()
+	// TC-ID: 
+	engine := newSnapshotEngine
 	_, found := engine.LookupRef("e99")
 	if found {
 		t.Error("LookupRef on empty refTable should return false")
 	}
 }
 
-// TC-09-U-28: observe=false 语义 — ParseAction 正常解析（不依赖 observe 参数）。
+// : observe=false 语义 — ParseAction 正常解析（不依赖 observe 参数）。
 func TestParseAction_ObserveFalse_StillParses(t *testing.T) {
-	// TC-ID: TC-09-U-28
+	// TC-ID: 
 	parsed, err := ParseAction("click e3")
 	if err != nil {
 		t.Fatalf("ParseAction should not error: %v", err)
@@ -400,25 +400,25 @@ func TestParseAction_ObserveFalse_StillParses(t *testing.T) {
 	}
 }
 
-// TC-09-U-SEL: ParseSelector 语义选择器解析（TH-0405-p7c 修改 3）。
+// TC-09-U-SEL: ParseSelector 语义选择器解析（ 修改 3）。
 func TestParseSelector_SemanticSelectors(t *testing.T) {
 	// TC-ID: TC-09-U-SEL
-	cases := []struct {
-		input      string
-		wantSType  SelectorType
+	cases := struct {
+		input string
+		wantSType SelectorType
 		wantTestID string
-		wantRole   string
-		wantName   string
-		wantErr    bool
+		wantRole string
+		wantName string
+		wantErr bool
 	}{
-		{"#ws-create-btn", SelectorTestID, "ws-create-btn", "", "", false},
-		{"#my-btn", SelectorTestID, "my-btn", "", "", false},
-		{"button:'New Workspace'", SelectorRoleName, "", "button", "New Workspace", false},
-		{"link:'Home'", SelectorRoleName, "", "link", "Home", false},
-		{`textbox:"用户名"`, SelectorRoleName, "", "textbox", "用户名", false},
-		{"link", SelectorRole, "", "link", "", false},
-		{"button", SelectorRole, "", "button", "", false},
-		{"e3", 0, "", "", "", true},   // 旧格式，应被拒绝
+		{"#ws-create-btn", SelectorTestID, "ws-create-btn", "", "", false}
+		{"#my-btn", SelectorTestID, "my-btn", "", "", false}
+		{"button:'New Workspace'", SelectorRoleName, "", "button", "New Workspace", false}
+		{"link:'Home'", SelectorRoleName, "", "link", "Home", false}
+		{`textbox:"用户名"`, SelectorRoleName, "", "textbox", "用户名", false}
+		{"link", SelectorRole, "", "link", "", false}
+		{"button", SelectorRole, "", "button", "", false}
+		{"e3", 0, "", "", "", true}, // 旧格式，应被拒绝
 		{"e123", 0, "", "", "", true}, // 旧格式，应被拒绝
 	}
 
@@ -454,30 +454,30 @@ func TestParseSelector_SemanticSelectors(t *testing.T) {
 // § Phase 3: C3 监督层 (L1 单元测试)
 // ============================================================
 
-// TC-09-U-10: 新建 TakeoverController，Mode()=="observe"。
+// : 新建 TakeoverController，Mode=="observe"。
 func TestTakeoverController_InitialMode_Observe(t *testing.T) {
-	// TC-ID: TC-09-U-10
+	// TC-ID: 
 	ctrl := newTakeoverController(nil)
-	if ctrl.Mode() != TakeoverModeObserve {
-		t.Errorf("initial mode should be OBSERVE, got %q", ctrl.Mode())
+	if ctrl.Mode != TakeoverModeObserve {
+		t.Errorf("initial mode should be OBSERVE, got %q", ctrl.Mode)
 	}
 }
 
-// TC-09-U-11: EnableTakeover 后 Mode()=="takeover"，IsTakeover()==true。
+// : EnableTakeover 后 Mode=="takeover"，IsTakeover==true。
 func TestTakeoverController_EnableTakeover_BlocksAct(t *testing.T) {
-	// TC-ID: TC-09-U-11
+	// TC-ID: 
 	ctrl := newTakeoverController(nil)
 
 	if err := ctrl.EnableTakeover(nil); err != nil {
-		t.Fatalf("EnableTakeover() failed: %v", err)
+		t.Fatalf("EnableTakeover failed: %v", err)
 	}
 
-	if ctrl.Mode() != TakeoverModeTakeover {
-		t.Errorf("mode should be TAKEOVER after EnableTakeover(), got %q", ctrl.Mode())
+	if ctrl.Mode != TakeoverModeTakeover {
+		t.Errorf("mode should be TAKEOVER after EnableTakeover, got %q", ctrl.Mode)
 	}
 
-	if !ctrl.IsTakeover() {
-		t.Error("IsTakeover() should return true after EnableTakeover()")
+	if !ctrl.IsTakeover {
+		t.Error("IsTakeover should return true after EnableTakeover")
 	}
 }
 
@@ -486,26 +486,26 @@ func TestTakeoverController_DisableTakeover(t *testing.T) {
 	ctrl := newTakeoverController(nil)
 
 	_ = ctrl.EnableTakeover(nil)
-	if !ctrl.IsTakeover() {
+	if !ctrl.IsTakeover {
 		t.Fatal("should be in takeover after Enable")
 	}
 
-	if err := ctrl.DisableTakeover(); err != nil {
-		t.Fatalf("DisableTakeover() failed: %v", err)
+	if err := ctrl.DisableTakeover; err != nil {
+		t.Fatalf("DisableTakeover failed: %v", err)
 	}
 
-	if ctrl.IsTakeover() {
-		t.Error("IsTakeover() should be false after DisableTakeover()")
+	if ctrl.IsTakeover {
+		t.Error("IsTakeover should be false after DisableTakeover")
 	}
-	if ctrl.Mode() != TakeoverModeObserve {
-		t.Errorf("Mode should be OBSERVE after Disable, got %q", ctrl.Mode())
+	if ctrl.Mode != TakeoverModeObserve {
+		t.Errorf("Mode should be OBSERVE after Disable, got %q", ctrl.Mode)
 	}
 }
 
-// TC-09-U-09: MockLiveViewEngine — 5 帧推送 ACK 次数=5，subscriber channel 满时保新丢旧不阻塞。
+// : MockLiveViewEngine — 5 帧推送 ACK 次数=5，subscriber channel 满时保新丢旧不阻塞。
 func TestMockLiveViewEngine_AckCount(t *testing.T) {
-	// TC-ID: TC-09-U-09
-	hub := NewFrameBroadcastHub()
+	// TC-ID: 
+	hub := NewFrameBroadcastHub
 	m := newMockLiveViewEngine(hub)
 
 	// 订阅独立 channel（1-slot）；保存 ch 用于代次匹配 Unsubscribe
@@ -515,14 +515,14 @@ func TestMockLiveViewEngine_AckCount(t *testing.T) {
 	// 推送 5 帧（1-slot channel，保新丢旧，最终只保留最新 1 帧）
 	for i := 0; i < 5; i++ {
 		m.PushFrame(&ScreencastFrame{
-			Data:      []byte("frame"),
-			Timestamp: time.Now().UnixMilli(),
+			Data: byte("frame")
+			Timestamp: time.Now.UnixMilli
 		})
 	}
 
 	// ACK 次数应为 5（每帧立即 ACK，不管 channel 是否满）
-	if m.AckCount() != 5 {
-		t.Errorf("ACK count should be 5, got %d", m.AckCount())
+	if m.AckCount != 5 {
+		t.Errorf("ACK count should be 5, got %d", m.AckCount)
 	}
 
 	// 验证 subscriber channel 不超过容量 1（保新丢旧）
@@ -545,18 +545,18 @@ done:
 // § Phase 4: C4 Profile 管理 (L1 单元测试)
 // ============================================================
 
-// TC-09-U-12: GetOrCreate 首次创建目录。
+// : GetOrCreate 首次创建目录。
 func TestProfileManager_GetOrCreate_NewProfile(t *testing.T) {
-	// TC-ID: TC-09-U-12
-	tmpDir := t.TempDir()
+	// TC-ID: 
+	tmpDir := t.TempDir
 	pm, err := NewProfileManagerWithBase(tmpDir)
 	if err != nil {
-		t.Fatalf("NewProfileManagerWithBase() failed: %v", err)
+		t.Fatalf("NewProfileManagerWithBase failed: %v", err)
 	}
 
 	profile, err := pm.GetOrCreate("test-001")
 	if err != nil {
-		t.Fatalf("GetOrCreate() failed: %v", err)
+		t.Fatalf("GetOrCreate failed: %v", err)
 	}
 	if profile.ID != "test-001" {
 		t.Errorf("profile.ID = %q, want %q", profile.ID, "test-001")
@@ -569,42 +569,42 @@ func TestProfileManager_GetOrCreate_NewProfile(t *testing.T) {
 	}
 }
 
-// TC-09-U-13: GetOrCreate 已有 Profile 不重建，CreatedAt 不变。
+// : GetOrCreate 已有 Profile 不重建，CreatedAt 不变。
 func TestProfileManager_GetOrCreate_Idempotent(t *testing.T) {
-	// TC-ID: TC-09-U-13
-	tmpDir := t.TempDir()
+	// TC-ID: 
+	tmpDir := t.TempDir
 	pm, _ := NewProfileManagerWithBase(tmpDir)
 
 	p1, err := pm.GetOrCreate("test-001")
 	if err != nil {
-		t.Fatalf("first GetOrCreate() failed: %v", err)
+		t.Fatalf("first GetOrCreate failed: %v", err)
 	}
 	firstCreated := p1.CreatedAt
 
 	p2, err := pm.GetOrCreate("test-001")
 	if err != nil {
-		t.Fatalf("second GetOrCreate() failed: %v", err)
+		t.Fatalf("second GetOrCreate failed: %v", err)
 	}
 
 	if !p2.CreatedAt.Equal(firstCreated) {
-		t.Error("second GetOrCreate() should not change CreatedAt")
+		t.Error("second GetOrCreate should not change CreatedAt")
 	}
 }
 
-// TC-09-U-14: Repair → 旧目录重命名为 .bak.*，新目录创建。
+// : Repair → 旧目录重命名为 .bak.*，新目录创建。
 func TestProfileManager_Repair(t *testing.T) {
-	// TC-ID: TC-09-U-14
-	tmpDir := t.TempDir()
+	// TC-ID: 
+	tmpDir := t.TempDir
 	pm, _ := NewProfileManagerWithBase(tmpDir)
 
 	_, err := pm.GetOrCreate("repair-test")
 	if err != nil {
-		t.Fatalf("GetOrCreate() failed: %v", err)
+		t.Fatalf("GetOrCreate failed: %v", err)
 	}
 
 	repaired, err := pm.Repair("repair-test")
 	if err != nil {
-		t.Fatalf("Repair() failed: %v", err)
+		t.Fatalf("Repair failed: %v", err)
 	}
 
 	if _, err := os.Stat(repaired.UserDataDir); err != nil {
@@ -615,19 +615,19 @@ func TestProfileManager_Repair(t *testing.T) {
 	entries, _ := os.ReadDir(tmpDir)
 	hasBak := false
 	for _, e := range entries {
-		if strings.HasPrefix(e.Name(), "repair-test.bak.") {
+		if strings.HasPrefix(e.Name, "repair-test.bak.") {
 			hasBak = true
 			break
 		}
 	}
 	if !hasBak {
-		t.Log("Note: .bak.* backup dir should exist after Repair()")
+		t.Log("Note: .bak.* backup dir should exist after Repair")
 	}
 }
 
-// TC-09-U-15: stealthScript 包含 navigator.webdriver + chrome.runtime。
+// : stealthScript 包含 navigator.webdriver + chrome.runtime。
 func TestProfileManager_StealthScript_Contents(t *testing.T) {
-	// TC-ID: TC-09-U-15
+	// TC-ID: 
 	if !strings.Contains(stealthScript, "navigator.webdriver") {
 		t.Error("stealthScript should contain 'navigator.webdriver'")
 	}
@@ -640,12 +640,12 @@ func TestProfileManager_StealthScript_Contents(t *testing.T) {
 // § Phase 5: C5 dw-browser CLI (L1 单元测试)
 // ============================================================
 
-// TC-09-U-17: L1_assert exists 匹配成功 → pass。
+// : L1_assert exists 匹配成功 → pass。
 func TestCLIAssert_L1LogicPass(t *testing.T) {
-	// TC-ID: TC-09-U-17
-	refs := []ElementRef{
-		{Ref: "e1", Role: "button", Name: "Submit"},
-		{Ref: "e2", Role: "link", Name: "Home Page"},
+	// TC-ID: 
+	refs := ElementRef{
+		{Ref: "e1", Role: "button", Name: "Submit"}
+		{Ref: "e2", Role: "link", Name: "Home Page"}
 	}
 
 	if !l1AssertExists(refs, "button", "Submit") {
@@ -656,33 +656,33 @@ func TestCLIAssert_L1LogicPass(t *testing.T) {
 	}
 }
 
-// TC-09-U-18: L1 测试后零 JS 注入（设计层面确认 [IR-06]）。
+// : L1 测试后零 JS 注入（设计层面确认 ）。
 func TestCLI_L1_ZeroJSInjection(t *testing.T) {
-	// TC-ID: TC-09-U-18
+	// TC-ID: 
 	// l1AssertExists 使用纯 Go 逻辑操作 Snapshot.Refs，不调用 CDP Runtime.evaluate
-	t.Log("TC-09-U-18: L1 assert uses pure A11y snapshot — zero JS injection [IR-06] confirmed by code design")
+	t.Log(": L1 assert uses pure A11y snapshot — zero JS injection confirmed by code design")
 }
 
-// TC-09-U-19: L4 probe collect 后全局变量清除。
+// : L4 probe collect 后全局变量清除。
 func TestCLI_L4Probe_GlobalVarClear(t *testing.T) {
-	// TC-ID: TC-09-U-19
-	script := l4ProbeCleanupScript()
+	// TC-ID: 
+	script := l4ProbeCleanupScript
 	if !strings.Contains(script, "__dw_observer") {
 		t.Error("L4 cleanup script should reference __dw_observer")
 	}
 	if !strings.Contains(script, "disconnect") {
-		t.Error("L4 cleanup script should call disconnect()")
+		t.Error("L4 cleanup script should call disconnect")
 	}
 	if !strings.Contains(script, "delete") {
 		t.Error("L4 cleanup script should delete global vars")
 	}
 }
 
-// TC-09-U-24: L1 断言失败消息格式含 [L1 FAIL]。
+// : L1 断言失败消息格式含 [L1 FAIL]。
 func TestCLIExitCode_L1Fail(t *testing.T) {
-	// TC-ID: TC-09-U-24
-	refs := []ElementRef{
-		{Ref: "e1", Role: "button", Name: "Submit"},
+	// TC-ID: 
+	refs := ElementRef{
+		{Ref: "e1", Role: "button", Name: "Submit"}
 	}
 
 	if l1AssertExists(refs, "button", "NonExistent") {
@@ -695,10 +695,10 @@ func TestCLIExitCode_L1Fail(t *testing.T) {
 	}
 }
 
-// TC-09-U-25: Chrome 未找到错误信息含 'browser'。
+// : Chrome 未找到错误信息含 'browser'。
 func TestCLIExitCode_ChromeNotFound(t *testing.T) {
-	// TC-ID: TC-09-U-25
-	errStr := ErrBrowserNotFound.Error()
+	// TC-ID: 
+	errStr := ErrBrowserNotFound.Error
 	if !strings.Contains(errStr, "browser") {
 		t.Errorf("ErrBrowserNotFound should contain 'browser', got: %q", errStr)
 	}
@@ -706,40 +706,40 @@ func TestCLIExitCode_ChromeNotFound(t *testing.T) {
 
 func TestBuildDetachedChromeArgs_NonHeadlessKeepsNativeSurface(t *testing.T) {
 	args := BuildDetachedChromeArgs(DetachedChromeLaunchOptions{
-		DebugPort:  0,
-		ProfileDir: t.TempDir(),
-		Width:      1512,
-		Height:     982,
-		PresetID:   "macos-chrome",
-		Mode:       BrowserModeHuman,
+		DebugPort: 0
+		ProfileDir: t.TempDir
+		Width: 1512
+		Height: 982
+		PresetID: "macos-chrome"
+		Mode: BrowserModeHuman
 	})
 	joined := strings.Join(args, " ")
 
-	commonWant := []string{
-		"--remote-debugging-address=127.0.0.1",
-		"--no-first-run",
-		"--no-default-browser-check",
-		"--disable-session-crashed-bubble",
-		"--hide-crash-restore-bubble",
-		"--force-color-profile=srgb",
+	commonWant := string{
+		"--remote-debugging-address=127.0.0.1"
+		"--no-first-run"
+		"--no-default-browser-check"
+		"--disable-session-crashed-bubble"
+		"--hide-crash-restore-bubble"
+		"--force-color-profile=srgb"
 	}
 	for _, want := range commonWant {
 		if !strings.Contains(joined, want) {
-			t.Fatalf("BuildDetachedChromeArgs() should include %q, got: %s", want, joined)
+			t.Fatalf("BuildDetachedChromeArgs should include %q, got: %s", want, joined)
 		}
 	}
-	for _, forbid := range []string{
-		"--headless=new",
-		"--disable-blink-features=AutomationControlled",
-		"--disable-background-networking",
-		"--disable-background-timer-throttling",
-		"--disable-backgrounding-occluded-windows",
-		"--disable-renderer-backgrounding",
-		"--disable-gpu",
-		"--password-store=basic",
-		"--use-mock-keychain",
-		"--user-agent=",
-		"--lang=",
+	for _, forbid := range string{
+		"--headless=new"
+		"--disable-blink-features=AutomationControlled"
+		"--disable-background-networking"
+		"--disable-background-timer-throttling"
+		"--disable-backgrounding-occluded-windows"
+		"--disable-renderer-backgrounding"
+		"--disable-gpu"
+		"--password-store=basic"
+		"--use-mock-keychain"
+		"--user-agent="
+		"--lang="
 	} {
 		if strings.Contains(joined, forbid) {
 			t.Fatalf("non-headless mode should preserve native browser surface and not include %q, got: %s", forbid, joined)
@@ -752,7 +752,7 @@ func TestBuildDetachedChromeArgs_NonHeadlessKeepsNativeSurface(t *testing.T) {
 			t.Fatalf("linux visible mode should include --use-gl=egl, got: %s", joined)
 		}
 	case "darwin":
-		for _, want := range []string{"--use-angle=metal", "--start-fullscreen"} {
+		for _, want := range string{"--use-angle=metal", "--start-fullscreen"} {
 			if !strings.Contains(joined, want) {
 				t.Fatalf("darwin visible mode should include %q, got: %s", want, joined)
 			}
@@ -761,7 +761,7 @@ func TestBuildDetachedChromeArgs_NonHeadlessKeepsNativeSurface(t *testing.T) {
 			t.Fatalf("darwin visible mode must NOT include --window-position=-32000, got: %s", joined)
 		}
 	case "windows":
-		for _, want := range []string{"--use-angle=d3d11"} {
+		for _, want := range string{"--use-angle=d3d11"} {
 			if !strings.Contains(joined, want) {
 				t.Fatalf("windows visible mode should include %q, got: %s", want, joined)
 			}
@@ -774,31 +774,31 @@ func TestBuildDetachedChromeArgs_NonHeadlessKeepsNativeSurface(t *testing.T) {
 
 func TestBuildDetachedChromeArgs_HeadedModePreservesWebGLPath(t *testing.T) {
 	args := BuildDetachedChromeArgs(DetachedChromeLaunchOptions{
-		DebugPort:  25137,
-		ProfileDir: t.TempDir(),
-		Width:      1512,
-		Height:     982,
-		PresetID:   "macos-chrome",
-		Mode:       ModeHeaded,
+		DebugPort: 25137
+		ProfileDir: t.TempDir
+		Width: 1512
+		Height: 982
+		PresetID: "macos-chrome"
+		Mode: ModeHeaded
 	})
 	joined := strings.Join(args, " ")
 
-	for _, forbid := range []string{
-		"--headless=new",
-		"--disable-gpu",
-		"--disable-software-rasterizer",
-		"--disable-blink-features=AutomationControlled",
-		"--start-fullscreen",
-		"--user-agent=",
+	for _, forbid := range string{
+		"--headless=new"
+		"--disable-gpu"
+		"--disable-software-rasterizer"
+		"--disable-blink-features=AutomationControlled"
+		"--start-fullscreen"
+		"--user-agent="
 	} {
 		if strings.Contains(joined, forbid) {
 			t.Fatalf("headed mode must be a real headed GPU path; found forbidden %q in %s", forbid, joined)
 		}
 	}
-	for _, want := range []string{
-		"--disable-background-timer-throttling",
-		"--disable-backgrounding-occluded-windows",
-		"--disable-renderer-backgrounding",
+	for _, want := range string{
+		"--disable-background-timer-throttling"
+		"--disable-backgrounding-occluded-windows"
+		"--disable-renderer-backgrounding"
 	} {
 		if !strings.Contains(joined, want) {
 			t.Fatalf("headed mode should include anti-background throttling flag %q, got: %s", want, joined)
@@ -818,13 +818,13 @@ func TestBuildDetachedChromeArgs_HeadedModePreservesWebGLPath(t *testing.T) {
 
 func TestBuildDetachedChromeArgs_HeadlessModeDoesNotDisableGPU(t *testing.T) {
 	args := BuildDetachedChromeArgs(DetachedChromeLaunchOptions{
-		DebugPort:  0,
-		ProfileDir: t.TempDir(),
-		PresetID:   "macos-chrome",
-		Mode:       ModeHeadless,
+		DebugPort: 0
+		ProfileDir: t.TempDir
+		PresetID: "macos-chrome"
+		Mode: ModeHeadless
 	})
 	joined := strings.Join(args, " ")
-	for _, want := range []string{"--headless=new", "--disable-blink-features=AutomationControlled", "--user-agent="} {
+	for _, want := range string{"--headless=new", "--disable-blink-features=AutomationControlled", "--user-agent="} {
 		if !strings.Contains(joined, want) {
 			t.Fatalf("headless mode should include %q, got: %s", want, joined)
 		}
@@ -835,17 +835,17 @@ func TestBuildDetachedChromeArgs_HeadlessModeDoesNotDisableGPU(t *testing.T) {
 }
 
 func TestShouldUseSyntheticViewport_ModeAware(t *testing.T) {
-	cases := []struct {
-		name   string
-		mode   BrowserMode
+	cases := struct {
+		name string
+		mode BrowserMode
 		mobile bool
-		touch  bool
-		want   bool
+		touch bool
+		want bool
 	}{
-		{name: "headless uses synthetic viewport", mode: ModeHeadless, want: true},
-		{name: "headed desktop preserves native window", mode: ModeHeaded, want: false},
-		{name: "visible desktop preserves native window", mode: ModeVisible, want: false},
-		{name: "headed mobile is explicit emulation", mode: ModeHeaded, mobile: true, touch: true, want: true},
+		{name: "headless uses synthetic viewport", mode: ModeHeadless, want: true}
+		{name: "headed desktop preserves native window", mode: ModeHeaded, want: false}
+		{name: "visible desktop preserves native window", mode: ModeVisible, want: false}
+		{name: "headed mobile is explicit emulation", mode: ModeHeaded, mobile: true, touch: true, want: true}
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -857,17 +857,17 @@ func TestShouldUseSyntheticViewport_ModeAware(t *testing.T) {
 }
 
 func TestExecAllocatorOptionsFromArgs_CountsFlags(t *testing.T) {
-	args := []string{
-		"--no-first-run",
-		"--no-default-browser-check",
-		"--user-agent=test-agent",
-		"--window-size=1280,720",
-		"--disable-sync",
-		"about:blank",
+	args := string{
+		"--no-first-run"
+		"--no-default-browser-check"
+		"--user-agent=test-agent"
+		"--window-size=1280,720"
+		"--disable-sync"
+		"about:blank"
 	}
 	opts := ExecAllocatorOptionsFromArgs("/tmp/chrome", args)
 	if len(opts) != 6 {
-		t.Fatalf("ExecAllocatorOptionsFromArgs() should return exec path + 5 options, got %d", len(opts))
+		t.Fatalf("ExecAllocatorOptionsFromArgs should return exec path + 5 options, got %d", len(opts))
 	}
 }
 
@@ -876,7 +876,7 @@ func TestExecAllocatorOptionsFromArgs_CountsFlags(t *testing.T) {
 // ============================================================
 
 // l1AssertExists 验证 Refs 中是否存在匹配 role + name_contains 的元素。
-func l1AssertExists(refs []ElementRef, role, nameContains string) bool {
+func l1AssertExists(refs ElementRef, role, nameContains string) bool {
 	for _, ref := range refs {
 		if ref.Role == role && strings.Contains(ref.Name, nameContains) {
 			return true
@@ -893,13 +893,13 @@ func formatL1Result(pass bool, role, name string) string {
 	return "[L1 FAIL] " + role + " '" + name + "' not found"
 }
 
-// l4ProbeCleanupScript 返回 L4 probe 清理脚本（验证包含清理逻辑）[IR-06]。
-func l4ProbeCleanupScript() string {
+// l4ProbeCleanupScript 返回 L4 probe 清理脚本（验证包含清理逻辑）。
+func l4ProbeCleanupScript string {
 	return `
 if (window.__dw_observer) {
-    window.__dw_observer.disconnect();
-    delete window.__dw_observer;
-    delete window.__dw_perf_entries;
+ window.__dw_observer.disconnect;
+ delete window.__dw_observer;
+ delete window.__dw_perf_entries;
 }
 `
 }
@@ -910,9 +910,9 @@ if (window.__dw_observer) {
 
 // TestTargetTracker_SetOnCDPSwitch_RegisteredAndInvoked 验证:
 //
-//  1. SetOnCDPSwitch 正确注册回调（不触发 panic）
-//  2. HandleTargetCreated 在 shouldSwitch=true 时调用 onCDPSwitch（通过内部调用链验证）
-//  3. HandleTargetDestroyed 回退时调用 onCDPSwitch
+// 1. SetOnCDPSwitch 正确注册回调（不触发 panic）
+// 2. HandleTargetCreated 在 shouldSwitch=true 时调用 onCDPSwitch（通过内部调用链验证）
+// 3. HandleTargetDestroyed 回退时调用 onCDPSwitch
 //
 // 不启动 Chrome，仅验证回调注册和触发路径（回调是否被调用）。
 // 根因: TargetTracker.SwitchTarget 切换 Screencast 但未同步更新 InputGateway.cdpCtx，
@@ -927,9 +927,9 @@ func TestTargetTracker_SetOnCDPSwitch_RegisteredAndInvoked(t *testing.T) {
 	})
 
 	// 验证回调被注册（通过字段访问）
-	tracker.mu.RLock()
+	tracker.mu.RLock
 	hasCDPSwitch := tracker.onCDPSwitch != nil
-	tracker.mu.RUnlock()
+	tracker.mu.RUnlock
 
 	if !hasCDPSwitch {
 		t.Fatal("SetOnCDPSwitch: callback should be registered after SetOnCDPSwitch call")
@@ -937,9 +937,9 @@ func TestTargetTracker_SetOnCDPSwitch_RegisteredAndInvoked(t *testing.T) {
 
 	// 验证 SetOnSwitch 不干扰 onCDPSwitch
 	tracker.SetOnSwitch(func(url, title string, targetCount int) {})
-	tracker.mu.RLock()
+	tracker.mu.RLock
 	stillHasCDPSwitch := tracker.onCDPSwitch != nil
-	tracker.mu.RUnlock()
+	tracker.mu.RUnlock
 
 	if !stillHasCDPSwitch {
 		t.Fatal("SetOnSwitch must not clear the onCDPSwitch callback")
@@ -949,7 +949,7 @@ func TestTargetTracker_SetOnCDPSwitch_RegisteredAndInvoked(t *testing.T) {
 }
 
 func TestTargetTracker_ForegroundGuard_BlocksActivation(t *testing.T) {
-	tracker := NewTargetTracker(context.Background())
+	tracker := NewTargetTracker(context.Background)
 
 	called := 0
 	tracker.SetForegroundGuard(func(target.ID, string) error {
@@ -964,7 +964,7 @@ func TestTargetTracker_ForegroundGuard_BlocksActivation(t *testing.T) {
 	if called != 1 {
 		t.Fatalf("foreground guard called %d times, want 1", called)
 	}
-	if !strings.Contains(err.Error(), "foreground guard failed") {
+	if !strings.Contains(err.Error, "foreground guard failed") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
@@ -974,9 +974,9 @@ func TestTargetTracker_ForegroundGuard_BlocksActivation(t *testing.T) {
 func TestTargetTracker_HandleTargetDestroyed_NoCDPSwitch_WhenNotActive(t *testing.T) {
 	tracker := NewTargetTracker(nil)
 	tracker.targets = map[target.ID]*trackedTarget{
-		"t1": {ID: "t1", URL: "http://example.com", Ctx: nil, Cancel: nil},
+		"t1": {ID: "t1", URL: "http://example.com", Ctx: nil, Cancel: nil}
 	}
-	tracker.order = []target.ID{"t1"}
+	tracker.order = target.ID{"t1"}
 	tracker.activeID = "" // 未识别活跃 Target，t1 不是活跃 Target
 
 	cdpSwitchCalled := false
@@ -1003,22 +1003,22 @@ func TestTargetTracker_HandleTargetDestroyed_NoCDPSwitch_WhenNotActive(t *testin
 // 修复: 标记 pendingSwitch=true，等 HandleTargetInfoChanged 提供真实 URL 后切换。
 func TestTargetTracker_PendingSwitch_MarkedOnEmptyURL(t *testing.T) {
 	// Use a real context — HandleTargetCreated calls chromedp.NewContext which requires non-nil parent
-	tracker := NewTargetTracker(context.Background())
+	tracker := NewTargetTracker(context.Background)
 	seedTrackerPrimary(t, tracker, "original-tab", "https://source.example/", "Source")
 
 	// Simulate: Baidu opens a blank tab (window.open pattern)
 	info := &target.Info{
-		TargetID: "new-blank-tab",
-		Type:     "page",
-		URL:      "", // empty URL — the key case
-		OpenerID: "original-tab",
+		TargetID: "new-blank-tab"
+		Type: "page"
+		URL: "", // empty URL — the key case
+		OpenerID: "original-tab"
 	}
 	tracker.HandleTargetCreated(info)
 
-	tracker.mu.RLock()
+	tracker.mu.RLock
 	isPending := tracker.pendingSwitch["new-blank-tab"]
 	isActive := tracker.activeID == "new-blank-tab"
-	tracker.mu.RUnlock()
+	tracker.mu.RUnlock
 
 	if !isPending {
 		t.Fatal("HandleTargetCreated: empty-URL+opener target must be marked pendingSwitch")
@@ -1033,16 +1033,16 @@ func TestTargetTracker_PendingSwitch_MarkedOnEmptyURL(t *testing.T) {
 func TestTargetTracker_PendingSwitch_ClearedOnDestroy(t *testing.T) {
 	tracker := NewTargetTracker(nil)
 	tracker.targets = map[target.ID]*trackedTarget{
-		"blank-tab": {ID: "blank-tab", URL: "", Ctx: nil, Cancel: nil},
+		"blank-tab": {ID: "blank-tab", URL: "", Ctx: nil, Cancel: nil}
 	}
-	tracker.order = []target.ID{"blank-tab"}
+	tracker.order = target.ID{"blank-tab"}
 	tracker.pendingSwitch["blank-tab"] = true
 
 	tracker.HandleTargetDestroyed("blank-tab")
 
-	tracker.mu.RLock()
+	tracker.mu.RLock
 	stillPending := tracker.pendingSwitch["blank-tab"]
-	tracker.mu.RUnlock()
+	tracker.mu.RUnlock
 
 	if stillPending {
 		t.Fatal("HandleTargetDestroyed: must clear pendingSwitch for destroyed target")
@@ -1054,19 +1054,19 @@ func TestTargetTracker_EnsureTargetRegistered_NoEventFallback(t *testing.T) {
 
 	tracked, err := tracker.ensureTargetRegistered("created-by-cdp", "about:blank")
 	if err != nil {
-		t.Fatalf("ensureTargetRegistered() error = %v", err)
+		t.Fatalf("ensureTargetRegistered error = %v", err)
 	}
 	if tracked == nil {
-		t.Fatal("ensureTargetRegistered() must return a tracked target")
+		t.Fatal("ensureTargetRegistered must return a tracked target")
 	}
 
-	tracker.mu.RLock()
-	defer tracker.mu.RUnlock()
+	tracker.mu.RLock
+	defer tracker.mu.RUnlock
 	if tracker.targets["created-by-cdp"] == nil {
-		t.Fatal("ensureTargetRegistered() must register target even when TargetCreated event is missed")
+		t.Fatal("ensureTargetRegistered must register target even when TargetCreated event is missed")
 	}
 	if len(tracker.order) != 1 || tracker.order[0] != "created-by-cdp" {
-		t.Fatalf("ensureTargetRegistered() order = %#v, want created-by-cdp", tracker.order)
+		t.Fatalf("ensureTargetRegistered order = %#v, want created-by-cdp", tracker.order)
 	}
 }
 
@@ -1074,17 +1074,17 @@ func TestTargetTracker_RegisterTargetRegistersPrimaryAsNonClosable(t *testing.T)
 	tracker := NewTargetTracker(nil)
 	tracker.primaryID = "root-target"
 
-	tracker.mu.Lock()
+	tracker.mu.Lock
 	tracked, created := tracker.registerTargetLocked(&target.Info{
-		TargetID: "root-target",
-		Type:     "page",
-		URL:      "https://chatgpt.com/",
-		Title:    "ChatGPT",
+		TargetID: "root-target"
+		Type: "page"
+		URL: "https://chatgpt.com/"
+		Title: "ChatGPT"
 	})
-	tracker.mu.Unlock()
+	tracker.mu.Unlock
 
 	if tracked == nil || !created {
-		t.Fatal("registerTargetLocked() must register the primary target")
+		t.Fatal("registerTargetLocked must register the primary target")
 	}
 	if tracked.URL != "https://chatgpt.com/" || tracked.Title != "ChatGPT" {
 		t.Fatalf("primary metadata = (%q, %q), want ChatGPT URL/title", tracked.URL, tracked.Title)
@@ -1098,23 +1098,23 @@ func TestTargetTracker_RegisterTargetRegistersPrimaryAsNonClosable(t *testing.T)
 }
 
 func TestTargetTracker_UpdateTabInfoDoesNotPolluteActiveTarget(t *testing.T) {
-	tracker := NewTargetTracker(context.Background())
+	tracker := NewTargetTracker(context.Background)
 	seedTrackerPrimary(t, tracker, "root-target", "https://root.example/", "Root")
-	tracker.mu.Lock()
+	tracker.mu.Lock
 	tracker.registerTargetLocked(&target.Info{
-		TargetID: "active-tab",
-		Type:     "page",
-		URL:      "https://active.example/",
-		Title:    "Active",
+		TargetID: "active-tab"
+		Type: "page"
+		URL: "https://active.example/"
+		Title: "Active"
 	})
 	tracker.activeID = "active-tab"
-	tracker.mu.Unlock()
+	tracker.mu.Unlock
 
 	if !tracker.UpdateTabInfo("root-target", "https://done.example/", "Done") {
 		t.Fatal("UpdateTabInfo(root-target) = false, want true")
 	}
 
-	tabs := tracker.ListTargets()
+	tabs := tracker.ListTargets
 	var root, active *TabInfo
 	for i := range tabs {
 		switch tabs[i].ID {
@@ -1139,15 +1139,15 @@ func TestTargetTracker_UpdateTabInfoDoesNotPolluteActiveTarget(t *testing.T) {
 }
 
 func TestTargetTracker_UpdateTabInfoDoesNotCreateMissingTarget(t *testing.T) {
-	tracker := NewTargetTracker(context.Background())
+	tracker := NewTargetTracker(context.Background)
 	seedTrackerPrimary(t, tracker, "root-target", "https://root.example/", "Root")
 
 	if tracker.UpdateTabInfo("closed-tab", "https://done.example/", "Done") {
 		t.Fatal("UpdateTabInfo(closed-tab) = true, want false")
 	}
-	for _, tab := range tracker.ListTargets() {
+	for _, tab := range tracker.ListTargets {
 		if tab.ID == "closed-tab" {
-			t.Fatalf("stale completion resurrected closed target: %+v", tracker.ListTargets())
+			t.Fatalf("stale completion resurrected closed target: %+v", tracker.ListTargets)
 		}
 	}
 }
@@ -1158,7 +1158,7 @@ func TestTargetTracker_UpdateTabInfoDoesNotCreateMissingTarget(t *testing.T) {
 
 func TestTargetTracker_SwitchToPrimaryTarget_NoOpWhenAlreadyActive(t *testing.T) {
 	cdpSwitchCount := 0
-	tracker := NewTargetTracker(context.Background())
+	tracker := NewTargetTracker(context.Background)
 	seedTrackerPrimary(t, tracker, "root-target", "https://root.example/", "Root")
 	tracker.onCDPSwitch = func(ctx context.Context) { cdpSwitchCount++ }
 	if err := tracker.SwitchToTarget("root-target"); err != nil {
@@ -1170,14 +1170,14 @@ func TestTargetTracker_SwitchToPrimaryTarget_NoOpWhenAlreadyActive(t *testing.T)
 }
 
 func TestTargetTracker_SwitchToPrimaryTarget_ResetsCDPContext(t *testing.T) {
-	browserCtx := context.Background()
+	browserCtx := context.Background
 	var receivedCtx context.Context
 	tracker := NewTargetTracker(browserCtx)
 	seedTrackerPrimary(t, tracker, "root-target", "https://root.example/", "Root")
 	tracker.onCDPSwitch = func(ctx context.Context) { receivedCtx = ctx }
 
 	// 模拟切到 secondary tab
-	tracker.targets["secondary"] = &trackedTarget{ID: "secondary", URL: "https://example.com", Ctx: context.Background(), Cancel: func() {}, Closable: true}
+	tracker.targets["secondary"] = &trackedTarget{ID: "secondary", URL: "https://example.com", Ctx: context.Background, Cancel: func {}, Closable: true}
 	tracker.addTargetOrderLocked("secondary", false)
 	tracker.activeID = "secondary"
 
@@ -1192,19 +1192,19 @@ func TestTargetTracker_SwitchToPrimaryTarget_ResetsCDPContext(t *testing.T) {
 		t.Fatal("SwitchToTarget: onCDPSwitch must receive primary browserCtx")
 	}
 
-	tracker.mu.RLock()
+	tracker.mu.RLock
 	activeID := tracker.activeID
-	tracker.mu.RUnlock()
+	tracker.mu.RUnlock
 	if activeID != "root-target" {
 		t.Fatalf("SwitchToTarget: activeID must be root-target, got %q", activeID)
 	}
 }
 
 func TestTargetTracker_SwitchToPrimaryTarget_TargetCountIncludesPrimary(t *testing.T) {
-	browserCtx := context.Background()
+	browserCtx := context.Background
 	tracker := NewTargetTracker(browserCtx)
 	seedTrackerPrimary(t, tracker, "root-target", "https://root.example/", "Root")
-	tracker.targets["secondary"] = &trackedTarget{ID: "secondary", URL: "https://example.com", Ctx: context.Background(), Cancel: func() {}, Closable: true}
+	tracker.targets["secondary"] = &trackedTarget{ID: "secondary", URL: "https://example.com", Ctx: context.Background, Cancel: func {}, Closable: true}
 	tracker.addTargetOrderLocked("secondary", false)
 	tracker.activeID = "secondary"
 
@@ -1248,10 +1248,10 @@ func TestTargetTracker_SwitchToTarget_NoCDPBrowserStillSwitchesState(t *testing.
 	})
 
 	if err := tracker.SwitchToTarget("popup"); err != nil {
-		t.Fatalf("SwitchToTarget() error = %v", err)
+		t.Fatalf("SwitchToTarget error = %v", err)
 	}
-	if tracker.ActiveTargetID() != "popup" {
-		t.Fatalf("ActiveTargetID() = %s, want popup", tracker.ActiveTargetID())
+	if tracker.ActiveTargetID != "popup" {
+		t.Fatalf("ActiveTargetID = %s, want popup", tracker.ActiveTargetID)
 	}
 	if switched != 1 {
 		t.Fatalf("onCDPSwitch count = %d, want 1", switched)
@@ -1267,54 +1267,54 @@ func TestTargetTracker_SwitchToTarget_NoCDPBrowserStillSwitchesState(t *testing.
 // - 有 activeID 但 target 已删除 → 回退 browserCtx
 // - 有 activeID 但 tracked ctx 已取消 → 回退 browserCtx
 func TestTargetTracker_GetActiveCDPContext(t *testing.T) {
-	browserCtx := context.Background()
+	browserCtx := context.Background
 	tracker := NewTargetTracker(browserCtx)
 
 	// Case 1: 无 activeID → 返回 browserCtx
-	got := tracker.GetActiveCDPContext()
+	got := tracker.GetActiveCDPContext
 	if got != browserCtx {
 		t.Fatalf("case1: expected browserCtx, got different context")
 	}
 
 	// Case 2: 设置 activeID + tracked target → 返回 tracked.Ctx
-	targetCtx := context.WithValue(context.Background(), struct{ k string }{"key"}, "bilibili")
-	tracker.mu.Lock()
+	targetCtx := context.WithValue(context.Background, struct{ k string }{"key"}, "bilibili")
+	tracker.mu.Lock
 	tracker.targets[target.ID("bilibili-tab")] = &trackedTarget{
-		ID:  target.ID("bilibili-tab"),
-		URL: "https://www.bilibili.com",
-		Ctx: targetCtx,
+		ID: target.ID("bilibili-tab")
+		URL: "https://www.bilibili.com"
+		Ctx: targetCtx
 	}
 	tracker.activeID = target.ID("bilibili-tab")
-	tracker.mu.Unlock()
+	tracker.mu.Unlock
 
-	got = tracker.GetActiveCDPContext()
+	got = tracker.GetActiveCDPContext
 	if got != targetCtx {
 		t.Fatalf("case2: expected targetCtx for active bilibili-tab, got different context")
 	}
 
 	// Case 3: activeID 存在但 target 已从 map 中删除 → 回退 browserCtx
-	tracker.mu.Lock()
+	tracker.mu.Lock
 	delete(tracker.targets, target.ID("bilibili-tab"))
-	tracker.mu.Unlock()
+	tracker.mu.Unlock
 
-	got = tracker.GetActiveCDPContext()
+	got = tracker.GetActiveCDPContext
 	if got != browserCtx {
 		t.Fatalf("case3: expected browserCtx fallback when active target deleted, got different context")
 	}
 
 	// Case 4: activeID 存在但 tracked ctx 已取消 → 回退 browserCtx
-	canceledCtx, cancel := context.WithCancel(context.Background())
-	cancel()
-	tracker.mu.Lock()
+	canceledCtx, cancel := context.WithCancel(context.Background)
+	cancel
+	tracker.mu.Lock
 	tracker.targets[target.ID("closed-tab")] = &trackedTarget{
-		ID:  target.ID("closed-tab"),
-		URL: "https://closed.example.com",
-		Ctx: canceledCtx,
+		ID: target.ID("closed-tab")
+		URL: "https://closed.example.com"
+		Ctx: canceledCtx
 	}
 	tracker.activeID = target.ID("closed-tab")
-	tracker.mu.Unlock()
+	tracker.mu.Unlock
 
-	got = tracker.GetActiveCDPContext()
+	got = tracker.GetActiveCDPContext
 	if got != browserCtx {
 		t.Fatalf("case4: expected browserCtx fallback when active target ctx canceled, got different context")
 	}

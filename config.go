@@ -2,19 +2,19 @@ package dwbrowser
 
 // Config holds configuration for the browser server.
 type Config struct {
-	Addr     string
+	Addr string
 	Headless bool
 	PoolSize int
-	DataDir  string
+	DataDir string
 }
 
 // DefaultConfig returns a Config with sensible defaults.
-func DefaultConfig() Config {
+func DefaultConfig Config {
 	return Config{
-		Addr:     ":8033",
-		Headless: true,
-		PoolSize: 5,
-		DataDir:  "",
+		Addr: ":8033"
+		Headless: true
+		PoolSize: 5
+		DataDir: ""
 	}
 }
 

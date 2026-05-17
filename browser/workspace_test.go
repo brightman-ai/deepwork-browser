@@ -1,14 +1,14 @@
 // Package browser — Workspace cross-platform contract tests.
 //
-// Contract invariants (DDC-I-11, DDC-I-12, DDC-I-21, refined TH-0419):
-//   - NewWorkspace() must not panic on any supported platform
-//   - EnsureSpace() must return (id, nil) or (0, err) — never panic
-//   - LaunchChromeInSpace() with invalid spec returns error without spawning
-//   - Close() must be safe to call multiple times
+// Contract invariants (, , refined ):
+// - NewWorkspace must not panic on any supported platform
+// - EnsureSpace must return (id, nil) or (0, err) — never panic
+// - LaunchChromeInSpace with invalid spec returns error without spawning
+// - Close must be safe to call multiple times
 //
 // Real Chrome launch verification is in integration tests (need Chrome binary).
 //
-// [cross-platform bug class: DDC-I-12]
+// [cross-platform bug class: ]
 package browser
 
 import (
@@ -19,19 +19,19 @@ import (
 // TestWorkspaceNewDoesNotPanic verifies constructor is safe on all platforms.
 func TestWorkspaceNewDoesNotPanic(t *testing.T) {
 	t.Logf("platform: %s/%s", runtime.GOOS, runtime.GOARCH)
-	ws := NewWorkspace()
+	ws := NewWorkspace
 	if ws == nil {
-		t.Fatal("NewWorkspace() returned nil")
+		t.Fatal("NewWorkspace returned nil")
 	}
 }
 
 // TestWorkspaceCloseIdempotent verifies double-Close does not panic.
 func TestWorkspaceCloseIdempotent(t *testing.T) {
-	ws := NewWorkspace()
-	if err := ws.Close(); err != nil {
+	ws := NewWorkspace
+	if err := ws.Close; err != nil {
 		t.Logf("first Close: %v (acceptable)", err)
 	}
-	if err := ws.Close(); err != nil {
+	if err := ws.Close; err != nil {
 		t.Logf("second Close: %v (acceptable)", err)
 	}
 }
@@ -42,11 +42,11 @@ func TestWorkspaceCloseIdempotent(t *testing.T) {
 // On Linux, returns (0, nil) — Xvfb provides isolation.
 // On Windows, returns (0, nil) — stub.
 func TestWorkspaceEnsureSpaceDoesNotPanic(t *testing.T) {
-	ws := NewWorkspace()
-	defer ws.Close()
+	ws := NewWorkspace
+	defer ws.Close
 
-	id, err := ws.EnsureSpace()
-	t.Logf("EnsureSpace() -> id=%d, err=%v [OS=%s]", id, err, runtime.GOOS)
+	id, err := ws.EnsureSpace
+	t.Logf("EnsureSpace -> id=%d, err=%v [OS=%s]", id, err, runtime.GOOS)
 
 	switch runtime.GOOS {
 	case "darwin":
@@ -70,20 +70,20 @@ func TestWorkspaceEnsureSpaceDoesNotPanic(t *testing.T) {
 // TestWorkspaceLaunchChromeInSpaceRejectsInvalidSpec verifies the contract
 // guard: empty ChromePath → error, no process spawned.
 func TestWorkspaceLaunchChromeInSpaceRejectsInvalidSpec(t *testing.T) {
-	ws := NewWorkspace()
-	defer ws.Close()
+	ws := NewWorkspace
+	defer ws.Close
 
 	if runtime.GOOS == "darwin" {
 		// EnsureSpace must succeed before LaunchChromeInSpace can run on darwin.
-		if _, err := ws.EnsureSpace(); err != nil {
+		if _, err := ws.EnsureSpace; err != nil {
 			t.Skipf("darwin EnsureSpace failed (need ≥2 Spaces): %v", err)
 		}
 	}
 
 	// Empty ChromePath → rejected before any fork.
 	_, err := ws.LaunchChromeInSpace(ChromeLaunchSpec{
-		ChromePath: "",
-		DebugPort:  9999,
+		ChromePath: ""
+		DebugPort: 9999
 	})
 	if err == nil {
 		t.Fatal("LaunchChromeInSpace with empty ChromePath should error")
@@ -92,8 +92,8 @@ func TestWorkspaceLaunchChromeInSpaceRejectsInvalidSpec(t *testing.T) {
 
 	// Invalid debug port → rejected before any fork.
 	_, err = ws.LaunchChromeInSpace(ChromeLaunchSpec{
-		ChromePath: "/usr/bin/false",
-		DebugPort:  0,
+		ChromePath: "/usr/bin/false"
+		DebugPort: 0
 	})
 	if err == nil {
 		t.Fatal("LaunchChromeInSpace with DebugPort=0 should error")
@@ -102,17 +102,17 @@ func TestWorkspaceLaunchChromeInSpaceRejectsInvalidSpec(t *testing.T) {
 }
 
 // TestWorkspaceLinuxDoesNotTouchXvfb verifies Linux workspace is truly a no-op.
-// [Iron Rule: Linux display_manager.go::ensureDisplayLinux() must not be modified]
+// [Iron Rule: Linux display_manager.go::ensureDisplayLinux must not be modified]
 func TestWorkspaceLinuxDoesNotTouchXvfb(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("Linux-only test")
 	}
-	ws := NewWorkspace()
-	id, err := ws.EnsureSpace()
+	ws := NewWorkspace
+	id, err := ws.EnsureSpace
 	if err != nil {
-		t.Fatalf("Linux Workspace.EnsureSpace() returned error: %v", err)
+		t.Fatalf("Linux Workspace.EnsureSpace returned error: %v", err)
 	}
 	if id != 0 {
-		t.Fatalf("Linux Workspace.EnsureSpace() returned id=%d, want 0 (Xvfb handles isolation)", id)
+		t.Fatalf("Linux Workspace.EnsureSpace returned id=%d, want 0 (Xvfb handles isolation)", id)
 	}
 }

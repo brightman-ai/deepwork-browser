@@ -10,7 +10,7 @@ import (
 )
 
 // ============================================================
-// § TakeoverController [Ref: CAP-BS09-C3, T5-B6]
+// § TakeoverController
 // ============================================================
 
 // TakeoverMode 是接管模式枚举。
@@ -26,59 +26,59 @@ const (
 // DefaultTakeoverTimeout 是默认接管超时时间（5分钟）[TC-09-L4-10]。
 const DefaultTakeoverTimeout = 5 * time.Minute
 
-// takeoverController 实现双模式状态机 [TC-09-U-10, TC-09-U-11]。
+// takeoverController 实现双模式状态机 。
 type takeoverController struct {
-	mu         sync.RWMutex
-	mode       TakeoverMode
-	timeout    time.Duration
-	timer      *time.Timer
-	onRelease  func()             // 超时自动释放回调
-	cdpCtx     context.Context    // CDP 操作 context
+	mu sync.RWMutex
+	mode TakeoverMode
+	timeout time.Duration
+	timer *time.Timer
+	onRelease func // 超时自动释放回调
+	cdpCtx context.Context // CDP 操作 context
 }
 
-// newTakeoverController 创建 TakeoverController，初始状态为 OBSERVE [TC-09-U-10]。
+// newTakeoverController 创建 TakeoverController，初始状态为 OBSERVE 。
 func newTakeoverController(cdpCtx context.Context) *takeoverController {
 	return &takeoverController{
-		mode:    TakeoverModeObserve,
-		timeout: DefaultTakeoverTimeout,
-		cdpCtx:  cdpCtx,
+		mode: TakeoverModeObserve
+		timeout: DefaultTakeoverTimeout
+		cdpCtx: cdpCtx
 	}
 }
 
-// Mode 返回当前接管模式 [TC-09-U-10]。
-func (c *takeoverController) Mode() TakeoverMode {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
+// Mode 返回当前接管模式 。
+func (c *takeoverController) Mode TakeoverMode {
+	c.mu.RLock
+	defer c.mu.RUnlock
 	return c.mode
 }
 
-// EnableTakeover 切换到 TAKEOVER 模式 [TC-09-U-11]。
+// EnableTakeover 切换到 TAKEOVER 模式 。
 // 启动超时计时器（默认 5min）。
-func (c *takeoverController) EnableTakeover(onRelease func()) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+func (c *takeoverController) EnableTakeover(onRelease func) error {
+	c.mu.Lock
+	defer c.mu.Unlock
 
 	c.mode = TakeoverModeTakeover
 	c.onRelease = onRelease
 
 	// 启动超时计时器 [TC-09-L4-10]
 	if c.timer != nil {
-		c.timer.Stop()
+		c.timer.Stop
 	}
-	c.timer = time.AfterFunc(c.timeout, func() {
-		c.autoRelease()
+	c.timer = time.AfterFunc(c.timeout, func {
+		c.autoRelease
 	})
 
 	return nil
 }
 
 // DisableTakeover 释放接管，恢复 OBSERVE 模式。
-func (c *takeoverController) DisableTakeover() error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+func (c *takeoverController) DisableTakeover error {
+	c.mu.Lock
+	defer c.mu.Unlock
 
 	if c.timer != nil {
-		c.timer.Stop()
+		c.timer.Stop
 		c.timer = nil
 	}
 	c.mode = TakeoverModeObserve
@@ -86,29 +86,29 @@ func (c *takeoverController) DisableTakeover() error {
 }
 
 // autoRelease 超时自动释放接管 [TC-09-L4-10]。
-func (c *takeoverController) autoRelease() {
-	c.mu.Lock()
+func (c *takeoverController) autoRelease {
+	c.mu.Lock
 	c.mode = TakeoverModeObserve
 	c.timer = nil
 	onRelease := c.onRelease
-	c.mu.Unlock()
+	c.mu.Unlock
 
 	if onRelease != nil {
-		onRelease()
+		onRelease
 	}
 }
 
 // IsTakeover 返回当前是否处于接管模式。
-func (c *takeoverController) IsTakeover() bool {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
+func (c *takeoverController) IsTakeover bool {
+	c.mu.RLock
+	defer c.mu.RUnlock
 	return c.mode == TakeoverModeTakeover
 }
 
-// DispatchInput 在接管模式下转发输入事件到 CDP [TC-09-I-13]。
+// DispatchInput 在接管模式下转发输入事件到 CDP 。
 // 非接管模式返回 ErrTakeoverActive（含义: 不在接管模式，操作无效）。
 func (c *takeoverController) DispatchInput(ctx context.Context, event *InputEvent) error {
-	if !c.IsTakeover() {
+	if !c.IsTakeover {
 		// 非接管模式，Human 输入无效（需先 EnableTakeover）
 		return ErrTakeoverActive
 	}
@@ -127,13 +127,13 @@ func (c *takeoverController) DispatchInput(ctx context.Context, event *InputEven
 func (c *takeoverController) dispatchMouseEvent(ctx context.Context, event *InputEvent) error {
 	// mouseWheel 是特殊类型
 	if event.Event == "mouseWheel" {
-		return chromedp.Run(c.cdpCtx,
+		return chromedp.Run(c.cdpCtx
 			chromedp.ActionFunc(func(ctx context.Context) error {
 				return input.DispatchMouseEvent(input.MouseWheel, event.X, event.Y).
 					WithDeltaX(event.DeltaX).
 					WithDeltaY(event.DeltaY).
 					Do(ctx)
-			}),
+			})
 		)
 	}
 
@@ -166,13 +166,13 @@ func (c *takeoverController) dispatchMouseEvent(ctx context.Context, event *Inpu
 		clickCount = 1
 	}
 
-	return chromedp.Run(c.cdpCtx,
+	return chromedp.Run(c.cdpCtx
 		chromedp.ActionFunc(func(ctx context.Context) error {
 			return input.DispatchMouseEvent(mouseType, event.X, event.Y).
 				WithButton(button).
 				WithClickCount(int64(clickCount)).
 				Do(ctx)
-		}),
+		})
 	)
 }
 
@@ -190,7 +190,7 @@ func (c *takeoverController) dispatchKeyEvent(ctx context.Context, event *InputE
 		keyType = input.KeyDown
 	}
 
-	return chromedp.Run(c.cdpCtx,
+	return chromedp.Run(c.cdpCtx
 		chromedp.ActionFunc(func(ctx context.Context) error {
 			return input.DispatchKeyEvent(keyType).
 				WithKey(event.Key).
@@ -198,13 +198,13 @@ func (c *takeoverController) dispatchKeyEvent(ctx context.Context, event *InputE
 				WithText(event.Text).
 				WithModifiers(input.Modifier(event.Modifiers)).
 				Do(ctx)
-		}),
+		})
 	)
 }
 
 // SetTimeout 设置接管超时时间（测试用）。
 func (c *takeoverController) SetTimeout(d time.Duration) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	c.mu.Lock
+	defer c.mu.Unlock
 	c.timeout = d
 }

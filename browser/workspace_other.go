@@ -6,7 +6,7 @@ package browser
 import "log"
 
 // NewWorkspace returns a no-op Workspace for unsupported platforms.
-func NewWorkspace() Workspace {
+func NewWorkspace Workspace {
 	log.Printf("[WORKSPACE] unsupported platform — using no-op workspace (no isolation)")
 	return &NoopWorkspace{}
 }

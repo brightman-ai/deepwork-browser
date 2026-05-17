@@ -1,5 +1,5 @@
-// Package browser — r2 Delta-REQ (TH-0418-c9x) L1 单元测试。
-// [Ref: CAP-BS09-C5 TC-C5-11~18, CAP-BS09-C4 TC-C4-07~11]
+// Package browser — L1 单元测试。
+//
 // TDD: Red → Green 顺序，每个 TC 对应一个 Test 函数。
 package browser
 
@@ -19,12 +19,12 @@ import (
 // 验证: --snap 依赖的 SnapOptions 数据结构和 filterCompactRefs 函数行为正确。
 func TestSnapOptions_CompactFilter_KeepsInteractable(t *testing.T) {
 	// TC-ID: TC-C5-11 (L1 unit — acts as proxy for act --snap observe=true logic)
-	refs := []ElementRef{
-		{Ref: "e1", Role: "button", Name: "Submit", Interactable: true},
-		{Ref: "e2", Role: "generic", Name: "Container", Interactable: false},
-		{Ref: "e3", Role: "textbox", Name: "", Placeholder: "Email", Interactable: true},
-		{Ref: "e4", Role: "link", Name: "Learn More", Interactable: true},
-		{Ref: "e5", Role: "heading", Name: "Title", Interactable: false},
+	refs := ElementRef{
+		{Ref: "e1", Role: "button", Name: "Submit", Interactable: true}
+		{Ref: "e2", Role: "generic", Name: "Container", Interactable: false}
+		{Ref: "e3", Role: "textbox", Name: "", Placeholder: "Email", Interactable: true}
+		{Ref: "e4", Role: "link", Name: "Learn More", Interactable: true}
+		{Ref: "e5", Role: "heading", Name: "Title", Interactable: false}
 	}
 
 	filtered := filterCompactRefs(refs)
@@ -47,7 +47,7 @@ func TestSnapOptions_CompactFilter_KeepsInteractable(t *testing.T) {
 
 // TC-C5-12: act --snap で action 失敗時は snap を実行しない（エラーで即 return）。
 // 验证: needsPostActionSnapshot || snapAfterAct の論理 — snapAfterAct=true でも
-//      ActWithSessionMode が error を返した場合、output に snap が含まれないこと。
+// ActWithSessionMode が error を返した場合、output に snap が含まれないこと。
 // L1レベルでは: ErrActFailed エラー型が正しく定義されていることを確認する。
 func TestActSnap_ActionFailure_NoSnapProduced(t *testing.T) {
 	// TC-ID: TC-C5-12
@@ -55,7 +55,7 @@ func TestActSnap_ActionFailure_NoSnapProduced(t *testing.T) {
 	if !errors.Is(ErrActFailed, ErrActFailed) {
 		t.Error("ErrActFailed not properly defined")
 	}
-	if ErrActFailed.Error() == "" {
+	if ErrActFailed.Error == "" {
 		t.Error("ErrActFailed message empty")
 	}
 }
@@ -65,14 +65,14 @@ func TestActSnap_ActionFailure_NoSnapProduced(t *testing.T) {
 // ============================================================
 
 // TC-C5-13: SnapOptions 構造体で Selector フィールドが非空の場合、SnapWithOptions が
-//           それを使用する（L1: 構造体フィールド + ErrSelectorNotFound の存在確認）。
+// それを使用する（L1: 構造体フィールド + ErrSelectorNotFound の存在確認）。
 func TestSnapOptions_Selector_FieldExists(t *testing.T) {
 	// TC-ID: TC-C5-13 (L1 structural)
 	opts := SnapOptions{
-		Selector:    "#main-content",
-		Compact:     false,
-		MaxDepth:    0,
-		SessionMode: true,
+		Selector: "#main-content"
+		Compact: false
+		MaxDepth: 0
+		SessionMode: true
 	}
 	if opts.Selector != "#main-content" {
 		t.Errorf("SnapOptions.Selector not set correctly: %q", opts.Selector)
@@ -86,12 +86,12 @@ func TestSnapOptions_ErrSelectorNotFound_Defined(t *testing.T) {
 	if ErrSelectorNotFound == nil {
 		t.Fatal("ErrSelectorNotFound must be non-nil")
 	}
-	if !strings.Contains(ErrSelectorNotFound.Error(), "selector") &&
-		!strings.Contains(ErrSelectorNotFound.Error(), "CSS") {
-		t.Errorf("ErrSelectorNotFound message unexpected: %q", ErrSelectorNotFound.Error())
+	if !strings.Contains(ErrSelectorNotFound.Error, "selector") &&
+		!strings.Contains(ErrSelectorNotFound.Error, "CSS") {
+		t.Errorf("ErrSelectorNotFound message unexpected: %q", ErrSelectorNotFound.Error)
 	}
 	// errors.Is チェック
-	wrapped := errors.New("wrap: " + ErrSelectorNotFound.Error())
+	wrapped := errors.New("wrap: " + ErrSelectorNotFound.Error)
 	_ = wrapped
 }
 
@@ -102,14 +102,14 @@ func TestSnapOptions_ErrSelectorNotFound_Defined(t *testing.T) {
 // TC-C5-15: --compact フィルタが compactInteractableRoles セットを正しく使用する。
 func TestFilterCompactRefs_OnlyInteractableRoles(t *testing.T) {
 	// TC-ID: TC-C5-15
-	allRoles := []string{
-		"button", "input", "link", "textbox", "checkbox", "radio",
-		"combobox", "slider", "tab", "searchbox", "menuitem", "switch",
+	allRoles := string{
+		"button", "input", "link", "textbox", "checkbox", "radio"
+		"combobox", "slider", "tab", "searchbox", "menuitem", "switch"
 		// non-interactable
-		"generic", "group", "heading", "image", "none", "presentation",
+		"generic", "group", "heading", "image", "none", "presentation"
 	}
 
-	refs := make([]ElementRef, len(allRoles))
+	refs := make(ElementRef, len(allRoles))
 	for i, r := range allRoles {
 		refs[i] = ElementRef{Ref: "e" + string(rune('0'+i)), Role: r, Interactable: true}
 	}
@@ -121,7 +121,7 @@ func TestFilterCompactRefs_OnlyInteractableRoles(t *testing.T) {
 	if len(filtered) != expectedInteractable {
 		t.Errorf("expected %d compact refs, got %d", expectedInteractable, len(filtered))
 		for _, r := range filtered {
-			t.Logf("  role: %s", r.Role)
+			t.Logf(" role: %s", r.Role)
 		}
 	}
 
@@ -141,12 +141,12 @@ func TestFilterCompactRefs_OnlyInteractableRoles(t *testing.T) {
 func TestApplyMaxDepthText_FoldsDeepSubtree(t *testing.T) {
 	// TC-ID: TC-C5-16
 	// 作成: 30要素のフラットrefs (depth > maxDepth*5 = 5)
-	refs := make([]ElementRef, 30)
+	refs := make(ElementRef, 30)
 	for i := range refs {
 		refs[i] = ElementRef{
-			Ref:  "@r" + string(rune('1'+i)),
-			Role: "button",
-			Name: "btn",
+			Ref: "@r" + string(rune('1'+i))
+			Role: "button"
+			Name: "btn"
 		}
 	}
 
@@ -176,9 +176,9 @@ func TestEvalErrors_Defined(t *testing.T) {
 	if ErrEvalFailed == nil {
 		t.Fatal("ErrEvalFailed must be non-nil")
 	}
-	if !strings.Contains(ErrEvalFailed.Error(), "eval") &&
-		!strings.Contains(ErrEvalFailed.Error(), "JavaScript") {
-		t.Errorf("ErrEvalFailed message unexpected: %q", ErrEvalFailed.Error())
+	if !strings.Contains(ErrEvalFailed.Error, "eval") &&
+		!strings.Contains(ErrEvalFailed.Error, "JavaScript") {
+		t.Errorf("ErrEvalFailed message unexpected: %q", ErrEvalFailed.Error)
 	}
 }
 
@@ -233,25 +233,25 @@ func TestCookieImporter_DBLocked_ReturnsError(t *testing.T) {
 func TestCookieImporter_ReadOnly_SourceUnchanged(t *testing.T) {
 	// TC-ID: TC-C4-11 (L1 unit)
 	// 空の SQLite 風ファイルを作成（ヘッダのみ）
-	tmpDir := t.TempDir()
+	tmpDir := t.TempDir
 	srcPath := filepath.Join(tmpDir, "Cookies")
 
 	// SQLite3 magic header (16 bytes) + minimal content
-	header := []byte("SQLite format 3\x00") // 16 bytes
+	header := byte("SQLite format 3\x00") // 16 bytes
 	if err := os.WriteFile(srcPath, header, 0644); err != nil {
 		t.Fatalf("setup: %v", err)
 	}
 
 	originalSize := int64(len(header))
 	info, _ := os.Stat(srcPath)
-	if info.Size() != originalSize {
-		t.Fatalf("setup: unexpected file size %d", info.Size())
+	if info.Size != originalSize {
+		t.Fatalf("setup: unexpected file size %d", info.Size)
 	}
 
 	// openCookieDB will fail (not valid SQLite) but should not modify source
 	db, tmpPath, _ := openCookieDB(srcPath)
 	if db != nil {
-		db.Close()
+		db.Close
 	}
 	if tmpPath != "" {
 		os.Remove(tmpPath)
@@ -262,8 +262,8 @@ func TestCookieImporter_ReadOnly_SourceUnchanged(t *testing.T) {
 	if err != nil {
 		t.Fatalf("source file removed: %v", err)
 	}
-	if infoAfter.Size() != originalSize {
-		t.Errorf("source file was modified: size before=%d, after=%d", originalSize, infoAfter.Size())
+	if infoAfter.Size != originalSize {
+		t.Errorf("source file was modified: size before=%d, after=%d", originalSize, infoAfter.Size)
 	}
 }
 
@@ -273,10 +273,10 @@ func TestCookieImporter_ReadOnly_SourceUnchanged(t *testing.T) {
 
 // TC-C5-13 補足: renumberRefs session モードで @rN を使う。
 func TestRenumberRefs_SessionMode(t *testing.T) {
-	refs := []ElementRef{
-		{Ref: "e1", Role: "button", Name: "A"},
-		{Ref: "e2", Role: "link", Name: "B"},
-		{Ref: "e3", Role: "textbox", Name: "C"},
+	refs := ElementRef{
+		{Ref: "e1", Role: "button", Name: "A"}
+		{Ref: "e2", Role: "link", Name: "B"}
+		{Ref: "e3", Role: "textbox", Name: "C"}
 	}
 
 	sessionRefs := renumberRefs(refs, true)
@@ -303,17 +303,17 @@ func TestRenumberRefs_SessionMode(t *testing.T) {
 // TestR2Errors_AllDefined: r2 で追加された全エラーが存在すること。
 func TestR2Errors_AllDefined(t *testing.T) {
 	// TC-ID: TC-C5-10 補足
-	errors := []error{
-		ErrSelectorNotFound,
-		ErrEvalFailed,
-		ErrCookieDecryptFailed,
-		ErrCookieDBLocked,
+	errors := error{
+		ErrSelectorNotFound
+		ErrEvalFailed
+		ErrCookieDecryptFailed
+		ErrCookieDBLocked
 	}
 	for _, e := range errors {
 		if e == nil {
 			t.Errorf("r2 error is nil")
 		}
-		if e.Error() == "" {
+		if e.Error == "" {
 			t.Errorf("r2 error has empty message: %T", e)
 		}
 	}

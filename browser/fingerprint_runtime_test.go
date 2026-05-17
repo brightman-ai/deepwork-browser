@@ -3,7 +3,7 @@ package browser
 import "testing"
 
 func TestValidatePresetIDRejectsRetiredIDs(t *testing.T) {
-	for _, id := range []string{"ios-safari", "macos-safari"} {
+	for _, id := range string{"ios-safari", "macos-safari"} {
 		if _, err := ValidatePresetID(id); err == nil {
 			t.Fatalf("ValidatePresetID(%q) succeeded; retired preset IDs must fail", id)
 		}
@@ -11,12 +11,12 @@ func TestValidatePresetIDRejectsRetiredIDs(t *testing.T) {
 }
 
 func TestResolveRuntimeFingerprintPreset_RewritesChromeVersion(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	t.Setenv("HOME", t.TempDir)
 	chromeVersionCache.Store("/tmp/fake-chrome", chromeVersionInfo{
-		Full:  "147.0.7727.101",
-		Major: "147",
+		Full: "147.0.7727.101"
+		Major: "147"
 	})
-	t.Cleanup(func() {
+	t.Cleanup(func {
 		chromeVersionCache.Delete("/tmp/fake-chrome")
 	})
 
@@ -34,10 +34,10 @@ func TestResolveRuntimeFingerprintPreset_RewritesChromeVersion(t *testing.T) {
 
 func TestUserAgentMetadataForPreset_ChromeCarriesVersionAndPlatform(t *testing.T) {
 	chromeVersionCache.Store("/tmp/fake-chrome", chromeVersionInfo{
-		Full:  "147.0.7727.101",
-		Major: "147",
+		Full: "147.0.7727.101"
+		Major: "147"
 	})
-	t.Cleanup(func() {
+	t.Cleanup(func {
 		chromeVersionCache.Delete("/tmp/fake-chrome")
 	})
 

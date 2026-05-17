@@ -1,7 +1,7 @@
 // Package audit 提供引擎无关的浏览器审计框架。
 // 支持 Chrome / Safari / Wails WebView 等任何实现 Auditable 接口的引擎。
 //
-// 铁律 IR-01（继承自 browser 包）: 本包零依赖 Deepwork 上下文。
+// 铁律 （继承自 browser 包）: 本包零依赖 Deepwork 上下文。
 package audit
 
 import (
@@ -18,7 +18,7 @@ type Auditable interface {
 	EvalJS(ctx context.Context, expr string, result interface{}) error
 
 	// Screenshot 截图，annotate=true 时叠加 Element Ref 标注。
-	Screenshot(ctx context.Context, annotate bool) ([]byte, error)
+	Screenshot(ctx context.Context, annotate bool) (byte, error)
 }
 
 // RunOpts 控制单次审计行为。
@@ -28,7 +28,7 @@ type RunOpts struct {
 	Suite string
 
 	// Checks 按 ID 精确指定要运行的 checks。空表示不限制。
-	Checks []string
+	Checks string
 
 	// Threshold 分数低于此值时 Run 返回 ErrBelowThreshold。0 表示不检查。
 	Threshold int
@@ -42,11 +42,11 @@ type RunOpts struct {
 
 // ErrBelowThreshold 分数低于 RunOpts.Threshold 时返回。
 type ErrBelowThreshold struct {
-	Score     int
+	Score int
 	Threshold int
 }
 
-func (e *ErrBelowThreshold) Error() string {
+func (e *ErrBelowThreshold) Error string {
 	return fmt.Sprintf("audit: score %d below threshold %d", e.Score, e.Threshold)
 }
 
@@ -66,8 +66,8 @@ func (r *AuditRunner) Run(ctx context.Context, target Auditable, opts RunOpts) (
 	checks := r.selectChecks(opts)
 
 	report := &Report{
-		URL:       opts.URL,
-		Timestamp: time.Now().UTC().Format(time.RFC3339),
+		URL: opts.URL
+		Timestamp: time.Now.UTC.Format(time.RFC3339)
 	}
 	if opts.Context != nil {
 		report.Engine = opts.Context.Engine
@@ -104,20 +104,20 @@ func (r *AuditRunner) Run(ctx context.Context, target Auditable, opts RunOpts) (
 }
 
 // selectChecks 根据 opts.Suite 和 opts.Checks 筛选 checks。
-func (r *AuditRunner) selectChecks(opts RunOpts) []Check {
-	var pool []Check
+func (r *AuditRunner) selectChecks(opts RunOpts) Check {
+	var pool Check
 
 	if opts.Suite != "" {
 		suite, ok := Suites[opts.Suite]
 		if ok {
-			for _, c := range r.registry.All() {
+			for _, c := range r.registry.All {
 				if suite.Filter(c) {
 					pool = append(pool, c)
 				}
 			}
 		}
 	} else {
-		pool = r.registry.All()
+		pool = r.registry.All
 	}
 
 	if len(opts.Checks) == 0 {
@@ -129,7 +129,7 @@ func (r *AuditRunner) selectChecks(opts RunOpts) []Check {
 	for _, id := range opts.Checks {
 		idSet[id] = true
 	}
-	var out []Check
+	var out Check
 	for _, c := range pool {
 		if idSet[c.ID] {
 			out = append(out, c)
@@ -141,9 +141,9 @@ func (r *AuditRunner) selectChecks(opts RunOpts) []Check {
 // runCheck 执行单个 check：注入 JS → 解析结果。
 func (r *AuditRunner) runCheck(ctx context.Context, target Auditable, check Check, actx *AuditContext) CheckResult {
 	base := CheckResult{
-		ID:       check.ID,
-		Category: check.Category,
-		Severity: check.Severity,
+		ID: check.ID
+		Category: check.Category
+		Severity: check.Severity
 	}
 
 	if check.Script == "" {

@@ -1,7 +1,7 @@
 // Package browser — CookieImporter: 从本机浏览器导入 Cookie。
-// [Ref: CAP-BS09-C4 §3.2b, SC-22, TC-C4-07~11, r2 Delta-REQ TH-0418-c9x]
 //
-// 铁律 IR-01: 本包零依赖 Deepwork 上下文。
+//
+// 铁律 : 本包零依赖 Deepwork 上下文。
 // 安全约束: 只读打开源 Cookie 文件，不修改用户浏览器数据。
 package browser
 
@@ -24,14 +24,14 @@ import (
 )
 
 // ============================================================
-// § CookieImporter 接口 [Ref: CAP-BS09-C4 §2]
+// § CookieImporter 接口
 // ============================================================
 
 // CookieImportResult 是 Cookie 导入的结果统计。
 type CookieImportResult struct {
-	TotalImported int            // 导入 Cookie 总数
-	ByDomain      map[string]int // 按域名统计
-	SourceBrowser string         // 实际使用的源浏览器
+	TotalImported int // 导入 Cookie 总数
+	ByDomain map[string]int // 按域名统计
+	SourceBrowser string // 实际使用的源浏览器
 }
 
 // cookieImporter 实现 Cookie 导入逻辑。
@@ -60,7 +60,7 @@ func (ci *cookieImporter) Import(ctx context.Context, sourceBrowser string, doma
 	if err != nil {
 		return nil, err
 	}
-	defer db.Close()
+	defer db.Close
 	if tempPath != "" {
 		defer os.Remove(tempPath) // 清理临时副本
 	}
@@ -73,9 +73,9 @@ func (ci *cookieImporter) Import(ctx context.Context, sourceBrowser string, doma
 
 	if len(cookies) == 0 {
 		return &CookieImportResult{
-			TotalImported: 0,
-			ByDomain:      map[string]int{},
-			SourceBrowser: detectedBrowser,
+			TotalImported: 0
+			ByDomain: map[string]int{}
+			SourceBrowser: detectedBrowser
 		}, nil
 	}
 
@@ -95,9 +95,9 @@ func (ci *cookieImporter) Import(ctx context.Context, sourceBrowser string, doma
 	}
 
 	return &CookieImportResult{
-		TotalImported: len(cookies),
-		ByDomain:      byDomain,
-		SourceBrowser: detectedBrowser,
+		TotalImported: len(cookies)
+		ByDomain: byDomain
+		SourceBrowser: detectedBrowser
 	}, nil
 }
 
@@ -106,37 +106,37 @@ func (ci *cookieImporter) Import(ctx context.Context, sourceBrowser string, doma
 // ============================================================
 
 // chromeCookiePaths 各平台 Chrome Cookie 路径候选列表（优先级顺序）。
-func chromeCookiePaths() []string {
-	home, _ := os.UserHomeDir()
+func chromeCookiePaths string {
+	home, _ := os.UserHomeDir
 	switch runtime.GOOS {
 	case "darwin":
-		return []string{
-			filepath.Join(home, "Library", "Application Support", "Google", "Chrome", "Default", "Cookies"),
-			filepath.Join(home, "Library", "Application Support", "Google", "Chrome", "Profile 1", "Cookies"),
-			filepath.Join(home, "Library", "Application Support", "Chromium", "Default", "Cookies"),
-			filepath.Join(home, "Library", "Application Support", "com.operasoftware.Opera", "Cookies"),
+		return string{
+			filepath.Join(home, "Library", "Application Support", "Google", "Chrome", "Default", "Cookies")
+			filepath.Join(home, "Library", "Application Support", "Google", "Chrome", "Profile 1", "Cookies")
+			filepath.Join(home, "Library", "Application Support", "Chromium", "Default", "Cookies")
+			filepath.Join(home, "Library", "Application Support", "com.operasoftware.Opera", "Cookies")
 			// Arc browser
-			filepath.Join(home, "Library", "Application Support", "Arc", "User Data", "Default", "Cookies"),
+			filepath.Join(home, "Library", "Application Support", "Arc", "User Data", "Default", "Cookies")
 		}
 	case "linux":
-		return []string{
-			filepath.Join(home, ".config", "google-chrome", "Default", "Cookies"),
-			filepath.Join(home, ".config", "chromium", "Default", "Cookies"),
-			filepath.Join(home, ".config", "google-chrome-beta", "Default", "Cookies"),
+		return string{
+			filepath.Join(home, ".config", "google-chrome", "Default", "Cookies")
+			filepath.Join(home, ".config", "chromium", "Default", "Cookies")
+			filepath.Join(home, ".config", "google-chrome-beta", "Default", "Cookies")
 		}
 	case "windows":
 		appData := os.Getenv("LOCALAPPDATA")
-		return []string{
-			filepath.Join(appData, "Google", "Chrome", "User Data", "Default", "Cookies"),
-			filepath.Join(appData, "Chromium", "User Data", "Default", "Cookies"),
+		return string{
+			filepath.Join(appData, "Google", "Chrome", "User Data", "Default", "Cookies")
+			filepath.Join(appData, "Chromium", "User Data", "Default", "Cookies")
 		}
 	}
 	return nil
 }
 
 // firefoxCookiePaths 各平台 Firefox Cookie 路径候选列表。
-func firefoxCookiePaths() []string {
-	home, _ := os.UserHomeDir()
+func firefoxCookiePaths string {
+	home, _ := os.UserHomeDir
 	switch runtime.GOOS {
 	case "darwin":
 		ffDir := filepath.Join(home, "Library", "Application Support", "Firefox", "Profiles")
@@ -152,15 +152,15 @@ func firefoxCookiePaths() []string {
 	return nil
 }
 
-func globDir(dir, filename string) []string {
+func globDir(dir, filename string) string {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil
 	}
-	var paths []string
+	var paths string
 	for _, e := range entries {
-		if e.IsDir() {
-			p := filepath.Join(dir, e.Name(), filename)
+		if e.IsDir {
+			p := filepath.Join(dir, e.Name, filename)
 			if _, err := os.Stat(p); err == nil {
 				paths = append(paths, p)
 			}
@@ -175,7 +175,7 @@ func resolveCookiePath(sourceBrowser string) (path string, detected string, err 
 
 	// 明确指定 firefox
 	if sb == "firefox" {
-		for _, p := range firefoxCookiePaths() {
+		for _, p := range firefoxCookiePaths {
 			if _, err := os.Stat(p); err == nil {
 				return p, "firefox", nil
 			}
@@ -186,7 +186,7 @@ func resolveCookiePath(sourceBrowser string) (path string, detected string, err 
 	// Chrome 系 (chrome/arc/chromium/edge/brave 或空=自动检测)
 	isChrome := sb == "" || sb == "chrome" || sb == "arc" || sb == "chromium" || sb == "edge" || sb == "brave"
 	if isChrome {
-		for _, p := range chromeCookiePaths() {
+		for _, p := range chromeCookiePaths {
 			if _, err := os.Stat(p); err == nil {
 				name := "chrome"
 				if strings.Contains(p, "Arc") {
@@ -199,7 +199,7 @@ func resolveCookiePath(sourceBrowser string) (path string, detected string, err 
 		}
 		// Fallback to firefox if no chrome found and browser was auto
 		if sb == "" {
-			for _, p := range firefoxCookiePaths() {
+			for _, p := range firefoxCookiePaths {
 				if _, err := os.Stat(p); err == nil {
 					return p, "firefox", nil
 				}
@@ -222,10 +222,10 @@ func openCookieDB(dbPath string) (*sql.DB, string, error) {
 	db, err := sql.Open("sqlite3", "file:"+dbPath+"?mode=ro&_journal=off&immutable=1")
 	if err == nil {
 		// 验证可用性
-		if pingErr := db.Ping(); pingErr == nil {
+		if pingErr := db.Ping; pingErr == nil {
 			return db, "", nil
 		}
-		db.Close()
+		db.Close
 	}
 
 	// 源文件锁定 → 复制到临时文件重试 [TC-C4-10]
@@ -233,15 +233,15 @@ func openCookieDB(dbPath string) (*sql.DB, string, error) {
 	if err != nil {
 		return nil, "", ErrCookieDBLocked
 	}
-	tmpPath := tmpFile.Name()
-	tmpFile.Close()
+	tmpPath := tmpFile.Name
+	tmpFile.Close
 
 	src, err := os.Open(dbPath)
 	if err != nil {
 		os.Remove(tmpPath)
 		return nil, "", ErrCookieDBLocked
 	}
-	defer src.Close()
+	defer src.Close
 
 	dst, err := os.OpenFile(tmpPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
 	if err != nil {
@@ -249,19 +249,19 @@ func openCookieDB(dbPath string) (*sql.DB, string, error) {
 		return nil, "", ErrCookieDBLocked
 	}
 	if _, err := io.Copy(dst, src); err != nil {
-		dst.Close()
+		dst.Close
 		os.Remove(tmpPath)
 		return nil, "", ErrCookieDBLocked
 	}
-	dst.Close()
+	dst.Close
 
 	db, err = sql.Open("sqlite3", "file:"+tmpPath+"?mode=rwc&_journal=off")
 	if err != nil {
 		os.Remove(tmpPath)
 		return nil, "", fmt.Errorf("%w: 临时副本打开失败: %v", ErrCookieDBLocked, err)
 	}
-	if err := db.Ping(); err != nil {
-		db.Close()
+	if err := db.Ping; err != nil {
+		db.Close
 		os.Remove(tmpPath)
 		return nil, "", fmt.Errorf("%w: 临时副本无法访问: %v", ErrCookieDBLocked, err)
 	}
@@ -270,23 +270,23 @@ func openCookieDB(dbPath string) (*sql.DB, string, error) {
 
 // rawCookie 是从数据库读取的 Cookie 原始数据。
 type rawCookie struct {
-	HostKey        string
-	Name           string
-	Value          string
-	EncryptedValue []byte
-	Path           string
-	ExpiresUtc     int64
-	IsSecure       bool
-	IsHTTPOnly     bool
-	Domain         string
+	HostKey string
+	Name string
+	Value string
+	EncryptedValue byte
+	Path string
+	ExpiresUtc int64
+	IsSecure bool
+	IsHTTPOnly bool
+	Domain string
 }
 
 // queryCookies 查询 Cookie 并按域名过滤 [TC-C4-09]。
-func queryCookies(db *sql.DB, browserType string, domainFilter string) ([]rawCookie, error) {
+func queryCookies(db *sql.DB, browserType string, domainFilter string) (rawCookie, error) {
 	isFirefox := browserType == "firefox"
 
 	var query string
-	var args []interface{}
+	var args interface{}
 
 	if isFirefox {
 		// Firefox: cookies.sqlite，明文存储 [TC-C4-08]
@@ -310,12 +310,12 @@ func queryCookies(db *sql.DB, browserType string, domainFilter string) ([]rawCoo
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer rows.Close
 
-	var cookies []rawCookie
-	for rows.Next() {
+	var cookies rawCookie
+	for rows.Next {
 		var c rawCookie
-		var encVal []byte
+		var encVal byte
 		if isFirefox {
 			var dummy string
 			if err := rows.Scan(&c.HostKey, &c.Name, &c.Value, &dummy, &c.Path, &c.ExpiresUtc, &c.IsSecure, &c.IsHTTPOnly); err != nil {
@@ -339,7 +339,7 @@ func queryCookies(db *sql.DB, browserType string, domainFilter string) ([]rawCoo
 		c.Domain = c.HostKey
 		cookies = append(cookies, c)
 	}
-	return cookies, rows.Err()
+	return cookies, rows.Err
 }
 
 // ============================================================
@@ -350,7 +350,7 @@ func queryCookies(db *sql.DB, browserType string, domainFilter string) ([]rawCoo
 // macOS: AES-128-CBC + keychain key "Chrome Safe Storage"
 // Linux: PBKDF2 "peanuts" key + AES-128-CBC (v10 prefix) 或明文
 // Windows: DPAPI（暂不支持，返回错误）
-func decryptChromeValue(encrypted []byte) (string, error) {
+func decryptChromeValue(encrypted byte) (string, error) {
 	if len(encrypted) == 0 {
 		return "", nil
 	}
@@ -373,7 +373,7 @@ func decryptChromeValue(encrypted []byte) (string, error) {
 }
 
 // isPrintable 检查字节串是否为 UTF-8 可打印字符串。
-func isPrintable(b []byte) bool {
+func isPrintable(b byte) bool {
 	for _, c := range b {
 		if c < 0x20 || c > 0x7e {
 			return false
@@ -387,23 +387,23 @@ func isPrintable(b []byte) bool {
 // ============================================================
 
 // injectCookiesViaCDP 通过 CDP Network.setCookies 将 Cookie 注入 Chrome 会话。
-func injectCookiesViaCDP(ctx context.Context, bc BrowserCore, cookies []rawCookie) error {
+func injectCookiesViaCDP(ctx context.Context, bc BrowserCore, cookies rawCookie) error {
 	// 获取 chromedp context（通过 EvalJS 间接访问，或 type assert）
 	// 使用 BrowserCore.EvalJS 注入是最稳健的方式，无需 type assert。
 	// 但 setCookies 需要 CDP 直接调用，所以这里 type assert 到 *browserCoreImpl。
 	// 若不支持，回退到 JS document.cookie 设置。
 
 	// 构建 CDP cookie params
-	var cdpCookies []*network.CookieParam
+	var cdpCookies *network.CookieParam
 	for i := range cookies {
 		c := &cookies[i]
 		param := &network.CookieParam{
-			Name:     c.Name,
-			Value:    c.Value,
-			Domain:   c.Domain,
-			Path:     c.Path,
-			Secure:   c.IsSecure,
-			HTTPOnly: c.IsHTTPOnly,
+			Name: c.Name
+			Value: c.Value
+			Domain: c.Domain
+			Path: c.Path
+			Secure: c.IsSecure
+			HTTPOnly: c.IsHTTPOnly
 		}
 		if c.ExpiresUtc > 0 {
 			// Chrome 存储的是 microseconds since 1601-01-01，转为 Unix epoch seconds
@@ -457,7 +457,7 @@ func injectCookiesViaCDP(ctx context.Context, bc BrowserCore, cookies []rawCooki
 		if path == "" {
 			path = "/"
 		}
-		cookieStr := fmt.Sprintf("%s=%s; path=%s%s%s",
+		cookieStr := fmt.Sprintf("%s=%s; path=%s%s%s"
 			c.Name, c.Value, path, expires, secure)
 		js := fmt.Sprintf("document.cookie = %q", cookieStr)
 		var result interface{}
@@ -476,7 +476,7 @@ func injectCookiesViaCDP(ctx context.Context, bc BrowserCore, cookies []rawCooki
 // 各平台实现在对应的平台文件中（cookie_importer_darwin.go / _linux.go / _windows.go）。
 // 此处为通用回退实现：返回错误。
 // 平台文件通过 build tag 覆盖此函数。
-func decryptV10(data []byte) (string, error) {
+func decryptV10(data byte) (string, error) {
 	// 尝试平台实现（通过平台文件）
 	return platformDecryptV10(data)
 }
@@ -487,6 +487,6 @@ func decryptV10(data []byte) (string, error) {
 
 // InjectCookiesDirectCDP 通过直接 CDP 协议注入 Cookie（需要 chromedp context）。
 // 此函数供 cookie_importer_cdp.go 中的集成测试调用。
-func InjectCookiesDirectCDP(ctx context.Context, cookies []*network.CookieParam) error {
+func InjectCookiesDirectCDP(ctx context.Context, cookies *network.CookieParam) error {
 	return chromedp.Run(ctx, network.SetCookies(cookies))
 }

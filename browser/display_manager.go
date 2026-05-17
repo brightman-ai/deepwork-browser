@@ -17,18 +17,18 @@ import (
 // DisplayManager 管理独立虚拟 display 的生命周期 (跨平台)。
 // Pool 和 NewBrowserCore 共享此组件。goroutine-safe。
 type DisplayManager struct {
-	mu      sync.Mutex
+	mu sync.Mutex
 	xvfbCmd *exec.Cmd
 	display string // e.g. ":99"
-	ready   bool
+	ready bool
 }
 
 // EnsureDisplay 确保虚拟 display 就绪 (幂等,可多次调用)。
 // 仅在 human 模式下有意义；headless 模式调用为 no-op。
 // 返回 true 表示 display 已就绪，false 表示应降级为 headless。
-func (dm *DisplayManager) EnsureDisplay() bool {
-	dm.mu.Lock()
-	defer dm.mu.Unlock()
+func (dm *DisplayManager) EnsureDisplay bool {
+	dm.mu.Lock
+	defer dm.mu.Unlock
 
 	if dm.ready {
 		return true
@@ -36,9 +36,9 @@ func (dm *DisplayManager) EnsureDisplay() bool {
 
 	switch runtime.GOOS {
 	case "linux":
-		return dm.ensureDisplayLinux()
+		return dm.ensureDisplayLinux
 	case "darwin":
-		// macOS: Space 隔离 + Metal GPU (Phase 0 终局架构 v7, DDC-I-11).
+		// macOS: Space 隔离 + Metal GPU .
 		// 窗口放入独立 Space，Human 不被打扰，Chrome 内 visibilityState=visible.
 		// Workspace 生命周期由调用方 (BrowserPool/NewBrowserCore) 管理.
 		log.Printf("[DISPLAY-MGR] macOS: Space isolation + Metal GPU (Phase 0)")
@@ -56,13 +56,13 @@ func (dm *DisplayManager) EnsureDisplay() bool {
 }
 
 // Close 清理 Xvfb 进程。实现 io.Closer 语义。
-func (dm *DisplayManager) Close() error {
-	dm.mu.Lock()
-	defer dm.mu.Unlock()
+func (dm *DisplayManager) Close error {
+	dm.mu.Lock
+	defer dm.mu.Unlock
 
 	if dm.xvfbCmd != nil && dm.xvfbCmd.Process != nil {
-		_ = dm.xvfbCmd.Process.Kill()
-		_ = dm.xvfbCmd.Wait()
+		_ = dm.xvfbCmd.Process.Kill
+		_ = dm.xvfbCmd.Wait
 		log.Printf("[DISPLAY-MGR] Xvfb process killed")
 		dm.xvfbCmd = nil
 	}
@@ -71,16 +71,16 @@ func (dm *DisplayManager) Close() error {
 }
 
 // Display 返回当前 display 字符串 (e.g. ":99")。空字符串表示未启动。
-func (dm *DisplayManager) Display() string {
-	dm.mu.Lock()
-	defer dm.mu.Unlock()
+func (dm *DisplayManager) Display string {
+	dm.mu.Lock
+	defer dm.mu.Unlock
 	return dm.display
 }
 
 // XvfbPID 返回 Xvfb 进程 PID。0 表示未启动或非 Linux。
-func (dm *DisplayManager) XvfbPID() int {
-	dm.mu.Lock()
-	defer dm.mu.Unlock()
+func (dm *DisplayManager) XvfbPID int {
+	dm.mu.Lock
+	defer dm.mu.Unlock
 	if dm.xvfbCmd != nil && dm.xvfbCmd.Process != nil {
 		return dm.xvfbCmd.Process.Pid
 	}
@@ -89,38 +89,38 @@ func (dm *DisplayManager) XvfbPID() int {
 
 // UsesHeadlessHumanMode 返回当前平台的 human 模式是否底层使用 headless=new。
 // 当前终局策略:
-//   - Linux: Xvfb + EGL (headed)
-//   - macOS: offscreen window + Metal (headed)
-//   - Windows: offscreen window + D3D11 (headed)
+// - Linux: Xvfb + EGL (headed)
+// - macOS: offscreen window + Metal (headed)
+// - Windows: offscreen window + D3D11 (headed)
 //
 // 调用者在此返回 true 时应:
-//  1. 显式覆写 UA（移除 HeadlessChrome 签名）
-//  2. 注入完整 stealth 脚本（与 headless 模式一致）
-func (dm *DisplayManager) UsesHeadlessHumanMode() bool {
+// 1. 显式覆写 UA（移除 HeadlessChrome 签名）
+// 2. 注入完整 stealth 脚本（与 headless 模式一致）
+func (dm *DisplayManager) UsesHeadlessHumanMode bool {
 	return false
 }
 
 // ChromeGLOpts 返回平台专用 GPU/display 的 chromedp ExecAllocatorOption。
 // human 模式下，各平台需要不同的 GL 渲染参数。
-func (dm *DisplayManager) ChromeGLOpts() []chromedp.ExecAllocatorOption {
+func (dm *DisplayManager) ChromeGLOpts chromedp.ExecAllocatorOption {
 	switch runtime.GOOS {
 	case "linux":
 		// Linux Xvfb+EGL: EGL 绕过 GLX，直连 /dev/dri/renderD128
-		return []chromedp.ExecAllocatorOption{
-			chromedp.Flag("use-gl", "egl"),
+		return chromedp.ExecAllocatorOption{
+			chromedp.Flag("use-gl", "egl")
 		}
 	case "darwin":
 		// macOS: Metal GPU only — window-position removed (Phase 0).
 		// 隔离由 Workspace (SkyLight Space) 实现，不再通过 off-screen 坐标.
-		// [DDC-I-10: --window-position=-32000 是双向失败; BRR-07]
-		return []chromedp.ExecAllocatorOption{
-			chromedp.Flag("use-angle", "metal"),
+		// [: --window-position=-32000 是双向失败; ]
+		return chromedp.ExecAllocatorOption{
+			chromedp.Flag("use-angle", "metal")
 		}
 	case "windows":
 		// Windows: D3D11 GPU only — window-position removed (Phase 0).
 		// TODO: VDesktop isolation (stub, window appears on current desktop).
-		return []chromedp.ExecAllocatorOption{
-			chromedp.Flag("use-angle", "d3d11"),
+		return chromedp.ExecAllocatorOption{
+			chromedp.Flag("use-angle", "d3d11")
 		}
 	default:
 		return nil
@@ -129,9 +129,9 @@ func (dm *DisplayManager) ChromeGLOpts() []chromedp.ExecAllocatorOption {
 
 // ensureDisplayLinux 启动独立 Xvfb 虚拟 display (Linux 专用)。
 // 必须在 mu.Lock 内调用。
-func (dm *DisplayManager) ensureDisplayLinux() bool {
+func (dm *DisplayManager) ensureDisplayLinux bool {
 	// snap GPU 环境注入 — EGL 需要 LIBGL_DRIVERS_PATH 等
-	injectSnapEnvIfNeeded()
+	injectSnapEnvIfNeeded
 
 	// 清除 Wayland 环境 — 强制 Chrome 使用 X11 (在 Xvfb 上)
 	os.Unsetenv("WAYLAND_DISPLAY")
@@ -157,8 +157,8 @@ func (dm *DisplayManager) ensureDisplayLinux() bool {
 		}
 		// 外部 Xvfb: 用 xdpyinfo 验证是否可连接
 		checkCmd := exec.Command("xdpyinfo", "-display", display)
-		checkCmd.Env = append(os.Environ(), "DISPLAY="+display)
-		if err := checkCmd.Run(); err == nil {
+		checkCmd.Env = append(os.Environ, "DISPLAY="+display)
+		if err := checkCmd.Run; err == nil {
 			os.Setenv("DISPLAY", display)
 			dm.display = display
 			dm.ready = true
@@ -171,14 +171,14 @@ func (dm *DisplayManager) ensureDisplayLinux() bool {
 		os.Remove("/tmp/.X99-lock")
 	}
 
-	cmd := exec.Command(xvfbPath, display, "-screen", "0", "1920x1080x24",
-		"-nolisten", "tcp",
-		"+extension", "GLX",
-		"+extension", "RANDR",
+	cmd := exec.Command(xvfbPath, display, "-screen", "0", "1920x1080x24"
+		"-nolisten", "tcp"
+		"+extension", "GLX"
+		"+extension", "RANDR"
 	)
 	cmd.Stdout = nil
 	cmd.Stderr = nil
-	if err := cmd.Start(); err != nil {
+	if err := cmd.Start; err != nil {
 		log.Printf("[DISPLAY-MGR] WARNING: Xvfb start failed: %v — should fall back to headless", err)
 		return false
 	}
@@ -198,8 +198,8 @@ func (dm *DisplayManager) ensureDisplayLinux() bool {
 	return true
 }
 
-// injectSnapEnvIfNeeded 检测 snap Chromium 并注入其运行时 GPU 环境变量 [TH-0414-b3m]。
-func injectSnapEnvIfNeeded() {
+// injectSnapEnvIfNeeded 检测 snap Chromium 并注入其运行时 GPU 环境变量 。
+func injectSnapEnvIfNeeded {
 	if _, err := os.Stat("/snap/bin/chromium"); err != nil {
 		return
 	}
@@ -211,23 +211,23 @@ func injectSnapEnvIfNeeded() {
 
 	cmd := exec.Command("snap", "run", "--shell", "chromium")
 	cmd.Stdin = strings.NewReader("env\n")
-	out, err := cmd.Output()
+	out, err := cmd.Output
 	if err != nil {
 		log.Printf("[DISPLAY-MGR] WARNING: snap run --shell failed: %v", err)
 		return
 	}
 
 	gpuKeys := map[string]bool{
-		"LIBGL_DRIVERS_PATH":                  true,
-		"GBM_BACKENDS_PATH":                   true,
-		"__EGL_VENDOR_LIBRARY_DIRS":           true,
-		"__EGL_EXTERNAL_PLATFORM_CONFIG_DIRS": true,
-		"DRIRC_CONFIGDIR":                     true,
-		"LIBVA_DRIVERS_PATH":                  true,
-		"VK_LAYER_PATH":                       true,
-		"LD_LIBRARY_PATH":                     true,
-		"GDK_BACKEND":                         true,
-		"CLUTTER_BACKEND":                     true,
+		"LIBGL_DRIVERS_PATH": true
+		"GBM_BACKENDS_PATH": true
+		"__EGL_VENDOR_LIBRARY_DIRS": true
+		"__EGL_EXTERNAL_PLATFORM_CONFIG_DIRS": true
+		"DRIRC_CONFIGDIR": true
+		"LIBVA_DRIVERS_PATH": true
+		"VK_LAYER_PATH": true
+		"LD_LIBRARY_PATH": true
+		"GDK_BACKEND": true
+		"CLUTTER_BACKEND": true
 	}
 
 	injected := 0
@@ -250,10 +250,10 @@ func findXAuthFromProcess(display string) string {
 	displayNum := display[1:] // ":0" → "0"
 	entries, _ := os.ReadDir("/proc")
 	for _, entry := range entries {
-		if !entry.IsDir() {
+		if !entry.IsDir {
 			continue
 		}
-		cmdline, err := os.ReadFile("/proc/" + entry.Name() + "/cmdline")
+		cmdline, err := os.ReadFile("/proc/" + entry.Name + "/cmdline")
 		if err != nil {
 			continue
 		}

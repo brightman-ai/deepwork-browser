@@ -1,11 +1,11 @@
 package browser
 
 // input_gateway_jitter_test.go — 回归测试:
-//   1. humanJitter 分布在 [3ms, 30ms] 范围内
-//   2. mousePressed 前的 drift 逻辑存在 (source-level doc-lock)
+// 1. humanJitter 分布在 [3ms, 30ms] 范围内
+// 2. mousePressed 前的 drift 逻辑存在 (source-level doc-lock)
 //
 // 背景: Cloudflare Turnstile 反爬终局修复 — CDP 零抖动输入在 <100 事件内
-//       能被 behavior analysis 识别。修复引入 Gaussian 抖动 + 落点漂移。
+// 能被 behavior analysis 识别。修复引入 Gaussian 抖动 + 落点漂移。
 
 import (
 	"os"
@@ -23,12 +23,12 @@ func TestHumanJitter_Distribution(t *testing.T) {
 
 	var sum time.Duration
 	for i := 0; i < samples; i++ {
-		d := humanJitter()
+		d := humanJitter
 		if d < lower {
-			t.Errorf("humanJitter()=%v below lower bound %v (iter %d)", d, lower, i)
+			t.Errorf("humanJitter=%v below lower bound %v (iter %d)", d, lower, i)
 		}
 		if d > upper {
-			t.Errorf("humanJitter()=%v above upper bound %v (iter %d)", d, upper, i)
+			t.Errorf("humanJitter=%v above upper bound %v (iter %d)", d, upper, i)
 		}
 		sum += d
 	}
@@ -45,7 +45,7 @@ func TestHumanJitter_Distribution(t *testing.T) {
 func TestHumanJitter_NotConstant(t *testing.T) {
 	seen := make(map[time.Duration]struct{})
 	for i := 0; i < 100; i++ {
-		seen[humanJitter()] = struct{}{}
+		seen[humanJitter] = struct{}{}
 	}
 	if len(seen) < 20 {
 		t.Errorf("humanJitter produced only %d unique values in 100 samples — too deterministic (Cloudflare-risk)", len(seen))
@@ -61,9 +61,9 @@ func TestInputGateway_MouseHasButtonsBitmask(t *testing.T) {
 	}
 	src := string(b)
 
-	markers := []string{
+	markers := string{
 		"WithButtons(buttons)", // 位掩码传递
-		"humanJitter()",        // jitter 调用
+		"humanJitter", // jitter 调用
 	}
 	for _, m := range markers {
 		if !strings.Contains(src, m) {
@@ -79,9 +79,9 @@ func TestInputGateway_TextInsertionUsesInsertTextFastPath(t *testing.T) {
 	}
 	src := string(b)
 
-	markers := []string{
-		`event.Event == "insertText"`,
-		"input.InsertText(event.Text)",
+	markers := string{
+		`event.Event == "insertText"`
+		"input.InsertText(event.Text)"
 	}
 	for _, m := range markers {
 		if !strings.Contains(src, m) {

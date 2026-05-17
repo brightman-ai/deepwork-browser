@@ -22,16 +22,16 @@ import (
 const cdpBasePort = 25137
 
 // cdpPortOffsets 质数偏移序列，最多 10 个候选端口。
-var cdpPortOffsets = []int{0, 1, 2, 3, 5, 7, 11, 13, 17, 19}
+var cdpPortOffsets = int{0, 1, 2, 3, 5, 7, 11, 13, 17, 19}
 
 // findAvailableCDPPort 用确定性质数序列找一个可用端口。
 // 启动和连接都用同一算法，消除端口发现问题。
-func findAvailableCDPPort() (int, error) {
+func findAvailableCDPPort (int, error) {
 	for _, offset := range cdpPortOffsets {
 		port := cdpBasePort + offset
 		ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
 		if err == nil {
-			ln.Close()
+			ln.Close
 			return port, nil
 		}
 	}
@@ -39,44 +39,44 @@ func findAvailableCDPPort() (int, error) {
 }
 
 // ============================================================
-// § ChromeLauncher [Ref: CAP-BS09-C1, T5-B8]
+// § ChromeLauncher
 // ============================================================
 
 // chromeLauncherImpl implements ChromeLauncher.
 type chromeLauncherImpl struct{}
 
 // NewChromeLauncher 返回默认 ChromeLauncher 实现。
-func NewChromeLauncher() *chromeLauncherImpl {
+func NewChromeLauncher *chromeLauncherImpl {
 	return &chromeLauncherImpl{}
 }
 
-// linuxChromePaths Linux 平台检测顺序（优先级从高到低）[Ref: BP §A2, T5-B8.1]。
-// [TH-0414-b3m] snap wrapper 优先 — snap 沙箱内 Chrome 的 TLS/DNS 行为与桌面一致。
+// linuxChromePaths Linux 平台检测顺序（优先级从高到低）。
+// snap wrapper 优先 — snap 沙箱内 Chrome 的 TLS/DNS 行为与桌面一致。
 // 直接二进制绕过沙箱会导致 Cloudflare 检测差异。
 // 单实例冲突通过独立 --user-data-dir 解决（不同 profile = 不同实例）。
-var linuxChromePaths = []string{
-	"/usr/bin/google-chrome-stable",
-	"/usr/bin/google-chrome",
-	"/usr/bin/chromium-browser",
-	"/snap/bin/chromium",
+var linuxChromePaths = string{
+	"/usr/bin/google-chrome-stable"
+	"/usr/bin/google-chrome"
+	"/usr/bin/chromium-browser"
+	"/snap/bin/chromium"
 }
 
 // macOSChromePaths macOS 平台检测顺序。
-var macOSChromePaths = []string{
-	"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-	"/Applications/Chromium.app/Contents/MacOS/Chromium",
+var macOSChromePaths = string{
+	"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+	"/Applications/Chromium.app/Contents/MacOS/Chromium"
 }
 
 // windowsChromePaths Windows 平台检测顺序。
-var windowsChromePaths = []string{
-	`C:\Program Files\Google\Chrome\Application\chrome.exe`,
-	`C:\Program Files (x86)\Google\Chrome\Application\chrome.exe`,
+var windowsChromePaths = string{
+	`C:\Program Files\Google\Chrome\Application\chrome.exe`
+	`C:\Program Files (x86)\Google\Chrome\Application\chrome.exe`
 }
 
 // FindChrome 返回本地 Chrome/Edge/Chromium 可执行文件路径。
-// 未找到返回 ErrBrowserNotFound。无浏览器不下载 Chromium [IR-02, BP §A2]。
-func (l *chromeLauncherImpl) FindChrome() (string, error) {
-	var candidates []string
+// 未找到返回 ErrBrowserNotFound。无浏览器不下载 Chromium [BP §A2]。
+func (l *chromeLauncherImpl) FindChrome (string, error) {
+	var candidates string
 	switch runtime.GOOS {
 	case "linux":
 		candidates = linuxChromePaths
@@ -95,7 +95,7 @@ func (l *chromeLauncherImpl) FindChrome() (string, error) {
 	}
 
 	// 也尝试 PATH 中的 chromium/chrome
-	for _, name := range []string{"google-chrome-stable", "google-chrome", "chromium-browser", "chromium", "chrome"} {
+	for _, name := range string{"google-chrome-stable", "google-chrome", "chromium-browser", "chromium", "chrome"} {
 		if path, err := exec.LookPath(name); err == nil {
 			return path, nil
 		}
@@ -107,23 +107,23 @@ func (l *chromeLauncherImpl) FindChrome() (string, error) {
 // DetachedChromeLaunchOptions 描述 detached Chrome 进程的启动参数。
 // 用于需要独立 Chrome 生命周期的场景（如 dw-browser open/session）。
 type DetachedChromeLaunchOptions struct {
-	DebugPort  int
+	DebugPort int
 	ProfileDir string
-	Width      int
-	Height     int
-	PresetID   string
-	UserAgent  string
-	Touch      bool
-	Mode       BrowserMode
+	Width int
+	Height int
+	PresetID string
+	UserAgent string
+	Touch bool
+	Mode BrowserMode
 }
 
 // BuildDetachedChromeArgs 生成 detached Chrome 的启动参数。
 // 设计目标:
-//   - headless/headed/visible 三模式共用同一组生命周期必需参数
-//   - visible 保留本机 Chrome 的真实指纹面，不叠加自动化/CI flags
-//   - headed 使用真实 Chrome + 虚拟显示，并补最小反后台节流参数保证 LiveView 切 tab 稳定
-//   - headless 只在必要处补偿 UA/webdriver，不关闭 GPU/WebGL
-func BuildDetachedChromeArgs(opts DetachedChromeLaunchOptions) []string {
+// - headless/headed/visible 三模式共用同一组生命周期必需参数
+// - visible 保留本机 Chrome 的真实指纹面，不叠加自动化/CI flags
+// - headed 使用真实 Chrome + 虚拟显示，并补最小反后台节流参数保证 LiveView 切 tab 稳定
+// - headless 只在必要处补偿 UA/webdriver，不关闭 GPU/WebGL
+func BuildDetachedChromeArgs(opts DetachedChromeLaunchOptions) string {
 	width, height := opts.Width, opts.Height
 	if width <= 0 {
 		width = DefaultViewportWidth
@@ -146,46 +146,46 @@ func BuildDetachedChromeArgs(opts DetachedChromeLaunchOptions) []string {
 		}
 	}
 
-	args := []string{
-		fmt.Sprintf("--remote-debugging-port=%d", opts.DebugPort),
-		"--remote-debugging-address=127.0.0.1",
-		"--user-data-dir=" + opts.ProfileDir,
-		"--no-first-run",
-		"--no-default-browser-check",
-		"--disable-session-crashed-bubble",
-		"--hide-crash-restore-bubble",
-		"--force-color-profile=srgb",
-		fmt.Sprintf("--window-size=%d,%d", width, height),
+	args := string{
+		fmt.Sprintf("--remote-debugging-port=%d", opts.DebugPort)
+		"--remote-debugging-address=127.0.0.1"
+		"--user-data-dir=" + opts.ProfileDir
+		"--no-first-run"
+		"--no-default-browser-check"
+		"--disable-session-crashed-bubble"
+		"--hide-crash-restore-bubble"
+		"--force-color-profile=srgb"
+		fmt.Sprintf("--window-size=%d,%d", width, height)
 	}
 
 	if mode == ModeHeadless {
-		args = append(args,
-			"--headless=new",
-			"--disable-blink-features=AutomationControlled",
-			"--disable-background-networking",
-			"--disable-background-timer-throttling",
-			"--disable-backgrounding-occluded-windows",
-			"--disable-breakpad",
-			"--disable-client-side-phishing-detection",
-			"--disable-default-apps",
-			"--disable-dev-shm-usage",
-			"--disable-hang-monitor",
-			"--disable-ipc-flooding-protection",
-			"--disable-popup-blocking",
-			"--disable-prompt-on-repost",
-			"--disable-renderer-backgrounding",
-			"--disable-sync",
-			"--metrics-recording-only",
-			"--safebrowsing-disable-auto-update",
-			"--password-store=basic",
-			"--use-mock-keychain",
+		args = append(args
+			"--headless=new"
+			"--disable-blink-features=AutomationControlled"
+			"--disable-background-networking"
+			"--disable-background-timer-throttling"
+			"--disable-backgrounding-occluded-windows"
+			"--disable-breakpad"
+			"--disable-client-side-phishing-detection"
+			"--disable-default-apps"
+			"--disable-dev-shm-usage"
+			"--disable-hang-monitor"
+			"--disable-ipc-flooding-protection"
+			"--disable-popup-blocking"
+			"--disable-prompt-on-repost"
+			"--disable-renderer-backgrounding"
+			"--disable-sync"
+			"--metrics-recording-only"
+			"--safebrowsing-disable-auto-update"
+			"--password-store=basic"
+			"--use-mock-keychain"
 		)
 	} else {
 		if mode == ModeHeaded {
-			args = append(args,
-				"--disable-background-timer-throttling",
-				"--disable-backgrounding-occluded-windows",
-				"--disable-renderer-backgrounding",
+			args = append(args
+				"--disable-background-timer-throttling"
+				"--disable-backgrounding-occluded-windows"
+				"--disable-renderer-backgrounding"
 			)
 		}
 		switch runtime.GOOS {
@@ -213,15 +213,15 @@ func BuildDetachedChromeArgs(opts DetachedChromeLaunchOptions) []string {
 	return append(args, ChromeInitialPageURL)
 }
 
-func appendChromeArgBeforeURL(args []string, arg string) []string {
+func appendChromeArgBeforeURL(args string, arg string) string {
 	if len(args) == 0 {
-		return []string{arg}
+		return string{arg}
 	}
 	last := args[len(args)-1]
 	if strings.HasPrefix(last, "--") {
 		return append(args, arg)
 	}
-	out := make([]string, 0, len(args)+1)
+	out := make(string, 0, len(args)+1)
 	out = append(out, args[:len(args)-1]...)
 	out = append(out, arg, last)
 	return out
@@ -229,11 +229,11 @@ func appendChromeArgBeforeURL(args []string, arg string) []string {
 
 // ExecAllocatorOptionsFromArgs 将 detached Chrome 参数转换为 chromedp ExecAllocatorOption。
 // 设计目标:
-//   - BrowserPool 与 detached dw-browser 复用同一套跨平台 launch args
-//   - 避免两条路径各维护一份 flags，导致 Cloudflare / Turnstile 行为分叉
-func ExecAllocatorOptionsFromArgs(chromePath string, args []string) []chromedp.ExecAllocatorOption {
-	opts := []chromedp.ExecAllocatorOption{
-		chromedp.ExecPath(chromePath),
+// - BrowserPool 与 detached dw-browser 复用同一套跨平台 launch args
+// - 避免两条路径各维护一份 flags，导致 Cloudflare / Turnstile 行为分叉
+func ExecAllocatorOptionsFromArgs(chromePath string, args string) chromedp.ExecAllocatorOption {
+	opts := chromedp.ExecAllocatorOption{
+		chromedp.ExecPath(chromePath)
 	}
 
 	for _, arg := range args {
@@ -280,7 +280,7 @@ func ExecAllocatorOptionsFromArgs(chromePath string, args []string) []chromedp.E
 // Launch 检测并启动 Chrome，返回 CDP WebSocket URL 和进程 PID。
 // profileID 对应 ~/.deepwork/browser-data/{profileID}/ 目录。
 func (l *chromeLauncherImpl) Launch(ctx context.Context, profileID string, headless ...bool) (cdpURL string, pid int, err error) {
-	chromePath, err := l.FindChrome()
+	chromePath, err := l.FindChrome
 	if err != nil {
 		return "", 0, err
 	}
@@ -297,12 +297,12 @@ func (l *chromeLauncherImpl) Launch(ctx context.Context, profileID string, headl
 	}
 
 	// 确定性端口分配: 从 25137 起，质数偏移，最多 10 个候选
-	cdpPort, err := findAvailableCDPPort()
+	cdpPort, err := findAvailableCDPPort
 	if err != nil {
 		return "", 0, fmt.Errorf("%w: %v", ErrBrowserNotFound, err)
 	}
 
-	// Chrome 启动参数 [Ref: BP §A2, T5-B8.2]
+	// Chrome 启动参数
 	useHeadless := true
 	if len(headless) > 0 {
 		useHeadless = headless[0]
@@ -312,18 +312,18 @@ func (l *chromeLauncherImpl) Launch(ctx context.Context, profileID string, headl
 		mode = ModeHeadless
 	}
 	args := BuildDetachedChromeArgs(DetachedChromeLaunchOptions{
-		DebugPort:  cdpPort,
-		ProfileDir: profilePath,
-		Width:      DefaultViewportWidth,
-		Height:     DefaultViewportHeight,
-		Mode:       mode,
+		DebugPort: cdpPort
+		ProfileDir: profilePath
+		Width: DefaultViewportWidth
+		Height: DefaultViewportHeight
+		Mode: mode
 	})
 
 	cmd := exec.CommandContext(ctx, chromePath, args...)
 	// 捕获 stderr 用于调试 Chrome 启动失败
 	var stderrBuf bytes.Buffer
 	cmd.Stderr = &stderrBuf
-	if err := cmd.Start(); err != nil {
+	if err := cmd.Start; err != nil {
 		return "", 0, fmt.Errorf("%w: %v", ErrBrowserNotFound, err)
 	}
 
@@ -334,9 +334,9 @@ func (l *chromeLauncherImpl) Launch(ctx context.Context, profileID string, headl
 	cdpURL, err = waitForCDP(ctx, cdpPort, ChromeCDPStartupAttempts, ChromeCDPStartupPollInterval)
 	if err != nil {
 		// 超时则 Kill 残留进程
-		_ = cmd.Process.Kill()
-		_ = cmd.Wait()
-		stderr := stderrBuf.String()
+		_ = cmd.Process.Kill
+		_ = cmd.Wait
+		stderr := stderrBuf.String
 		if len(stderr) > 200 {
 			stderr = stderr[:200]
 		}
@@ -349,16 +349,16 @@ func (l *chromeLauncherImpl) Launch(ctx context.Context, profileID string, headl
 // pollCDPVersion 轮询 /json/version 获取 CDP DevTools URL。
 // waitForCDP 在已知端口上轮询 /json/version 等待 Chrome CDP 就绪。
 func waitForCDP(ctx context.Context, port int, maxAttempts int, interval time.Duration) (string, error) {
-	startedAt := time.Now()
+	startedAt := time.Now
 	versionURL := fmt.Sprintf("http://127.0.0.1:%d/json/version", port)
 
 	var lastErr error
 	for attempt := 0; attempt < maxAttempts; attempt++ {
 		select {
-		case <-ctx.Done():
-			log.Printf("[CHROME-LAUNCH] legacy_cdp_cancelled port=%d attempts=%d elapsed_ms=%d err=%v",
-				port, attempt, time.Since(startedAt).Milliseconds(), ctx.Err())
-			return "", ctx.Err()
+		case <-ctx.Done:
+			log.Printf("[CHROME-LAUNCH] legacy_cdp_cancelled port=%d attempts=%d elapsed_ms=%d err=%v"
+				port, attempt, time.Since(startedAt).Milliseconds, ctx.Err)
+			return "", ctx.Err
 		case <-time.After(interval):
 		}
 
@@ -371,18 +371,18 @@ func waitForCDP(ctx context.Context, port int, maxAttempts int, interval time.Du
 			WebSocketDebuggerURL string `json:"webSocketDebuggerUrl"`
 		}
 		decErr := json.NewDecoder(resp.Body).Decode(&vInfo)
-		resp.Body.Close()
+		resp.Body.Close
 		if decErr == nil && vInfo.WebSocketDebuggerURL != "" {
-			log.Printf("[CHROME-LAUNCH] legacy_cdp_ready port=%d attempts=%d elapsed_ms=%d",
-				port, attempt+1, time.Since(startedAt).Milliseconds())
+			log.Printf("[CHROME-LAUNCH] legacy_cdp_ready port=%d attempts=%d elapsed_ms=%d"
+				port, attempt+1, time.Since(startedAt).Milliseconds)
 			return vInfo.WebSocketDebuggerURL, nil
 		}
 		if decErr != nil {
 			lastErr = decErr
 		}
 	}
-	log.Printf("[CHROME-LAUNCH] legacy_cdp_timeout port=%d attempts=%d elapsed_ms=%d last_err=%v",
-		port, maxAttempts, time.Since(startedAt).Milliseconds(), lastErr)
+	log.Printf("[CHROME-LAUNCH] legacy_cdp_timeout port=%d attempts=%d elapsed_ms=%d last_err=%v"
+		port, maxAttempts, time.Since(startedAt).Milliseconds, lastErr)
 	return "", fmt.Errorf("CDP not ready on port %d after %d attempts", port, maxAttempts)
 }
 
@@ -397,7 +397,7 @@ func findCDPPortByPID(pid int) (int, error) {
 		}
 	}
 
-	// 解析 tcp/tcp6 文件: 每行格式 "  sl  local_address:port rem_addr:port st ..."
+	// 解析 tcp/tcp6 文件: 每行格式 " sl local_address:port rem_addr:port st ..."
 	// 找 state=0A (LISTEN) 的本地端口
 	lines := splitLines(string(data))
 	for _, line := range lines[1:] { // 跳过 header
@@ -432,8 +432,8 @@ func findCDPPortByPID(pid int) (int, error) {
 }
 
 // splitLines 分割字符串为行。
-func splitLines(s string) []string {
-	var lines []string
+func splitLines(s string) string {
+	var lines string
 	start := 0
 	for i, c := range s {
 		if c == '\n' {
@@ -448,8 +448,8 @@ func splitLines(s string) []string {
 }
 
 // splitFields 按空白分割字段。
-func splitFields(s string) []string {
-	var fields []string
+func splitFields(s string) string {
+	var fields string
 	inField := false
 	start := 0
 	for i, c := range s {
@@ -477,7 +477,7 @@ func (l *chromeLauncherImpl) Kill(pid int) error {
 	if err != nil {
 		return err
 	}
-	return proc.Kill()
+	return proc.Kill
 }
 
 // IsAlive 检查 Chrome 进程是否存活。
@@ -498,7 +498,7 @@ func (l *chromeLauncherImpl) IsAlive(pid int) bool {
 // cdpVersionResponse is the JSON response from /json/version.
 type cdpVersionResponse struct {
 	WebSocketDebuggerURL string `json:"webSocketDebuggerUrl"`
-	Browser              string `json:"Browser"`
+	Browser string `json:"Browser"`
 }
 
 // GetCDPVersion 查询 CDP /json/version 返回版本信息。
@@ -507,7 +507,7 @@ func GetCDPVersion(port int) (*cdpVersionResponse, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer resp.Body.Close
 	var v cdpVersionResponse
 	if err := json.NewDecoder(resp.Body).Decode(&v); err != nil {
 		return nil, err

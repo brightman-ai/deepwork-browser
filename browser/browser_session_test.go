@@ -10,7 +10,7 @@ func TestSessionAuthorityUpdateTargetInfoAllowsClearingURLAndTitle(t *testing.T)
 	a.UpdateTargetInfo("https://chatgpt.com", "ChatGPT", 2)
 	a.UpdateTargetInfo("", "", 1)
 
-	snap := a.GetState()
+	snap := a.GetState
 	if snap.URL != "" {
 		t.Fatalf("expected URL to be cleared, got %q", snap.URL)
 	}
@@ -24,19 +24,19 @@ func TestSessionAuthorityUpdateTargetInfoAllowsClearingURLAndTitle(t *testing.T)
 
 func TestSessionAuthorityCopiesTabsOnWriteAndRead(t *testing.T) {
 	a := NewSessionAuthority(1920, 1080)
-	tabs := []TabInfo{
-		{ID: "tab-a", URL: "https://a.example/", Title: "A", Active: true},
+	tabs := TabInfo{
+		{ID: "tab-a", URL: "https://a.example/", Title: "A", Active: true}
 	}
 	a.UpdateTargetInfo("https://a.example/", "A", 1, tabs)
 
 	tabs[0].Title = "mutated input"
-	snap := a.GetState()
+	snap := a.GetState
 	if snap.Tabs[0].Title != "A" {
 		t.Fatalf("state tabs polluted by caller mutation: %q", snap.Tabs[0].Title)
 	}
 
 	snap.Tabs[0].Title = "mutated snapshot"
-	snap2 := a.GetState()
+	snap2 := a.GetState
 	if snap2.Tabs[0].Title != "A" {
 		t.Fatalf("state tabs polluted by snapshot mutation: %q", snap2.Tabs[0].Title)
 	}

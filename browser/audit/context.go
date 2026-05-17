@@ -2,12 +2,12 @@ package audit
 
 // AuditContext 运行时上下文，用于参数化 checks。
 type AuditContext struct {
-	Engine     string // "chrome" | "safari"
-	IsTouch    bool
-	HasNotch   bool
+	Engine string // "chrome" | "safari"
+	IsTouch bool
+	HasNotch bool
 	DeviceName string
-	ViewportW  int
-	ViewportH  int
+	ViewportW int
+	ViewportH int
 }
 
 // ApplyContext 用上下文覆盖 check 的默认参数，返回覆盖后的参数副本。
@@ -46,7 +46,7 @@ func ApplyContext(check *Check, actx *AuditContext) map[string]any {
 	return params
 }
 
-func hasTag(tags []string, tag string) bool {
+func hasTag(tags string, tag string) bool {
 	for _, t := range tags {
 		if t == tag {
 			return true

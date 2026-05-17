@@ -14,33 +14,33 @@ import (
 type BrowserSessionKind string
 
 const (
-	SessionKindTask        BrowserSessionKind = "task"
+	SessionKindTask BrowserSessionKind = "task"
 	SessionKindInteractive BrowserSessionKind = "interactive"
-	SessionKindService     BrowserSessionKind = "service"
-	SessionKindDebug       BrowserSessionKind = "debug"
-	SessionKindTest        BrowserSessionKind = "test"
+	SessionKindService BrowserSessionKind = "service"
+	SessionKindDebug BrowserSessionKind = "debug"
+	SessionKindTest BrowserSessionKind = "test"
 )
 
 const (
-	SessionOwnerAgent   = "agent"
-	SessionOwnerHuman   = "human"
+	SessionOwnerAgent = "agent"
+	SessionOwnerHuman = "human"
 	SessionOwnerService = "service"
 
 	SessionIsolationEphemeral = "ephemeral"
 	SessionIsolationDedicated = "dedicated"
-	SessionIsolationPool      = "profile-pool"
+	SessionIsolationPool = "profile-pool"
 
 	AuthorityAgentic = "agentic"
-	AuthorityHuman   = "human"
-	AuthorityShared  = "shared"
+	AuthorityHuman = "human"
+	AuthorityShared = "shared"
 )
 
 // BrowserSessionDefaults captures the policy implied by a session kind.
 type BrowserSessionDefaults struct {
-	Kind           BrowserSessionKind
-	Owner          string
-	Mode           BrowserMode
-	Isolation      string
+	Kind BrowserSessionKind
+	Owner string
+	Mode BrowserMode
+	Isolation string
 	AuthorityState string
 }
 
@@ -72,43 +72,43 @@ func DefaultsForBrowserSessionKind(kind BrowserSessionKind) BrowserSessionDefaul
 	switch kind {
 	case SessionKindInteractive:
 		return BrowserSessionDefaults{
-			Kind:           kind,
-			Owner:          SessionOwnerHuman,
-			Mode:           ModeHeaded,
-			Isolation:      SessionIsolationDedicated,
-			AuthorityState: AuthorityHuman,
+			Kind: kind
+			Owner: SessionOwnerHuman
+			Mode: ModeHeaded
+			Isolation: SessionIsolationDedicated
+			AuthorityState: AuthorityHuman
 		}
 	case SessionKindService:
 		return BrowserSessionDefaults{
-			Kind:           kind,
-			Owner:          SessionOwnerService,
-			Mode:           ModeHeaded,
-			Isolation:      SessionIsolationDedicated,
-			AuthorityState: AuthorityAgentic,
+			Kind: kind
+			Owner: SessionOwnerService
+			Mode: ModeHeaded
+			Isolation: SessionIsolationDedicated
+			AuthorityState: AuthorityAgentic
 		}
 	case SessionKindDebug:
 		return BrowserSessionDefaults{
-			Kind:           kind,
-			Owner:          SessionOwnerHuman,
-			Mode:           ModeVisible,
-			Isolation:      SessionIsolationDedicated,
-			AuthorityState: AuthorityHuman,
+			Kind: kind
+			Owner: SessionOwnerHuman
+			Mode: ModeVisible
+			Isolation: SessionIsolationDedicated
+			AuthorityState: AuthorityHuman
 		}
 	case SessionKindTest:
 		return BrowserSessionDefaults{
-			Kind:           kind,
-			Owner:          SessionOwnerAgent,
-			Mode:           ModeHeadless,
-			Isolation:      SessionIsolationEphemeral,
-			AuthorityState: AuthorityAgentic,
+			Kind: kind
+			Owner: SessionOwnerAgent
+			Mode: ModeHeadless
+			Isolation: SessionIsolationEphemeral
+			AuthorityState: AuthorityAgentic
 		}
 	default:
 		return BrowserSessionDefaults{
-			Kind:           SessionKindTask,
-			Owner:          SessionOwnerAgent,
-			Mode:           ModeHeadless,
-			Isolation:      SessionIsolationEphemeral,
-			AuthorityState: AuthorityAgentic,
+			Kind: SessionKindTask
+			Owner: SessionOwnerAgent
+			Mode: ModeHeadless
+			Isolation: SessionIsolationEphemeral
+			AuthorityState: AuthorityAgentic
 		}
 	}
 }
@@ -137,7 +137,7 @@ func NewBrowserRunID(browserSessionID string, chromePID int) string {
 	if browserSessionID == "" {
 		browserSessionID = "browser-session-unknown"
 	}
-	return fmt.Sprintf("%s-run-%d-%d", browserSessionID, chromePID, time.Now().UnixNano())
+	return fmt.Sprintf("%s-run-%d-%d", browserSessionID, chromePID, time.Now.UnixNano)
 }
 
 func NewBrowserMuxHostID(browserSessionID string, pid int) string {
@@ -146,7 +146,7 @@ func NewBrowserMuxHostID(browserSessionID string, pid int) string {
 		browserSessionID = "browser-session-unknown"
 	}
 	if pid <= 0 {
-		pid = os.Getpid()
+		pid = os.Getpid
 	}
 	return browserSessionID + "-muxhost-" + strconv.Itoa(pid)
 }
@@ -155,10 +155,10 @@ func NewBrowserMuxHostID(browserSessionID string, pid int) string {
 // BrowserSession. New BrowserMuxHost manifests use this stable id so Deepwork
 // and CLI clients can reconnect to the same muxhost after a client restart.
 func BrowserMuxHostIDFromBrowserSessionID(browserSessionID string) string {
-	return GlobalBrowserMuxHostID()
+	return GlobalBrowserMuxHostID
 }
 
-func GlobalBrowserMuxHostID() string {
+func GlobalBrowserMuxHostID string {
 	return "browser-mux-host-global"
 }
 
@@ -200,7 +200,7 @@ func sanitizeBrowserRuntimeID(raw string) string {
 			lastDash = true
 		}
 	}
-	out := strings.Trim(b.String(), "-")
+	out := strings.Trim(b.String, "-")
 	if out == "" {
 		return "unknown"
 	}
@@ -245,10 +245,10 @@ func NormalizeSessionInfo(info *SessionInfo) {
 		info.BrowserRunID = NewBrowserRunID(info.BrowserSessionID, info.ChromePID)
 	}
 	if info.BrowserMuxHostID == "" && info.BrowserMuxHostPID > 0 {
-		info.BrowserMuxHostID = GlobalBrowserMuxHostID()
+		info.BrowserMuxHostID = GlobalBrowserMuxHostID
 	}
 	if strings.HasPrefix(info.BrowserMuxHostID, "browser-mux-host-browser-session-") {
-		info.BrowserMuxHostID = GlobalBrowserMuxHostID()
+		info.BrowserMuxHostID = GlobalBrowserMuxHostID
 	}
 	if info.RuntimeID == "" {
 		info.RuntimeID = BrowserRuntimeIDFromBrowserSessionID(info.BrowserSessionID)

@@ -10,17 +10,17 @@ import (
 )
 
 func TestInputGateway_RejectionLoggedToObs(t *testing.T) {
-	since := time.Now().Add(-1 * time.Second)
+	since := time.Now.Add(-1 * time.Second)
 
 	gw := NewInputGateway(nil, nil)
 	ack := gw.HandleInput("conn-test", &InputMessage{
-		Type:  "input",
-		Seq:   7,
-		Lease: "bad",
-		Event: InputEvent{Type: "keyboard", Event: "keyDown", Key: "a", Code: "KeyA"},
+		Type: "input"
+		Seq: 7
+		Lease: "bad"
+		Event: InputEvent{Type: "keyboard", Event: "keyDown", Key: "a", Code: "KeyA"}
 	})
 	if ack == nil || ack.Status != "rejected" {
-		t.Fatalf("HandleInput() ack = %+v, want rejected", ack)
+		t.Fatalf("HandleInput ack = %+v, want rejected", ack)
 	}
 
 	entries := obs.RecentEntries("WARN", 20, since)
@@ -36,12 +36,12 @@ func TestInputGateway_RejectionLoggedToObs(t *testing.T) {
 }
 
 func TestWarmTargetContext_LogsToObs(t *testing.T) {
-	since := time.Now().Add(-1 * time.Second)
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
+	since := time.Now.Add(-1 * time.Second)
+	ctx, cancel := context.WithCancel(context.Background)
+	cancel
 
 	if err := warmTargetContext(ctx); err == nil {
-		t.Fatal("warmTargetContext() err = nil, want error")
+		t.Fatal("warmTargetContext err = nil, want error")
 	}
 
 	entries := obs.RecentEntries("WARN", 20, since)
