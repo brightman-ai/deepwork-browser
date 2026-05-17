@@ -1,0 +1,21 @@
+# Build outputs
+dw-browser
+*.exe
+*.test
+*.out
+bin/
+
+# Environment & secrets
+.env
+.env.*
+*.key
+*.pem
+credentials.*
+
+# Docs (workflow_ng private artifacts)
+docs/
+
+# Editor
+.DS_Store
+.idea/
+.vscode/
