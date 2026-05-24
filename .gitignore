@@ -14,7 +14,7 @@ credentials.*
 
 # Private docs (real content in deepwork-pro; symlinked here, not committed)
 docs/
-evolve_history/
+evolve_history
 
 # Editor
 .DS_Store
