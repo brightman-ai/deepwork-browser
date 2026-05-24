@@ -1158,13 +1158,12 @@ func lookupSkillRecipe(pageURL, goal string) []btest.PlannedStep {
 	if domain == "" {
 		return nil
 	}
-	skillName := strings.ReplaceAll(domain, ".", "-")
 	import_filepath := skillsBaseDir()
 	if import_filepath == "" {
 		return nil
 	}
 
-	skillFile := import_filepath + "/" + skillName + "/SKILL.md"
+	skillFile := import_filepath + "/" + domain + "/SKILL.md"
 	data, err := os.ReadFile(skillFile)
 	if err != nil {
 		return nil

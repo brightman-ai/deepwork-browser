@@ -1,17 +1,22 @@
 // skills.go — Browser Skills CLI subcommand + snap skill hint integration
 // Implements: dw-browser skills {list|read|write}
 // Implements: formatSkillHint() for snap output enrichment
+//
+// All SKILL.md parsing is delegated to the browser/skills library.
+// This file is a THIN wrapper: CLI I/O, user-facing output, and session
+// step-counter state only.
 package main
 
 import (
 	"bufio"
 	"fmt"
-	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/brightman-ai/deepwork-browser/browser/skills"
 )
 
 // ============================================================
@@ -28,25 +33,35 @@ func skillsBaseDir() string {
 }
 
 // ============================================================
-// § SKILL.md frontmatter parsing (lightweight, no heavy YAML)
+// § Thin wrappers — delegates to browser/skills library
 // ============================================================
 
-// skillMeta holds parsed frontmatter from a SKILL.md file.
-type skillMeta struct {
-	Name        string
-	Description string
-	Domain      string
-	Actions     []string
-	VerifiedAt  string
-}
-
-// parseSkillFrontmatter extracts YAML frontmatter between --- markers.
-// Returns metadata and the body (content after second ---).
+// parseSkillFrontmatter is a compatibility shim: returns (skillMeta, body)
+// by delegating to skills.Parse. Used only by write path that needs meta+body
+// separately for reconstruction.
 func parseSkillFrontmatter(content string) (skillMeta, string) {
 	var meta skillMeta
-	lines := strings.Split(content, "\n")
+	doc, err := skills.Parse([]byte(content))
+	if err != nil {
+		// Return empty meta + full content as body (graceful degradation)
+		return meta, content
+	}
+	meta.Name = doc.Name
+	meta.Description = doc.Description
+	meta.Domain = doc.Domain
+	meta.VerifiedAt = doc.VerifiedAt
+	for _, a := range doc.Actions {
+		meta.Actions = append(meta.Actions, a.Name)
+	}
+	// Retrieve body by stripping frontmatter manually (needed for replaceSection)
+	_, body, _ := splitSkillFrontmatterRaw(content)
+	return meta, body
+}
 
-	// Find frontmatter boundaries
+// splitSkillFrontmatterRaw splits content at --- markers and returns
+// (frontmatter text, body text, ok).  Used by write path.
+func splitSkillFrontmatterRaw(content string) (string, string, bool) {
+	lines := strings.Split(content, "\n")
 	fmStart, fmEnd := -1, -1
 	for i, line := range lines {
 		if strings.TrimSpace(line) == "---" {
@@ -59,56 +74,36 @@ func parseSkillFrontmatter(content string) (skillMeta, string) {
 		}
 	}
 	if fmStart == -1 || fmEnd == -1 {
-		return meta, content
+		return "", content, false
 	}
-
-	// Parse key-value pairs from frontmatter
-	for i := fmStart + 1; i < fmEnd; i++ {
-		line := lines[i]
-		// Skip indented lines (YAML sub-items like "  - dw-browser")
-		if strings.HasPrefix(line, "  ") || strings.HasPrefix(line, "\t") {
-			continue
-		}
-		idx := strings.Index(line, ": ")
-		if idx == -1 {
-			// Try key:value without space (e.g., "name:foo")
-			idx = strings.Index(line, ":")
-			if idx == -1 || idx == len(line)-1 {
-				continue
-			}
-		}
-		key := strings.TrimSpace(line[:idx])
-		val := strings.TrimSpace(line[idx+1:])
-
-		switch key {
-		case "name":
-			meta.Name = val
-		case "description":
-			meta.Description = val
-		case "domain":
-			meta.Domain = val
-		case "verified_at":
-			meta.VerifiedAt = val
-		case "actions":
-			meta.Actions = parseYAMLInlineArray(val)
-		}
-	}
-
+	front := strings.Join(lines[fmStart+1:fmEnd], "\n")
 	body := strings.Join(lines[fmEnd+1:], "\n")
-	return meta, body
+	return front, body, true
 }
 
-// parseYAMLInlineArray parses "[a, b, c]" into []string{"a","b","c"}.
+// extractSection delegates to the library.
+func extractSection(body, sectionName string) (string, bool) {
+	return skills.ExtractSection(body, sectionName)
+}
+
+// replaceSection delegates to the library.
+func replaceSection(body, sectionName, newContent string) string {
+	return skills.ReplaceSection(body, sectionName, newContent)
+}
+
+// parseYAMLInlineArray delegates to the library (unexported wrapper).
 func parseYAMLInlineArray(s string) []string {
+	// Use the library's inline array parser via a round-trip.
+	// The library's FormatInlineArray and parseInlineArray are internal, but
+	// the exported FormatInlineArray gives us the inverse; we parse inline arrays
+	// the same way the library does.
 	s = strings.TrimSpace(s)
-	if !strings.HasPrefix(s, "[") || !strings.HasSuffix(s, "]") {
-		// Single value or empty
-		if s == "" {
-			return nil
-		}
-		return []string{s}
+	if s == "" {
+		return nil
 	}
-	s = s[1 : len(s)-1] // strip [ ]
+	if strings.HasPrefix(s, "[") && strings.HasSuffix(s, "]") {
+		s = s[1 : len(s)-1]
+	}
 	parts := strings.Split(s, ",")
 	var result []string
 	for _, p := range parts {
@@ -120,80 +115,23 @@ func parseYAMLInlineArray(s string) []string {
 	return result
 }
 
-// formatYAMLInlineArray formats []string as "[a, b, c]".
+// formatYAMLInlineArray delegates to the library.
 func formatYAMLInlineArray(items []string) string {
-	return "[" + strings.Join(items, ", ") + "]"
+	return skills.FormatInlineArray(items)
 }
 
 // ============================================================
-// § SKILL.md section extraction/replacement
+// § skillMeta — local CLI-only struct (used by write path)
 // ============================================================
 
-// extractSection extracts content from ## {name} to next ## or EOF.
-// Returns the section content (without the ## header) and whether it was found.
-func extractSection(body, sectionName string) (string, bool) {
-	lines := strings.Split(body, "\n")
-	header := "## " + sectionName
-	inSection := false
-	var sectionLines []string
-
-	for _, line := range lines {
-		if strings.TrimSpace(line) == header || strings.HasPrefix(line, header+"\n") ||
-			(strings.HasPrefix(line, "## ") && inSection) {
-			if inSection {
-				// Hit next ## header — stop
-				break
-			}
-			if strings.TrimSpace(line) == header {
-				inSection = true
-				continue
-			}
-		}
-		if inSection {
-			sectionLines = append(sectionLines, line)
-		}
-	}
-	if !inSection {
-		return "", false
-	}
-	return strings.Join(sectionLines, "\n"), true
-}
-
-// replaceSection replaces the content of ## {name} section, or appends if not found.
-func replaceSection(body, sectionName, newContent string) string {
-	lines := strings.Split(body, "\n")
-	header := "## " + sectionName
-	var result []string
-	inSection := false
-	replaced := false
-
-	for _, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		if trimmed == header {
-			inSection = true
-			replaced = true
-			// Write the new section
-			result = append(result, header)
-			result = append(result, newContent)
-			continue
-		}
-		if inSection && strings.HasPrefix(trimmed, "## ") {
-			// Hit next section header — stop skipping
-			inSection = false
-		}
-		if !inSection {
-			result = append(result, line)
-		}
-	}
-	if !replaced {
-		// Append at end
-		// Ensure blank line before new section
-		text := strings.Join(result, "\n")
-		text = strings.TrimRight(text, "\n")
-		text += "\n\n" + header + "\n" + newContent + "\n"
-		return text
-	}
-	return strings.Join(result, "\n")
+// skillMeta holds parsed frontmatter for write/rebuild path.
+// This is not exported; only the CLI write/list paths use it directly.
+type skillMeta struct {
+	Name        string
+	Description string
+	Domain      string
+	Actions     []string
+	VerifiedAt  string
 }
 
 // ============================================================
@@ -246,7 +184,7 @@ func runSkillsList() {
 		dirName string
 		meta    skillMeta
 	}
-	var skills []skillEntry
+	var skillList []skillEntry
 
 	for _, entry := range entries {
 		if !entry.IsDir() {
@@ -258,14 +196,14 @@ func runSkillsList() {
 			continue // skip directories without SKILL.md
 		}
 		meta, _ := parseSkillFrontmatter(string(data))
-		skills = append(skills, skillEntry{dirName: entry.Name(), meta: meta})
+		skillList = append(skillList, skillEntry{dirName: entry.Name(), meta: meta})
 	}
 
-	sort.Slice(skills, func(i, j int) bool {
-		return skills[i].dirName < skills[j].dirName
+	sort.Slice(skillList, func(i, j int) bool {
+		return skillList[i].dirName < skillList[j].dirName
 	})
 
-	for _, s := range skills {
+	for _, s := range skillList {
 		domain := s.meta.Domain
 		if domain == "" {
 			domain = "(generic)"
@@ -309,8 +247,15 @@ func runSkillsRead(args []string) {
 	skillFile := filepath.Join(baseDir, name, "SKILL.md")
 	data, err := os.ReadFile(skillFile)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "dw-browser skills read: skill %q not found (%s)\n", name, skillFile)
-		os.Exit(exitRunErr)
+		// Disk root miss — fall back to embedded public corpus.
+		embedPath := "corpus/" + name + "/SKILL.md"
+		embedded, embedErr := skills.ReadEmbedded(embedPath)
+		if embedErr != nil {
+			fmt.Fprintf(os.Stderr, "dw-browser skills read: skill %q not found (%s)\n", name, skillFile)
+			os.Exit(exitRunErr)
+		}
+		data = embedded
+		skillFile = "[embed]" + embedPath
 	}
 
 	if actionName == "" {
@@ -319,7 +264,7 @@ func runSkillsRead(args []string) {
 		os.Exit(exitOK)
 	}
 
-	// Extract specific action section
+	// Extract specific action section via library
 	_, body := parseSkillFrontmatter(string(data))
 	section, found := extractSection(body, actionName)
 	if !found {
@@ -409,7 +354,7 @@ func runSkillsWrite(args []string) {
 			os.Exit(exitRunErr)
 		}
 
-		domain := strings.ReplaceAll(name, "-", ".")
+		domain := name // name is already the dotted domain (e.g. "chatgpt.com")
 		meta := skillMeta{
 			Name:       name,
 			Domain:     domain,
@@ -550,7 +495,7 @@ func containsString(slice []string, s string) bool {
 }
 
 // ============================================================
-// § Snap skill hint (Task 2)
+// § Snap skill hint
 // ============================================================
 
 // formatSkillHint checks for browser skills matching the page URL's domain.
@@ -565,54 +510,32 @@ func formatSkillHint(pageURL string) string {
 		return ""
 	}
 
-	// Extract domain from URL
-	domain := extractDomain(pageURL)
-	if domain == "" {
+	// Use the library resolver
+	b, err := skills.Resolve(pageURL, baseDir)
+	if err != nil || b.Status != skills.MatchExact {
 		return ""
 	}
 
-	// Convert domain to skill directory name (. → -)
-	skillName := strings.ReplaceAll(domain, ".", "-")
-	skillFile := filepath.Join(baseDir, skillName, "SKILL.md")
-
-	data, err := os.ReadFile(skillFile)
-	if err != nil {
-		return "" // No skill for this domain
-	}
-
-	meta, body := parseSkillFrontmatter(string(data))
-	if len(meta.Actions) == 0 {
+	if len(b.Actions) == 0 {
 		return ""
 	}
 
 	// Build action(intent) pairs
 	var pairs []string
-	for _, action := range meta.Actions {
-		intent := extractActionIntent(body, action)
-		if intent != "" {
-			pairs = append(pairs, action+"("+intent+")")
+	for _, action := range b.Actions {
+		if action.Intent != "" {
+			pairs = append(pairs, action.Name+"("+action.Intent+")")
 		} else {
-			pairs = append(pairs, action)
+			pairs = append(pairs, action.Name)
 		}
 	}
 
-	return fmt.Sprintf("[Skill: %s — %s]", skillName, strings.Join(pairs, " "))
+	return fmt.Sprintf("[Skill: %s — %s]", b.Domain, strings.Join(pairs, " "))
 }
 
-// extractDomain extracts the domain from a URL string.
-// Strips port, strips "www." prefix.
+// extractDomain is kept for backward compatibility with resolveSkillContext.
 func extractDomain(rawURL string) string {
-	// Ensure URL has scheme
-	if !strings.Contains(rawURL, "://") {
-		rawURL = "https://" + rawURL
-	}
-	u, err := url.Parse(rawURL)
-	if err != nil || u.Host == "" {
-		return ""
-	}
-	host := u.Hostname() // strips port
-	host = strings.TrimPrefix(host, "www.")
-	return host
+	return skills.DeriveDomain(rawURL)
 }
 
 // extractActionIntent reads the "intent: ..." line from a ## {action} section.
@@ -635,53 +558,52 @@ func extractActionIntent(body, actionName string) string {
 // ============================================================
 
 // skillExecContext holds auto-derived context for --skill flag.
-// Populated once from SKILL.md, carried through act execution.
 type skillExecContext struct {
-	ActionName string `json:"action"`     // "send-message"
-	Intent     string `json:"intent"`     // "发送消息"
-	Domain     string `json:"domain"`     // "chatgpt.com"
-	SkillName  string `json:"skill_name"` // "chatgpt-com"
-	Step       int    `json:"step"`       // 1-based, auto-incremented per session
-	Total      int    `json:"total"`      // recipe line count (0 = unknown)
+	ActionName string `json:"action"`
+	Intent     string `json:"intent"`
+	Domain     string `json:"domain"`
+	SkillName  string `json:"skill_name"`
+	Step       int    `json:"step"`
+	Total      int    `json:"total"`
 }
 
 // sessionSkillState tracks step counter across act calls within a session.
-// Key: sessionID + ":" + actionName → current step count.
 var sessionSkillSteps = map[string]int{}
 
 // resolveSkillContext builds a skillExecContext from the --skill flag value
 // and the current page URL.
-//
-// pageURL is used to derive domain → skill directory.
-// If the skill or action is not found, returns nil (graceful no-op).
 func resolveSkillContext(skillFlag, pageURL, sessionID string) *skillExecContext {
 	if skillFlag == "" {
 		return nil
 	}
 
-	domain := extractDomain(pageURL)
+	domain := skills.DeriveDomain(pageURL)
 	if domain == "" {
-		// No URL context — use skillFlag as-is, minimal context
 		return &skillExecContext{ActionName: skillFlag}
 	}
 
-	skillName := strings.ReplaceAll(domain, ".", "-")
+	skillName := domain
 	baseDir := skillsBaseDir()
 	if baseDir == "" {
 		return &skillExecContext{ActionName: skillFlag, Domain: domain, SkillName: skillName}
 	}
 
-	skillFile := filepath.Join(baseDir, skillName, "SKILL.md")
-	data, err := os.ReadFile(skillFile)
-	if err != nil {
+	b, err := skills.Resolve(pageURL, baseDir)
+	if err != nil || b.Status != skills.MatchExact {
 		return &skillExecContext{ActionName: skillFlag, Domain: domain, SkillName: skillName}
 	}
 
-	_, body := parseSkillFrontmatter(string(data))
-	intent := extractActionIntent(body, skillFlag)
-	total := countRecipeLines(body, skillFlag)
+	// Find the matching action
+	var intent string
+	var total int
+	for _, action := range b.Actions {
+		if action.Name == skillFlag {
+			intent = action.Intent
+			total = len(action.Recipe)
+			break
+		}
+	}
 
-	// Auto-increment step counter per session+action
 	key := sessionID + ":" + skillFlag
 	sessionSkillSteps[key]++
 	step := sessionSkillSteps[key]
@@ -696,8 +618,7 @@ func resolveSkillContext(skillFlag, pageURL, sessionID string) *skillExecContext
 	}
 }
 
-// countRecipeLines counts lines inside the ```dw-browser fenced block
-// in an action's ## section. Returns 0 if not found.
+// countRecipeLines is kept for any remaining callers (delegates to library).
 func countRecipeLines(body, actionName string) int {
 	section, found := extractSection(body, actionName)
 	if !found {
@@ -722,7 +643,6 @@ func countRecipeLines(body, actionName string) int {
 }
 
 // injectSkillFields adds skill context fields into an output map.
-// No-op if sc is nil.
 func injectSkillFields(output map[string]interface{}, sc *skillExecContext) {
 	if sc == nil {
 		return

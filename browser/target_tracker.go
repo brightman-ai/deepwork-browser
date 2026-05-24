@@ -61,6 +61,7 @@ type JavaScriptDialogEvent struct {
 // TargetTracker 管理所有已知的 page Target，自动跟随活跃 Target 的 Screencast。
 type TargetTracker struct {
 	mu              sync.RWMutex
+	refreshMu       sync.Mutex      // 序列化并发 RefreshTargets 调用，防止 CDP GetTargets 请求洪泛
 	browserCtx      context.Context // 原始 browser context（创建子 context 的 parent）
 	primaryID       target.ID       // browserCtx 对应的 primary target；对外必须呈现真实 CDP target.ID
 	targets         map[target.ID]*trackedTarget
@@ -798,10 +799,20 @@ func (tt *TargetTracker) activateBrowserTarget(targetID target.ID, reason string
 
 // RefreshTargets reconciles TargetTracker state from Chrome's authoritative target list.
 // It repairs missed TargetCreated/Destroyed events and is safe to call from REST handlers.
+//
+// If a refresh is already in-flight the concurrent caller returns nil immediately
+// (skip-if-busy).  This prevents the CDP endpoint from being flooded when multiple
+// WebSocket goroutines connect simultaneously during Chrome startup, which caused all
+// concurrent GetTargets calls to hit the 8s TargetDiscoveryTimeout.
 func (tt *TargetTracker) RefreshTargets() error {
 	if tt.browserCtx == nil {
 		return nil
 	}
+	if !tt.refreshMu.TryLock() {
+		// Another RefreshTargets is already in-flight; skip to avoid CDP flood.
+		return nil
+	}
+	defer tt.refreshMu.Unlock()
 	infos, err := targetGraphListPages(tt.browserCtx, TargetDiscoveryTimeout)
 	if err != nil {
 		browserCDPErrors.Add(1)
