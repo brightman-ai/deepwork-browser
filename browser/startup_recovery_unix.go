@@ -3,8 +3,8 @@
 // Package browser — startup recovery 平台 dispatch (Unix: macOS / Linux / *BSD).
 //
 // 用 syscall.Kill(pid, signal) 实现:
-// - signal 0 → 仅校验 PID 是否合法 (kill -0 语义)
-// - SIGTERM / SIGKILL → 双阶段终止
+//   - signal 0 → 仅校验 PID 是否合法 (kill -0 语义)
+//   - SIGTERM / SIGKILL → 双阶段终止
 package browser
 
 import (
@@ -35,18 +35,18 @@ func killPIDForce(pid int) error {
 	return syscall.Kill(pid, syscall.SIGKILL)
 }
 
-func platformFindChromePIDsByProfileDir(profileDir string) int {
+func platformFindChromePIDsByProfileDir(profileDir string) []int {
 	profileDir = strings.TrimSpace(profileDir)
 	if profileDir == "" {
 		return nil
 	}
-	out, err := exec.Command("ps", "-axo", "pid=,command=").Output
+	out, err := exec.Command("ps", "-axo", "pid=,command=").Output()
 	if err != nil {
 		return nil
 	}
 	needle := "--user-data-dir=" + profileDir
 	lines := strings.Split(string(out), "\n")
-	pids := make(int, 0, 2)
+	pids := make([]int, 0, 2)
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
 		if line == "" || !strings.Contains(line, needle) {

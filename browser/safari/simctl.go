@@ -13,37 +13,37 @@ import (
 
 // SimulatorDevice 表示一个 iOS Simulator 设备。
 type SimulatorDevice struct {
-	UDID string `json:"udid"`
-	Name string `json:"name"`
-	State string `json:"state"` // "Booted" | "Shutdown"
-	IsAvailable bool `json:"isAvailable"`
-	Runtime string `json:"-"` // runtime identifier
+	UDID           string `json:"udid"`
+	Name           string `json:"name"`
+	State          string `json:"state"` // "Booted" | "Shutdown"
+	IsAvailable    bool   `json:"isAvailable"`
+	Runtime        string `json:"-"` // runtime identifier
 	RuntimeVersion string `json:"-"` // e.g. "18.0"
 }
 
 // DevicePresets 是设备预设名到 Simulator 设备类型的映射。
 var DevicePresets = map[string]string{
-	"iphone-se": "iPhone SE (3rd generation)"
-	"iphone-16": "iPhone 16"
-	"iphone-17": "iPhone 17"
-	"iphone-17-pro": "iPhone 17 Pro"
-	"iphone-17-pro-max": "iPhone 17 Pro Max"
-	"ipad-pro": "iPad Pro (12.9-inch) (6th generation)"
-	"ipad-air": "iPad Air (5th generation)"
+	"iphone-se":         "iPhone SE (3rd generation)",
+	"iphone-16":         "iPhone 16",
+	"iphone-17":         "iPhone 17",
+	"iphone-17-pro":     "iPhone 17 Pro",
+	"iphone-17-pro-max": "iPhone 17 Pro Max",
+	"ipad-pro":          "iPad Pro (12.9-inch) (6th generation)",
+	"ipad-air":          "iPad Air (5th generation)",
 }
 
 // SimctlManager 封装 xcrun simctl 命令。
 type SimctlManager struct{}
 
 // NewSimctlManager 创建 SimctlManager。
-func NewSimctlManager *SimctlManager {
+func NewSimctlManager() *SimctlManager {
 	return &SimctlManager{}
 }
 
 // execCmd 执行 simctl 子命令。
-func (m *SimctlManager) execCmd(ctx context.Context, args ...string) (byte, error) {
-	cmd := exec.CommandContext(ctx, "xcrun", append(string{"simctl"}, args...)...)
-	out, err := cmd.CombinedOutput
+func (m *SimctlManager) execCmd(ctx context.Context, args ...string) ([]byte, error) {
+	cmd := exec.CommandContext(ctx, "xcrun", append([]string{"simctl"}, args...)...)
+	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return nil, fmt.Errorf("simctl %s: %w\n%s", args[0], err, string(out))
 	}
@@ -60,19 +60,19 @@ func (m *SimctlManager) execJSON(ctx context.Context, result interface{}, args .
 }
 
 // ListDevices 列出所有可用设备。
-func (m *SimctlManager) ListDevices(ctx context.Context) (SimulatorDevice, error) {
+func (m *SimctlManager) ListDevices(ctx context.Context) ([]SimulatorDevice, error) {
 	var result struct {
-		Devices map[string]struct {
-			UDID string `json:"udid"`
-			Name string `json:"name"`
-			State string `json:"state"`
-			IsAvailable bool `json:"isAvailable"`
+		Devices map[string][]struct {
+			UDID        string `json:"udid"`
+			Name        string `json:"name"`
+			State       string `json:"state"`
+			IsAvailable bool   `json:"isAvailable"`
 		} `json:"devices"`
 	}
 	if err := m.execJSON(ctx, &result, "list", "devices", "-j"); err != nil {
 		return nil, err
 	}
-	var devices SimulatorDevice
+	var devices []SimulatorDevice
 	for runtimeID, devList := range result.Devices {
 		version := ""
 		// 解析 runtime version: "com.apple.CoreSimulator.SimRuntime.iOS-18-0" → "18.0"
@@ -85,12 +85,12 @@ func (m *SimctlManager) ListDevices(ctx context.Context) (SimulatorDevice, error
 		for _, d := range devList {
 			if d.IsAvailable {
 				devices = append(devices, SimulatorDevice{
-					UDID: d.UDID
-					Name: d.Name
-					State: d.State
-					IsAvailable: d.IsAvailable
-					Runtime: runtimeID
-					RuntimeVersion: version
+					UDID:           d.UDID,
+					Name:           d.Name,
+					State:          d.State,
+					IsAvailable:    d.IsAvailable,
+					Runtime:        runtimeID,
+					RuntimeVersion: version,
 				})
 			}
 		}
@@ -99,12 +99,12 @@ func (m *SimctlManager) ListDevices(ctx context.Context) (SimulatorDevice, error
 }
 
 // ListBooted 列出已启动的设备。
-func (m *SimctlManager) ListBooted(ctx context.Context) (SimulatorDevice, error) {
+func (m *SimctlManager) ListBooted(ctx context.Context) ([]SimulatorDevice, error) {
 	all, err := m.ListDevices(ctx)
 	if err != nil {
 		return nil, err
 	}
-	var booted SimulatorDevice
+	var booted []SimulatorDevice
 	for _, d := range all {
 		if d.State == "Booted" {
 			booted = append(booted, d)
@@ -143,7 +143,7 @@ func (m *SimctlManager) ResolveDevice(ctx context.Context, query string) (*Simul
 // Boot 启动设备。如果已经启动则 no-op。
 func (m *SimctlManager) Boot(ctx context.Context, udid string) error {
 	_, err := m.execCmd(ctx, "boot", udid)
-	if err != nil && strings.Contains(err.Error, "current state: Booted") {
+	if err != nil && strings.Contains(err.Error(), "current state: Booted") {
 		return nil // 已经启动
 	}
 	return err
@@ -152,7 +152,7 @@ func (m *SimctlManager) Boot(ctx context.Context, udid string) error {
 // Shutdown 关闭设备。
 func (m *SimctlManager) Shutdown(ctx context.Context, udid string) error {
 	_, err := m.execCmd(ctx, "shutdown", udid)
-	if err != nil && strings.Contains(err.Error, "current state: Shutdown") {
+	if err != nil && strings.Contains(err.Error(), "current state: Shutdown") {
 		return nil
 	}
 	return err
@@ -162,7 +162,7 @@ func (m *SimctlManager) Shutdown(ctx context.Context, udid string) error {
 func (m *SimctlManager) TerminateApp(ctx context.Context, udid, bundleID string) error {
 	_, err := m.execCmd(ctx, "terminate", udid, bundleID)
 	if err != nil {
-		msg := strings.ToLower(err.Error)
+		msg := strings.ToLower(err.Error())
 		if strings.Contains(msg, "found nothing to terminate") ||
 			strings.Contains(msg, "not running") ||
 			strings.Contains(msg, "no such process") {
@@ -179,8 +179,8 @@ func (m *SimctlManager) OpenURL(ctx context.Context, udid, url string) error {
 }
 
 // Screenshot 截取设备屏幕，返回 PNG 字节。
-func (m *SimctlManager) Screenshot(ctx context.Context, udid string) (byte, error) {
-	tmpFile := filepath.Join(os.TempDir, fmt.Sprintf("dw-safari-%d.png", time.Now.UnixNano))
+func (m *SimctlManager) Screenshot(ctx context.Context, udid string) ([]byte, error) {
+	tmpFile := filepath.Join(os.TempDir(), fmt.Sprintf("dw-safari-%d.png", time.Now().UnixNano()))
 	defer os.Remove(tmpFile)
 	if _, err := m.execCmd(ctx, "io", udid, "screenshot", "--type=png", tmpFile); err != nil {
 		return nil, err
@@ -202,8 +202,8 @@ func (m *SimctlManager) InputText(ctx context.Context, udid, text string) error 
 
 // InputSwipe 执行滑动手势。
 func (m *SimctlManager) InputSwipe(ctx context.Context, udid string, x1, y1, x2, y2 float64) error {
-	_, err := m.execCmd(ctx, "io", udid, "input", "swipe"
-		fmt.Sprintf("%.0f", x1), fmt.Sprintf("%.0f", y1)
+	_, err := m.execCmd(ctx, "io", udid, "input", "swipe",
+		fmt.Sprintf("%.0f", x1), fmt.Sprintf("%.0f", y1),
 		fmt.Sprintf("%.0f", x2), fmt.Sprintf("%.0f", y2))
 	return err
 }

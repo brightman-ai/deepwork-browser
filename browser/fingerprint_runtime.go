@@ -14,20 +14,20 @@ import (
 var (
 	chromeVersionPattern = regexp.MustCompile(`(\d+)\.(\d+)\.(\d+)\.(\d+)`)
 	chromeUAFieldPattern = regexp.MustCompile(`Chrome/\d+\.\d+\.\d+\.\d+`)
-	chromeNamePattern = regexp.MustCompile(`Chrome \d+`)
-	darwinVersionOnce sync.Once
-	darwinVersionValue string
-	chromeVersionCache sync.Map
+	chromeNamePattern    = regexp.MustCompile(`Chrome \d+`)
+	darwinVersionOnce    sync.Once
+	darwinVersionValue   string
+	chromeVersionCache   sync.Map
 )
 
 type chromeVersionInfo struct {
-	Full string
+	Full  string
 	Major string
 }
 
 func detectChromeVersion(chromePath string) chromeVersionInfo {
 	if chromePath == "" {
-		if path, err := NewChromeLauncher.FindChrome; err == nil {
+		if path, err := NewChromeLauncher().FindChrome(); err == nil {
 			chromePath = path
 		}
 	}
@@ -38,7 +38,7 @@ func detectChromeVersion(chromePath string) chromeVersionInfo {
 		return cached.(chromeVersionInfo)
 	}
 
-	out, err := exec.Command(chromePath, "--version").Output
+	out, err := exec.Command(chromePath, "--version").Output()
 	if err != nil {
 		chromeVersionCache.Store(chromePath, chromeVersionInfo{})
 		return chromeVersionInfo{}
@@ -50,8 +50,8 @@ func detectChromeVersion(chromePath string) chromeVersionInfo {
 	}
 
 	info := chromeVersionInfo{
-		Full: match[0]
-		Major: match[1]
+		Full:  match[0],
+		Major: match[1],
 	}
 	chromeVersionCache.Store(chromePath, info)
 	return info
@@ -99,9 +99,9 @@ func ResolveRuntimeFingerprintPreset(presetID string, chromePath string) *Finger
 	return &resolved
 }
 
-func darwinPlatformVersion string {
-	darwinVersionOnce.Do(func {
-		out, err := exec.Command("sw_vers", "-productVersion").Output
+func darwinPlatformVersion() string {
+	darwinVersionOnce.Do(func() {
+		out, err := exec.Command("sw_vers", "-productVersion").Output()
 		if err == nil {
 			darwinVersionValue = strings.TrimSpace(string(out))
 		}
@@ -120,8 +120,8 @@ func userAgentMetadataForPreset(presetID string, chromePath string) *emulation.U
 	}
 
 	meta := &emulation.UserAgentMetadata{
-		Mobile: preset.Mobile
-		Wow64: false
+		Mobile: preset.Mobile,
+		Wow64:  false,
 	}
 
 	switch presetID {
@@ -137,7 +137,7 @@ func userAgentMetadataForPreset(presetID string, chromePath string) *emulation.U
 		meta.Bitness = "64"
 	case "macos-chrome":
 		meta.Platform = "macOS"
-		meta.PlatformVersion = darwinPlatformVersion
+		meta.PlatformVersion = darwinPlatformVersion()
 		meta.Architecture = "x86"
 		if runtime.GOARCH == "arm64" {
 			meta.Architecture = "arm"
@@ -149,13 +149,13 @@ func userAgentMetadataForPreset(presetID string, chromePath string) *emulation.U
 
 	version := detectChromeVersion(chromePath)
 	if version.Full != "" && version.Major != "" {
-		meta.Brands = *emulation.UserAgentBrandVersion{
-			{Brand: "Chromium", Version: version.Major}
-			{Brand: "Google Chrome", Version: version.Major}
+		meta.Brands = []*emulation.UserAgentBrandVersion{
+			{Brand: "Chromium", Version: version.Major},
+			{Brand: "Google Chrome", Version: version.Major},
 		}
-		meta.FullVersionList = *emulation.UserAgentBrandVersion{
-			{Brand: "Chromium", Version: version.Full}
-			{Brand: "Google Chrome", Version: version.Full}
+		meta.FullVersionList = []*emulation.UserAgentBrandVersion{
+			{Brand: "Chromium", Version: version.Full},
+			{Brand: "Google Chrome", Version: version.Full},
 		}
 	}
 

@@ -86,12 +86,12 @@ func runtimeLabel(d SimulatorDevice) string {
 // SmartResolveDevice intelligently resolves a device query string to a booted simulator.
 //
 // Resolution chain:
-// 1. UDID — if query matches UUID format, verify and return directly.
-// 2. Exact name — find a device whose Name equals query (case-insensitive).
-// 3. Family keyword — "ios"/"auto" match all iPhone+iPad; "iphone" matches iPhone only;
-// "ipad" matches iPad only. Within matches, Booted devices are preferred; ties broken
-// by RuntimeVersion descending.
-// 4. No match — return an error listing available devices.
+//  1. UDID — if query matches UUID format, verify and return directly.
+//  2. Exact name — find a device whose Name equals query (case-insensitive).
+//  3. Family keyword — "ios"/"auto" match all iPhone+iPad; "iphone" matches iPhone only;
+//     "ipad" matches iPad only. Within matches, Booted devices are preferred; ties broken
+//     by RuntimeVersion descending.
+//  4. No match — return an error listing available devices.
 //
 // If the resolved device is not Booted, Boot is called automatically.
 func SmartResolveDevice(ctx context.Context, simctl *SimctlManager, query string) (SimulatorDevice, error) {
@@ -120,7 +120,7 @@ func SmartResolveDevice(ctx context.Context, simctl *SimctlManager, query string
 
 	// 3. Family keyword match.
 	if family := parseFamily(query); family != "" {
-		var candidates SimulatorDevice
+		var candidates []SimulatorDevice
 		for _, d := range devices {
 			if matchFamily(d.Name, family) {
 				candidates = append(candidates, d)
@@ -140,11 +140,11 @@ func SmartResolveDevice(ctx context.Context, simctl *SimctlManager, query string
 	}
 
 	// 4. No match — build a helpful error message.
-	names := make(string, 0, len(devices))
+	names := make([]string, 0, len(devices))
 	for _, d := range devices {
 		names = append(names, d.Name)
 	}
-	return SimulatorDevice{}, fmt.Errorf("no simulator matching %q; available: [%s]"
+	return SimulatorDevice{}, fmt.Errorf("no simulator matching %q; available: [%s]",
 		query, strings.Join(names, ", "))
 }
 

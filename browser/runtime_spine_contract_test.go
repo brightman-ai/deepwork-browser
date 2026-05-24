@@ -8,22 +8,22 @@ import (
 
 func Test_TC_WCS_I_01_AcquireTabRuntimeContractPreservesWebChatService(t *testing.T) {
 	desc := IdentityDescriptor{
-		Key: IdentityKey("profile-webchat-chatgpt-pa-1")
-		Profile: "webchat-chatgpt-pa-1"
-		Preset: Preset{FingerprintTag: DefaultPresetID}
+		Key:     IdentityKey("profile-webchat-chatgpt-pa-1"),
+		Profile: "webchat-chatgpt-pa-1",
+		Preset:  Preset{FingerprintTag: DefaultPresetID()},
 	}
 	req := AcquireTabRequest{
-		IdentityKey: desc.Key
-		WorkspaceID: "provider-history-pa-1"
-		Role: RoleBackground
-		Mode: ModeHeaded
-		BrowserSessionID: "browser-session-service-webchat-chatgpt-pa-1"
-		SessionKind: SessionKindService
-		Goal: "provider-history-sync"
-		Owner: SessionOwnerService
-		Isolation: SessionIsolationDedicated
-		ServiceName: "webchat/chatgpt"
-		AccountID: "pa-1"
+		IdentityKey:      desc.Key,
+		WorkspaceID:      "provider-history-pa-1",
+		Role:             RoleBackground,
+		Mode:             ModeHeaded,
+		BrowserSessionID: "browser-session-service-webchat-chatgpt-pa-1",
+		SessionKind:      SessionKindService,
+		Goal:             "provider-history-sync",
+		Owner:            SessionOwnerService,
+		Isolation:        SessionIsolationDedicated,
+		ServiceName:      "webchat/chatgpt",
+		AccountID:        "pa-1",
 	}
 
 	contract := browserPoolRuntimeContractFromAcquireTab(req, desc)
@@ -38,16 +38,16 @@ func Test_TC_WCS_I_01_AcquireTabRuntimeContractPreservesWebChatService(t *testin
 	}
 
 	entry := &chromePoolEntry{
-		identity: desc
-		profileID: "webchat-chatgpt-pa-1"
-		profileDir: "/tmp/profile-pa-1"
-		presetID: DefaultPresetID
-		mode: ModeHeaded
-		runtimeContract: contract
+		identity:        desc,
+		profileID:       "webchat-chatgpt-pa-1",
+		profileDir:      "/tmp/profile-pa-1",
+		presetID:        DefaultPresetID(),
+		mode:            ModeHeaded,
+		runtimeContract: contract,
 	}
 	hostReq := browserMuxHostRequestForPoolEntry(entry, "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome", &FingerprintPreset{
-		ViewportW: 1280
-		ViewportH: 720
+		ViewportW: 1280,
+		ViewportH: 720,
 	}, 9222)
 	if hostReq.SessionKind != SessionKindService {
 		t.Fatalf("muxhost session kind = %q, want service", hostReq.SessionKind)
@@ -58,7 +58,7 @@ func Test_TC_WCS_I_01_AcquireTabRuntimeContractPreservesWebChatService(t *testin
 	if hostReq.Owner != SessionOwnerService || hostReq.Isolation != SessionIsolationDedicated {
 		t.Fatalf("muxhost owner/isolation not preserved: %+v", hostReq)
 	}
-	if hostReq.MuxHostID != GlobalBrowserMuxHostID {
+	if hostReq.MuxHostID != GlobalBrowserMuxHostID() {
 		t.Fatalf("muxhost id = %q, want global host id", hostReq.MuxHostID)
 	}
 	if hostReq.RuntimeID != BrowserRuntimeIDFromBrowserSessionID(contract.BrowserSessionID) {
@@ -68,15 +68,15 @@ func Test_TC_WCS_I_01_AcquireTabRuntimeContractPreservesWebChatService(t *testin
 
 func Test_TC_WCS_I_02_AcquireTabRuntimeContractKeepsLegacyInteractiveDefault(t *testing.T) {
 	desc := IdentityDescriptor{
-		Key: IdentityKey("profile-human-default")
-		Profile: "human-default"
-		Preset: Preset{FingerprintTag: DefaultPresetID}
+		Key:     IdentityKey("profile-human-default"),
+		Profile: "human-default",
+		Preset:  Preset{FingerprintTag: DefaultPresetID()},
 	}
 	req := AcquireTabRequest{
-		IdentityKey: desc.Key
-		WorkspaceID: "browser-portal"
-		Role: RoleHuman
-		Mode: ModeHeaded
+		IdentityKey: desc.Key,
+		WorkspaceID: "browser-portal",
+		Role:        RoleHuman,
+		Mode:        ModeHeaded,
 	}
 
 	contract := browserPoolRuntimeContractFromAcquireTab(req, desc)
@@ -96,12 +96,12 @@ func Test_TC_WCS_I_02_AcquireTabRuntimeContractKeepsLegacyInteractiveDefault(t *
 
 func Test_TC_WCS_L4_06_ActivePoolEntryRejectsRuntimeContractMismatch(t *testing.T) {
 	existing := browserPoolRuntimeContract{
-		BrowserSessionID: "browser-session-service-webchat-chatgpt-pa-1"
-		SessionKind: SessionKindService
-		ServiceName: "webchat/chatgpt"
-		AccountID: "pa-1"
-		Owner: SessionOwnerService
-		Isolation: SessionIsolationDedicated
+		BrowserSessionID: "browser-session-service-webchat-chatgpt-pa-1",
+		SessionKind:      SessionKindService,
+		ServiceName:      "webchat/chatgpt",
+		AccountID:        "pa-1",
+		Owner:            SessionOwnerService,
+		Isolation:        SessionIsolationDedicated,
 	}
 	requested := existing
 	requested.AccountID = "pa-2"
@@ -113,22 +113,22 @@ func Test_TC_WCS_L4_06_ActivePoolEntryRejectsRuntimeContractMismatch(t *testing.
 
 func Test_TC_WCS_L4_01_MuxHostReuseRejectsServiceAccountMismatch(t *testing.T) {
 	state := &BrowserMuxHostState{
-		MuxHostAlive: true
-		ChromeAlive: true
-		BrowserSessionID: "browser-session-service-webchat-chatgpt-pa-1"
-		SessionKind: SessionKindService
-		ServiceName: "webchat/chatgpt"
-		AccountID: "pa-1"
-		DisplayBackend: "none"
-		DisplayVerified: true
-		ChromeWindowContained: true
+		MuxHostAlive:          true,
+		ChromeAlive:           true,
+		BrowserSessionID:      "browser-session-service-webchat-chatgpt-pa-1",
+		SessionKind:           SessionKindService,
+		ServiceName:           "webchat/chatgpt",
+		AccountID:             "pa-1",
+		DisplayBackend:        "none",
+		DisplayVerified:       true,
+		ChromeWindowContained: true,
 	}
 	req := BrowserMuxHostRequest{
-		BrowserSessionID: "browser-session-service-webchat-chatgpt-pa-1"
-		SessionKind: SessionKindService
-		ServiceName: "webchat/chatgpt"
-		AccountID: "pa-2"
-		Mode: ModeHeaded
+		BrowserSessionID: "browser-session-service-webchat-chatgpt-pa-1",
+		SessionKind:      SessionKindService,
+		ServiceName:      "webchat/chatgpt",
+		AccountID:        "pa-2",
+		Mode:             ModeHeaded,
 	}
 
 	if err := validateReusableBrowserMuxHost(state, req); err == nil {
@@ -139,46 +139,46 @@ func Test_TC_WCS_L4_01_MuxHostReuseRejectsServiceAccountMismatch(t *testing.T) {
 func Test_TC_BMH_I_01_MuxHostReuseFailureClassifiesRuntimeHealthOnly(t *testing.T) {
 	if !browserMuxHostRuntimeReusableFailureRecoverable(
 		validateReusableBrowserMuxHost(&BrowserMuxHostState{
-			MuxHostAlive: true
-			ChromeAlive: true
-			MuxHostPID: os.Getpid
-			ChromePID: os.Getpid
-			BrowserSessionID: "browser-session-pool-main"
-			RuntimeID: "browser-runtime-browser-session-pool-main"
-			SessionKind: SessionKindInteractive
-			DisplayBackend: "cgvirtualdisplay"
-			DisplayVerified: false
-			ChromeWindowContained: false
+			MuxHostAlive:          true,
+			ChromeAlive:           true,
+			MuxHostPID:            os.Getpid(),
+			ChromePID:             os.Getpid(),
+			BrowserSessionID:      "browser-session-pool-main",
+			RuntimeID:             "browser-runtime-browser-session-pool-main",
+			SessionKind:           SessionKindInteractive,
+			DisplayBackend:        "cgvirtualdisplay",
+			DisplayVerified:       false,
+			ChromeWindowContained: false,
 		}, BrowserMuxHostRequest{
-			BrowserSessionID: "browser-session-pool-main"
-			RuntimeID: "browser-runtime-browser-session-pool-main"
-			SessionKind: SessionKindInteractive
-			Mode: ModeHeaded
-		})
+			BrowserSessionID: "browser-session-pool-main",
+			RuntimeID:        "browser-runtime-browser-session-pool-main",
+			SessionKind:      SessionKindInteractive,
+			Mode:             ModeHeaded,
+		}),
 	) {
 		t.Fatal("uncontained headed runtime should be recreated, not surfaced as identity conflict")
 	}
 
 	if browserMuxHostRuntimeReusableFailureRecoverable(
 		validateReusableBrowserMuxHost(&BrowserMuxHostState{
-			MuxHostAlive: true
-			ChromeAlive: true
-			BrowserSessionID: "browser-session-service-webchat-chatgpt-pa-1"
-			RuntimeID: "browser-runtime-browser-session-service-webchat-chatgpt-pa-1"
-			SessionKind: SessionKindService
-			ServiceName: "webchat/chatgpt"
-			AccountID: "pa-1"
-			DisplayBackend: "none"
-			DisplayVerified: true
-			ChromeWindowContained: true
+			MuxHostAlive:          true,
+			ChromeAlive:           true,
+			BrowserSessionID:      "browser-session-service-webchat-chatgpt-pa-1",
+			RuntimeID:             "browser-runtime-browser-session-service-webchat-chatgpt-pa-1",
+			SessionKind:           SessionKindService,
+			ServiceName:           "webchat/chatgpt",
+			AccountID:             "pa-1",
+			DisplayBackend:        "none",
+			DisplayVerified:       true,
+			ChromeWindowContained: true,
 		}, BrowserMuxHostRequest{
-			BrowserSessionID: "browser-session-service-webchat-chatgpt-pa-1"
-			RuntimeID: "browser-runtime-browser-session-service-webchat-chatgpt-pa-1"
-			SessionKind: SessionKindService
-			ServiceName: "webchat/chatgpt"
-			AccountID: "pa-2"
-			Mode: ModeHeaded
-		})
+			BrowserSessionID: "browser-session-service-webchat-chatgpt-pa-1",
+			RuntimeID:        "browser-runtime-browser-session-service-webchat-chatgpt-pa-1",
+			SessionKind:      SessionKindService,
+			ServiceName:      "webchat/chatgpt",
+			AccountID:        "pa-2",
+			Mode:             ModeHeaded,
+		}),
 	) {
 		t.Fatal("service/account mismatch must remain a hard conflict")
 	}

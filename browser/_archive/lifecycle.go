@@ -22,20 +22,20 @@ import (
 var _ = log.Module // suppress unused import
 
 // chromeCandidates is the ordered list of Chrome executables to detect.
-var chromeCandidates = func string {
-	home, _ := os.UserHomeDir
-	return string{
-		"google-chrome"
-		"google-chrome-stable"
-		"chromium"
-		"chromium-browser"
-		filepath.Join(home, ".deepwork", "chromium", "chrome")
+var chromeCandidates = func() []string {
+	home, _ := os.UserHomeDir()
+	return []string{
+		"google-chrome",
+		"google-chrome-stable",
+		"chromium",
+		"chromium-browser",
+		filepath.Join(home, ".deepwork", "chromium", "chrome"),
 	}
-}
+}()
 
 // detectChrome returns the first available Chrome/Chromium executable path.
 // Returns error if none found.
-func (r *browserRuntime) detectChrome (string, error) {
+func (r *browserRuntime) detectChrome() (string, error) {
 	for _, candidate := range chromeCandidates {
 		if filepath.IsAbs(candidate) {
 			if _, err := os.Stat(candidate); err == nil {
@@ -54,7 +54,7 @@ func (r *browserRuntime) detectChrome (string, error) {
 func (r *browserRuntime) startChrome(ctx context.Context, execPath string) error {
 	profileDir := r.cfg.ProfileDir
 	if profileDir == "" {
-		home, _ := os.UserHomeDir
+		home, _ := os.UserHomeDir()
 		profileDir = filepath.Join(home, ".deepwork", "browser-profile")
 	}
 
@@ -62,7 +62,7 @@ func (r *browserRuntime) startChrome(ctx context.Context, execPath string) error
 		return fmt.Errorf("create profile dir: %w", err)
 	}
 
-	l := launcher.New.
+	l := launcher.New().
 		Bin(execPath).
 		UserDataDir(profileDir).
 		Headless(true)
@@ -71,23 +71,23 @@ func (r *browserRuntime) startChrome(ctx context.Context, execPath string) error
 		l = l.Append(flags.Flag(flag))
 	}
 
-	controlURL, err := l.Launch
+	controlURL, err := l.Launch()
 	if err != nil {
 		return fmt.Errorf("launch chrome: %w", err)
 	}
 
-	browser := rod.New.ControlURL(controlURL)
-	if err := browser.Connect; err != nil {
+	browser := rod.New().ControlURL(controlURL)
+	if err := browser.Connect(); err != nil {
 		return fmt.Errorf("connect to chrome: %w", err)
 	}
 
-	r.browserMu.Lock
+	r.browserMu.Lock()
 	old := r.browser
 	r.browser = browser
-	r.browserMu.Unlock
+	r.browserMu.Unlock()
 
 	if old != nil {
-		_ = old.Close
+		_ = old.Close()
 	}
 
 	// Monitor for crash: Rod's internal context cancels when Chrome exits.
@@ -101,16 +101,16 @@ func (r *browserRuntime) monitorChromeProcess(b *rod.Browser) {
 	// Rod Browser has no direct "wait for process" API.
 	// We monitor the browser's context: when Chrome exits, the WS connection
 	// closes and Rod's context is cancelled.
-	browserCtx := b.GetContext
-	<-browserCtx.Done
+	browserCtx := b.GetContext()
+	<-browserCtx.Done()
 
-	r.browserMu.Lock
+	r.browserMu.Lock()
 	current := r.browser
-	r.browserMu.Unlock
+	r.browserMu.Unlock()
 
 	// Only handle crash if this is still the active browser
 	if current == b {
-		state := r.State
+		state := r.State()
 		if state == StateRunning {
 			logger.Warn("chrome process exited unexpectedly")
 			go r.handleCrash(r.runCtx)
@@ -125,7 +125,7 @@ func (r *browserRuntime) downloadChromium(ctx context.Context) error {
 		return fmt.Errorf("%w: no chromium_url configured", ErrDownloadFailed)
 	}
 
-	home, _ := os.UserHomeDir
+	home, _ := os.UserHomeDir()
 	destDir := filepath.Join(home, ".deepwork", "chromium")
 	if err := os.MkdirAll(destDir, 0755); err != nil {
 		return fmt.Errorf("%w: mkdir %s: %v", ErrDownloadFailed, destDir, err)
@@ -140,7 +140,7 @@ func (r *browserRuntime) downloadChromium(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("%w: %v", ErrDownloadFailed, err)
 	}
-	defer resp.Body.Close
+	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("%w: HTTP %d", ErrDownloadFailed, resp.StatusCode)
@@ -152,14 +152,14 @@ func (r *browserRuntime) downloadChromium(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("%w: create file: %v", ErrDownloadFailed, err)
 	}
-	defer f.Close
+	defer f.Close()
 
 	var downloaded int64
-	buf := make(byte, 32*1024)
+	buf := make([]byte, 32*1024)
 	for {
 		select {
-		case <-ctx.Done:
-			return ctx.Err
+		case <-ctx.Done():
+			return ctx.Err()
 		default:
 		}
 
@@ -174,9 +174,9 @@ func (r *browserRuntime) downloadChromium(ctx context.Context) error {
 				pct = float64(downloaded) / float64(totalBytes) * 100
 			}
 			r.bus.Publish(EventBrowserDownloadProgress{
-				Percent: pct
-				BytesDownloaded: downloaded
-				TotalBytes: totalBytes
+				Percent:         pct,
+				BytesDownloaded: downloaded,
+				TotalBytes:      totalBytes,
 			})
 		}
 		if readErr == io.EOF {
@@ -199,7 +199,7 @@ func (r *browserRuntime) downloadChromium(ctx context.Context) error {
 // reconnectCDP attempts to reconnect CDP with exponential backoff.
 // On all failures, triggers crash recovery.
 func (r *browserRuntime) reconnectCDP(ctx context.Context) {
-	execPath, err := r.detectChrome
+	execPath, err := r.detectChrome()
 	if err != nil {
 		go r.handleCrash(ctx)
 		return
@@ -209,7 +209,7 @@ func (r *browserRuntime) reconnectCDP(ctx context.Context) {
 		delay := time.Duration(1<<uint(i)) * time.Second // 1s/2s/4s
 		select {
 		case <-time.After(delay):
-		case <-ctx.Done:
+		case <-ctx.Done():
 			return
 		}
 
@@ -227,13 +227,13 @@ func (r *browserRuntime) reconnectCDP(ctx context.Context) {
 // downloadProgressReader wraps an io.Reader to track download progress.
 // (helper kept for potential future use)
 type downloadProgressReader struct {
-	reader io.Reader
-	total int64
-	downloaded *int64
-	bus EventBus
+	reader      io.Reader
+	total       int64
+	downloaded  *int64
+	bus         EventBus
 }
 
-func (p *downloadProgressReader) Read(buf byte) (int, error) {
+func (p *downloadProgressReader) Read(buf []byte) (int, error) {
 	n, err := p.reader.Read(buf)
 	if n > 0 {
 		current := atomic.AddInt64(p.downloaded, int64(n))
@@ -242,19 +242,19 @@ func (p *downloadProgressReader) Read(buf byte) (int, error) {
 			pct = float64(current) / float64(p.total) * 100
 		}
 		p.bus.Publish(EventBrowserDownloadProgress{
-			Percent: pct
-			BytesDownloaded: current
-			TotalBytes: p.total
+			Percent:         pct,
+			BytesDownloaded: current,
+			TotalBytes:      p.total,
 		})
 	}
 	return n, err
 }
 
 // marshalJSON helper for EventBrowserDownloadProgress (used in event serialisation).
-func marshalProgressEvent(e EventBrowserDownloadProgress) (byte, error) {
+func marshalProgressEvent(e EventBrowserDownloadProgress) ([]byte, error) {
 	return json.Marshal(map[string]any{
-		"percent": e.Percent
-		"bytes_downloaded": e.BytesDownloaded
-		"total_bytes": e.TotalBytes
+		"percent":          e.Percent,
+		"bytes_downloaded": e.BytesDownloaded,
+		"total_bytes":      e.TotalBytes,
 	})
 }

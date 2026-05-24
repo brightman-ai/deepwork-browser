@@ -1,5 +1,5 @@
 # Build outputs
-dw-browser
+/dw-browser
 *.exe
 *.test
 *.out

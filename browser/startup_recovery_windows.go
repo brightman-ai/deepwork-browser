@@ -3,8 +3,8 @@
 // Package browser — startup recovery 平台 dispatch (Windows).
 //
 // Windows 无 POSIX kill -0; 用 os.FindProcess + 进程对象交互推断:
-// - FindProcess 总是返回非 nil (Windows 语义), 需通过其它 API 判断
-// - 这里采用保守策略: 通过 OpenProcess 间接判断 (经 os/exec 包装抛出错误码区分)
+//   - FindProcess 总是返回非 nil (Windows 语义), 需通过其它 API 判断
+//   - 这里采用保守策略: 通过 OpenProcess 间接判断 (经 os/exec 包装抛出错误码区分)
 //
 // 注: dw-browser 当前主要支持 macOS/Linux; Windows 通路为兼容编译, recovery 行为降级.
 package browser
@@ -32,7 +32,7 @@ func killPIDGraceful(pid int) error {
 	if err != nil || p == nil {
 		return err
 	}
-	return p.Kill
+	return p.Kill()
 }
 
 // killPIDForce Windows 版: 同 graceful (Windows 无 SIGKILL 区别).
@@ -40,6 +40,6 @@ func killPIDForce(pid int) error {
 	return killPIDGraceful(pid)
 }
 
-func platformFindChromePIDsByProfileDir(profileDir string) int {
+func platformFindChromePIDsByProfileDir(profileDir string) []int {
 	return nil
 }

@@ -5,53 +5,53 @@ type Severity string
 
 const (
 	SeverityCritical Severity = "critical"
-	SeverityHigh Severity = "high"
-	SeverityMedium Severity = "medium"
-	SeverityLow Severity = "low"
+	SeverityHigh     Severity = "high"
+	SeverityMedium   Severity = "medium"
+	SeverityLow      Severity = "low"
 )
 
 // Check 单个检测规则。
 type Check struct {
-	ID string
-	Category string // "compat" | "a11y" | "layout" | "perf"
-	Tags string // ["touch", "viewport", "ios"]
-	Severity Severity
+	ID          string
+	Category    string         // "compat" | "a11y" | "layout" | "perf"
+	Tags        []string       // ["touch", "viewport", "ios"]
+	Severity    Severity
 	Description string
-	Script string // JS 脚本内容，执行后返回 CheckResult JSON
-	Params map[string]any // 默认参数，可被 AuditContext 覆盖
+	Script      string         // JS 脚本内容，执行后返回 CheckResult JSON
+	Params      map[string]any // 默认参数，可被 AuditContext 覆盖
 }
 
 // CheckResult 单个检测结果。
 type CheckResult struct {
-	ID string `json:"id"`
-	Category string `json:"category"`
-	Status string `json:"status"` // "pass" | "fail" | "error"
-	Severity Severity `json:"severity"`
-	Message string `json:"message"`
-	Violations Violation `json:"violations,omitempty"`
+	ID         string      `json:"id"`
+	Category   string      `json:"category"`
+	Status     string      `json:"status"` // "pass" | "fail" | "error"
+	Severity   Severity    `json:"severity"`
+	Message    string      `json:"message"`
+	Violations []Violation `json:"violations,omitempty"`
 }
 
 // Violation 单个违规项。
 type Violation struct {
-	Selector string `json:"selector"`
-	Role string `json:"role,omitempty"`
-	Name string `json:"name,omitempty"`
-	TestID string `json:"testid,omitempty"`
-	Actual map[string]any `json:"actual,omitempty"`
+	Selector string         `json:"selector"`
+	Role     string         `json:"role,omitempty"`
+	Name     string         `json:"name,omitempty"`
+	TestID   string         `json:"testid,omitempty"`
+	Actual   map[string]any `json:"actual,omitempty"`
 	Expected map[string]any `json:"expected,omitempty"`
-	Fix string `json:"fix,omitempty"`
+	Fix      string         `json:"fix,omitempty"`
 }
 
 // Registry check 注册表（线程不安全，注册期在程序初始化时完成）。
 type Registry struct {
-	checks Check
-	byID map[string]*Check
+	checks []Check
+	byID   map[string]*Check
 }
 
 // NewRegistry 创建空注册表。
-func NewRegistry *Registry {
+func NewRegistry() *Registry {
 	return &Registry{
-		byID: make(map[string]*Check)
+		byID: make(map[string]*Check),
 	}
 }
 
@@ -62,8 +62,8 @@ func (r *Registry) Register(check Check) {
 }
 
 // ByCategory 返回指定 category 的所有 checks（副本切片）。
-func (r *Registry) ByCategory(category string) Check {
-	var out Check
+func (r *Registry) ByCategory(category string) []Check {
+	var out []Check
 	for _, c := range r.checks {
 		if c.Category == category {
 			out = append(out, c)
@@ -73,8 +73,8 @@ func (r *Registry) ByCategory(category string) Check {
 }
 
 // ByTag 返回含指定 tag 的所有 checks（副本切片）。
-func (r *Registry) ByTag(tag string) Check {
-	var out Check
+func (r *Registry) ByTag(tag string) []Check {
+	var out []Check
 	for _, c := range r.checks {
 		for _, t := range c.Tags {
 			if t == tag {
@@ -96,8 +96,8 @@ func (r *Registry) ByID(id string) *Check {
 }
 
 // All 返回所有已注册 checks（副本切片）。
-func (r *Registry) All Check {
-	out := make(Check, len(r.checks))
+func (r *Registry) All() []Check {
+	out := make([]Check, len(r.checks))
 	copy(out, r.checks)
 	return out
 }

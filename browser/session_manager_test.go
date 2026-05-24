@@ -3,68 +3,68 @@ package browser
 import "testing"
 
 func TestSelectAttachablePageTargetPrefersUserPageOriginMatch(t *testing.T) {
-	targets := map[string]interface{}{
+	targets := []map[string]interface{}{
 		{
-			"type": "page"
-			"url": ChromeInitialPageURL
-			"webSocketDebuggerUrl": "ws://127.0.0.1/devtools/page/blank-1"
-		}
+			"type":                 "page",
+			"url":                  ChromeInitialPageURL,
+			"webSocketDebuggerUrl": "ws://127.0.0.1/devtools/page/blank-1",
+		},
 		{
-			"type": "page"
-			"url": "http://example.com/other"
-			"webSocketDebuggerUrl": "ws://127.0.0.1/devtools/page/other-1"
-		}
+			"type":                 "page",
+			"url":                  "http://example.com/other",
+			"webSocketDebuggerUrl": "ws://127.0.0.1/devtools/page/other-1",
+		},
 		{
-			"type": "page"
-			"url": "http://127.0.0.1:8077/studio"
-			"webSocketDebuggerUrl": "ws://127.0.0.1/devtools/page/studio-1"
-		}
+			"type":                 "page",
+			"url":                  "http://127.0.0.1:8077/studio",
+			"webSocketDebuggerUrl": "ws://127.0.0.1/devtools/page/studio-1",
+		},
 	}
 
 	got := SelectAttachablePageTarget(targets, "http://127.0.0.1:8077/ws/2", "")
 	if got.ID != "studio-1" {
-		t.Fatalf("SelectAttachablePageTarget id = %q, want studio-1", got.ID)
+		t.Fatalf("SelectAttachablePageTarget() id = %q, want studio-1", got.ID)
 	}
 	if got.URL != "http://127.0.0.1:8077/studio" {
-		t.Fatalf("SelectAttachablePageTarget url = %q", got.URL)
+		t.Fatalf("SelectAttachablePageTarget() url = %q", got.URL)
 	}
 }
 
 func TestSelectAttachablePageTargetSkipsChromeInitialPageWhenUserPageExists(t *testing.T) {
-	targets := map[string]interface{}{
+	targets := []map[string]interface{}{
 		{
-			"type": "page"
-			"url": ChromeInitialPageURL
-			"webSocketDebuggerUrl": "ws://127.0.0.1/devtools/page/blank-1"
-		}
+			"type":                 "page",
+			"url":                  ChromeInitialPageURL,
+			"webSocketDebuggerUrl": "ws://127.0.0.1/devtools/page/blank-1",
+		},
 		{
-			"type": "page"
-			"url": "https://example.org/app"
-			"webSocketDebuggerUrl": "ws://127.0.0.1/devtools/page/app-1"
-		}
+			"type":                 "page",
+			"url":                  "https://example.org/app",
+			"webSocketDebuggerUrl": "ws://127.0.0.1/devtools/page/app-1",
+		},
 	}
 
 	got := SelectAttachablePageTarget(targets, "", "")
 	if got.ID != "app-1" {
-		t.Fatalf("SelectAttachablePageTarget id = %q, want app-1", got.ID)
+		t.Fatalf("SelectAttachablePageTarget() id = %q, want app-1", got.ID)
 	}
 	if got.URL != "https://example.org/app" {
-		t.Fatalf("SelectAttachablePageTarget url = %q", got.URL)
+		t.Fatalf("SelectAttachablePageTarget() url = %q", got.URL)
 	}
 }
 
 func TestBrowserSessionKindDefaultsAreDomainNeutral(t *testing.T) {
-	cases := struct {
-		kind BrowserSessionKind
+	cases := []struct {
+		kind      BrowserSessionKind
 		wantOwner string
-		wantMode BrowserMode
-		wantIso string
+		wantMode  BrowserMode
+		wantIso   string
 	}{
-		{SessionKindTask, SessionOwnerAgent, ModeHeadless, SessionIsolationEphemeral}
-		{SessionKindInteractive, SessionOwnerHuman, ModeHeaded, SessionIsolationDedicated}
-		{SessionKindService, SessionOwnerService, ModeHeaded, SessionIsolationDedicated}
-		{SessionKindDebug, SessionOwnerHuman, ModeVisible, SessionIsolationDedicated}
-		{SessionKindTest, SessionOwnerAgent, ModeHeadless, SessionIsolationEphemeral}
+		{SessionKindTask, SessionOwnerAgent, ModeHeadless, SessionIsolationEphemeral},
+		{SessionKindInteractive, SessionOwnerHuman, ModeHeaded, SessionIsolationDedicated},
+		{SessionKindService, SessionOwnerService, ModeHeaded, SessionIsolationDedicated},
+		{SessionKindDebug, SessionOwnerHuman, ModeVisible, SessionIsolationDedicated},
+		{SessionKindTest, SessionOwnerAgent, ModeHeadless, SessionIsolationEphemeral},
 	}
 
 	for _, tc := range cases {
@@ -83,9 +83,9 @@ func TestBrowserSessionKindDefaultsAreDomainNeutral(t *testing.T) {
 
 func TestNormalizeSessionInfoBackfillsBrowserSessionContract(t *testing.T) {
 	info := &SessionInfo{
-		SessionID: "s1"
-		ChromePID: 1234
-		ProfileDir: "/tmp/dw-browser-sessions/profile-a"
+		SessionID:  "s1",
+		ChromePID:  1234,
+		ProfileDir: "/tmp/dw-browser-sessions/profile-a",
 	}
 
 	NormalizeSessionInfo(info)

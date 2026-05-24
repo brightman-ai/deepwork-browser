@@ -12,15 +12,15 @@ import (
 
 // targetGraphPageFilter is the Browser Portal target boundary: user-visible
 // tabs are CDP "page" targets. Browser/tab/meta targets are runtime plumbing.
-func targetGraphPageFilter target.Filter {
+func targetGraphPageFilter() target.Filter {
 	return target.Filter{{Type: "page"}}
 }
 
-func targetGraphListPages(ctx context.Context, timeout time.Duration) (*target.Info, error) {
-	var infos *target.Info
+func targetGraphListPages(ctx context.Context, timeout time.Duration) ([]*target.Info, error) {
+	var infos []*target.Info
 	err := runBrowserCDPWithSoftTimeout(ctx, timeout, func(execCtx context.Context) error {
 		var err error
-		infos, err = target.GetTargets.WithFilter(targetGraphPageFilter).Do(execCtx)
+		infos, err = target.GetTargets().WithFilter(targetGraphPageFilter()).Do(execCtx)
 		return err
 	})
 	if err != nil {
@@ -33,7 +33,7 @@ func targetGraphGetPageInfo(ctx context.Context, targetID target.ID, timeout tim
 	var info *target.Info
 	err := runBrowserCDPWithSoftTimeout(ctx, timeout, func(execCtx context.Context) error {
 		var err error
-		info, err = target.GetTargetInfo.WithTargetID(targetID).Do(execCtx)
+		info, err = target.GetTargetInfo().WithTargetID(targetID).Do(execCtx)
 		return err
 	})
 	if err != nil {
@@ -76,7 +76,7 @@ func targetGraphDevToolsBaseURL(wsURL string) (string, error) {
 	if parsed.Scheme == "wss" {
 		scheme = "https"
 	}
-	return (&url.URL{Scheme: scheme, Host: parsed.Host}).String, nil
+	return (&url.URL{Scheme: scheme, Host: parsed.Host}).String(), nil
 }
 
 func targetGraphCloseViaDevTools(wsURL string, targetID target.ID) error {
@@ -89,7 +89,7 @@ func targetGraphCloseViaDevTools(wsURL string, targetID target.ID) error {
 	if err != nil {
 		return fmt.Errorf("devtools close target %s: %w", targetID, err)
 	}
-	defer resp.Body.Close
+	defer resp.Body.Close()
 	if resp.StatusCode == http.StatusNotFound {
 		return nil
 	}
@@ -107,9 +107,9 @@ func targetGraphActivate(ctx context.Context, targetID target.ID, timeout time.D
 
 func targetGraphEnableDiscovery(ctx context.Context, timeout time.Duration) error {
 	return runBrowserCDPWithSoftTimeout(ctx, timeout, func(execCtx context.Context) error {
-		if err := target.SetDiscoverTargets(true).WithFilter(targetGraphPageFilter).Do(execCtx); err != nil {
+		if err := target.SetDiscoverTargets(true).WithFilter(targetGraphPageFilter()).Do(execCtx); err != nil {
 			return err
 		}
-		return target.SetAutoAttach(true, false).WithFlatten(true).WithFilter(targetGraphPageFilter).Do(execCtx)
+		return target.SetAutoAttach(true, false).WithFlatten(true).WithFilter(targetGraphPageFilter()).Do(execCtx)
 	})
 }

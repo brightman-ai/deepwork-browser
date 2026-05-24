@@ -1,10 +1,10 @@
-// Package browser — startup recovery tests [v2 ]
+// Package browser — startup recovery tests [v2 Phase_v2_4]
 //
 // 绑定 TC (T6 v2):
-// - (新): Singleton lock 残留检测 (dead PID → 清理)
-// - (新): orphan PID alive → SIGTERM/SIGKILL 强杀路径 (skipped on CI: 需 spawn sleep)
-// - TC-09-L4-15 (新): profile 损坏 → .broken/ 隔离
-// - 健康路径: 完整 SQLite Cookies → recovery 通过, profileDir 不变
+//   - TC-09-U-44 (新): Singleton lock 残留检测 (dead PID → 清理)
+//   - TC-09-U-45 (新): orphan PID alive → SIGTERM/SIGKILL 强杀路径 (skipped on CI: 需 spawn sleep)
+//   - TC-09-L4-15 (新): profile 损坏 → .broken/ 隔离
+//   - 健康路径: 完整 SQLite Cookies → recovery 通过, profileDir 不变
 package browser
 
 import (
@@ -20,7 +20,7 @@ import (
 
 // TestRecovery_HealthyEmptyProfile_NoOp — 不存在的 profileDir → 视为首次启动, 不报错.
 func TestRecovery_HealthyEmptyProfile_NoOp(t *testing.T) {
-	dir := filepath.Join(t.TempDir, "no-such-profile")
+	dir := filepath.Join(t.TempDir(), "no-such-profile")
 	if err := RunStartupRecovery(dir, IdentityKey("test-key")); err != nil {
 		t.Fatalf("non-existent profile should be no-op, got: %v", err)
 	}
@@ -32,10 +32,10 @@ func TestRecovery_HealthyEmptyProfile_NoOp(t *testing.T) {
 
 // TestRecovery_HealthyCookies_NoOp — 合法 SQLite header → 通过, profileDir 不变.
 func TestRecovery_HealthyCookies_NoOp(t *testing.T) {
-	dir := t.TempDir
+	dir := t.TempDir()
 	cookiesPath := filepath.Join(dir, "Cookies")
 	// 合法 SQLite header + 一些 padding
-	content := append(byte("SQLite format 3\x00"), make(byte, 100)...)
+	content := append([]byte("SQLite format 3\x00"), make([]byte, 100)...)
 	if err := os.WriteFile(cookiesPath, content, 0644); err != nil {
 		t.Fatal(err)
 	}
@@ -54,16 +54,16 @@ func TestRecovery_HealthyCookies_NoOp(t *testing.T) {
 }
 
 func TestRecovery_ClearsChromeCrashRestoreState(t *testing.T) {
-	dir := t.TempDir
+	dir := t.TempDir()
 	defaultDir := filepath.Join(dir, "Default")
 	if err := os.MkdirAll(defaultDir, 0755); err != nil {
 		t.Fatal(err)
 	}
-	for _, path := range string{
-		filepath.Join(dir, "Local State")
-		filepath.Join(defaultDir, "Preferences")
+	for _, path := range []string{
+		filepath.Join(dir, "Local State"),
+		filepath.Join(defaultDir, "Preferences"),
 	} {
-		body := byte(`{"profile":{"exit_type":"Crashed","exited_cleanly":false},"keep":"value"}`)
+		body := []byte(`{"profile":{"exit_type":"Crashed","exited_cleanly":false},"keep":"value"}`)
 		if err := os.WriteFile(path, body, 0644); err != nil {
 			t.Fatal(err)
 		}
@@ -73,9 +73,9 @@ func TestRecovery_ClearsChromeCrashRestoreState(t *testing.T) {
 		t.Fatalf("recovery: %v", err)
 	}
 
-	for _, path := range string{
-		filepath.Join(dir, "Local State")
-		filepath.Join(defaultDir, "Preferences")
+	for _, path := range []string{
+		filepath.Join(dir, "Local State"),
+		filepath.Join(defaultDir, "Preferences"),
 	} {
 		body, err := os.ReadFile(path)
 		if err != nil {
@@ -96,8 +96,8 @@ func TestRecovery_ClearsChromeCrashRestoreState(t *testing.T) {
 }
 
 func TestRecovery_ProfileOwnerDeadMarkerCleaned(t *testing.T) {
-	dir := t.TempDir
-	if err := os.WriteFile(filepath.Join(dir, deepworkProfileOwnerFile), byte(`{"owner_pid":9999998,"chrome_pid":9999997,"identity_key":"k-owner"}`), 0644); err != nil {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, deepworkProfileOwnerFile), []byte(`{"owner_pid":9999998,"chrome_pid":9999997,"identity_key":"k-owner"}`), 0644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -110,17 +110,17 @@ func TestRecovery_ProfileOwnerDeadMarkerCleaned(t *testing.T) {
 }
 
 func TestRecovery_LegacyLiveOwnerDeadChromeMarkerCleaned(t *testing.T) {
-	dir := t.TempDir
+	dir := t.TempDir()
 	owner := exec.Command("sleep", "30")
-	if err := owner.Start; err != nil {
+	if err := owner.Start(); err != nil {
 		t.Fatalf("start owner process: %v", err)
 	}
-	t.Cleanup(func {
-		_ = owner.Process.Kill
-		_, _ = owner.Process.Wait
+	t.Cleanup(func() {
+		_ = owner.Process.Kill()
+		_, _ = owner.Process.Wait()
 	})
 	body := fmt.Sprintf(`{"owner_pid":%d,"chrome_pid":9999997,"identity_key":"k-owner"}`, owner.Process.Pid)
-	if err := os.WriteFile(filepath.Join(dir, deepworkProfileOwnerFile), byte(body), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, deepworkProfileOwnerFile), []byte(body), 0644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -133,52 +133,52 @@ func TestRecovery_LegacyLiveOwnerDeadChromeMarkerCleaned(t *testing.T) {
 }
 
 func TestRecovery_LegacyLiveOwnerLiveChromeBlocks(t *testing.T) {
-	dir := t.TempDir
+	dir := t.TempDir()
 	owner := exec.Command("sleep", "30")
 	chrome := exec.Command("sleep", "30")
-	if err := owner.Start; err != nil {
+	if err := owner.Start(); err != nil {
 		t.Fatalf("start owner process: %v", err)
 	}
-	if err := chrome.Start; err != nil {
-		_ = owner.Process.Kill
-		_, _ = owner.Process.Wait
+	if err := chrome.Start(); err != nil {
+		_ = owner.Process.Kill()
+		_, _ = owner.Process.Wait()
 		t.Fatalf("start chrome process: %v", err)
 	}
-	t.Cleanup(func {
-		_ = owner.Process.Kill
-		_, _ = owner.Process.Wait
-		_ = chrome.Process.Kill
-		_, _ = chrome.Process.Wait
+	t.Cleanup(func() {
+		_ = owner.Process.Kill()
+		_, _ = owner.Process.Wait()
+		_ = chrome.Process.Kill()
+		_, _ = chrome.Process.Wait()
 	})
 	body := fmt.Sprintf(`{"owner_pid":%d,"chrome_pid":%d,"identity_key":"k-owner"}`, owner.Process.Pid, chrome.Process.Pid)
-	if err := os.WriteFile(filepath.Join(dir, deepworkProfileOwnerFile), byte(body), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, deepworkProfileOwnerFile), []byte(body), 0644); err != nil {
 		t.Fatal(err)
 	}
 
 	err := RunStartupRecovery(dir, IdentityKey("k-owner"))
-	if err == nil || !strings.Contains(err.Error, "profile_owned_by_live_deepwork") {
+	if err == nil || !strings.Contains(err.Error(), "profile_owned_by_live_deepwork") {
 		t.Fatalf("expected live legacy owner+chrome to block, got: %v", err)
 	}
 }
 
 func TestRecoverySweep_DeadBrowserMuxHostKillsOrphanChrome(t *testing.T) {
-	dataDir := t.TempDir
+	dataDir := t.TempDir()
 	profileDir := filepath.Join(dataDir, "browser-data", "profiles", "ok3", "macos-chrome-v6")
 	if err := os.MkdirAll(profileDir, 0755); err != nil {
 		t.Fatal(err)
 	}
 	chrome := exec.Command("sleep", "30")
-	if err := chrome.Start; err != nil {
+	if err := chrome.Start(); err != nil {
 		t.Fatalf("start chrome process: %v", err)
 	}
 	chromeDone := make(chan error, 1)
-	go func {
-		chromeDone <- chrome.Wait
+	go func() {
+		chromeDone <- chrome.Wait()
 		close(chromeDone)
-	}
-	t.Cleanup(func {
+	}()
+	t.Cleanup(func() {
 		if isPIDAlive(chrome.Process.Pid) {
-			_ = chrome.Process.Kill
+			_ = chrome.Process.Kill()
 		}
 		select {
 		case <-chromeDone:
@@ -186,13 +186,13 @@ func TestRecoverySweep_DeadBrowserMuxHostKillsOrphanChrome(t *testing.T) {
 		}
 	})
 	body := fmt.Sprintf(`{
-		"owner_pid": 9999998
-		"chrome_pid": %d
-		"identity_key": "k-muxhost-orphan"
-		"browser_mux_host_id": "browser-mux-host-test"
+		"owner_pid": 9999998,
+		"chrome_pid": %d,
+		"identity_key": "k-muxhost-orphan",
+		"browser_mux_host_id": "browser-mux-host-test",
 		"browser_mux_host_pid": 9999997
 	}`, chrome.Process.Pid)
-	if err := os.WriteFile(filepath.Join(profileDir, deepworkProfileOwnerFile), byte(body), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(profileDir, deepworkProfileOwnerFile), []byte(body), 0644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -210,35 +210,35 @@ func TestRecoverySweep_DeadBrowserMuxHostKillsOrphanChrome(t *testing.T) {
 }
 
 func TestRecoverySweep_LiveBrowserMuxHostSkipped(t *testing.T) {
-	dataDir := t.TempDir
+	dataDir := t.TempDir()
 	profileDir := filepath.Join(dataDir, "browser-data", "profiles", "ok3", "macos-chrome-v6")
 	if err := os.MkdirAll(profileDir, 0755); err != nil {
 		t.Fatal(err)
 	}
 	host := exec.Command("sleep", "30")
 	chrome := exec.Command("sleep", "30")
-	if err := host.Start; err != nil {
+	if err := host.Start(); err != nil {
 		t.Fatalf("start host process: %v", err)
 	}
-	if err := chrome.Start; err != nil {
-		_ = host.Process.Kill
-		_, _ = host.Process.Wait
+	if err := chrome.Start(); err != nil {
+		_ = host.Process.Kill()
+		_, _ = host.Process.Wait()
 		t.Fatalf("start chrome process: %v", err)
 	}
-	t.Cleanup(func {
-		_ = host.Process.Kill
-		_, _ = host.Process.Wait
-		_ = chrome.Process.Kill
-		_, _ = chrome.Process.Wait
+	t.Cleanup(func() {
+		_ = host.Process.Kill()
+		_, _ = host.Process.Wait()
+		_ = chrome.Process.Kill()
+		_, _ = chrome.Process.Wait()
 	})
 	body := fmt.Sprintf(`{
-		"owner_pid": %d
-		"chrome_pid": %d
-		"identity_key": "k-live-muxhost"
-		"browser_mux_host_id": "browser-mux-host-test-live"
+		"owner_pid": %d,
+		"chrome_pid": %d,
+		"identity_key": "k-live-muxhost",
+		"browser_mux_host_id": "browser-mux-host-test-live",
 		"browser_mux_host_pid": %d
 	}`, host.Process.Pid, chrome.Process.Pid, host.Process.Pid)
-	if err := os.WriteFile(filepath.Join(profileDir, deepworkProfileOwnerFile), byte(body), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(profileDir, deepworkProfileOwnerFile), []byte(body), 0644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -257,9 +257,9 @@ func TestRecoverySweep_LiveBrowserMuxHostSkipped(t *testing.T) {
 }
 
 func TestRecovery_ProfileOwnedBySameProcessRecoverable(t *testing.T) {
-	dir := t.TempDir
-	body := fmt.Sprintf(`{"owner_pid":%d,"chrome_pid":9999997,"identity_key":"k-owner"}`, os.Getpid)
-	if err := os.WriteFile(filepath.Join(dir, deepworkProfileOwnerFile), byte(body), 0644); err != nil {
+	dir := t.TempDir()
+	body := fmt.Sprintf(`{"owner_pid":%d,"chrome_pid":9999997,"identity_key":"k-owner"}`, os.Getpid())
+	if err := os.WriteFile(filepath.Join(dir, deepworkProfileOwnerFile), []byte(body), 0644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -270,10 +270,10 @@ func TestRecovery_ProfileOwnedBySameProcessRecoverable(t *testing.T) {
 
 // TestRecovery_CorruptedSQLiteHeader_Quarantined — 损坏 header → 隔离.
 func TestRecovery_CorruptedSQLiteHeader_Quarantined(t *testing.T) {
-	dir := t.TempDir
+	dir := t.TempDir()
 	cookiesPath := filepath.Join(dir, "Cookies")
 	// 错误 magic header
-	if err := os.WriteFile(cookiesPath, byte("CORRUPTED_HEADER"), 0644); err != nil {
+	if err := os.WriteFile(cookiesPath, []byte("CORRUPTED_HEADER"), 0644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -290,7 +290,7 @@ func TestRecovery_CorruptedSQLiteHeader_Quarantined(t *testing.T) {
 	if err != nil {
 		t.Fatalf(".broken root not created: %v", err)
 	}
-	if !st.IsDir {
+	if !st.IsDir() {
 		t.Fatalf(".broken should be dir")
 	}
 	entries, err := os.ReadDir(brokenRoot)
@@ -301,9 +301,9 @@ func TestRecovery_CorruptedSQLiteHeader_Quarantined(t *testing.T) {
 
 // TestRecovery_EmptyCookies_Quarantined — 空 Cookies 文件 = Chrome init crash → 隔离.
 func TestRecovery_EmptyCookies_Quarantined(t *testing.T) {
-	dir := t.TempDir
+	dir := t.TempDir()
 	cookiesPath := filepath.Join(dir, "Cookies")
-	if err := os.WriteFile(cookiesPath, byte{}, 0644); err != nil {
+	if err := os.WriteFile(cookiesPath, []byte{}, 0644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -320,7 +320,7 @@ func TestRecovery_EmptyCookies_Quarantined(t *testing.T) {
 // 用 PID=1 (init) 反向: 选一个肯定不会存活的 PID (max int32 - 1).
 // init pid=1 可能存活, 用 9999998 这种几乎不可能被分配的 PID.
 func TestRecovery_SingletonLockDeadPID_Cleaned(t *testing.T) {
-	dir := t.TempDir
+	dir := t.TempDir()
 	lockPath := filepath.Join(dir, "SingletonLock")
 	// 创建一个指向"已死"PID 的 symlink (Chrome 的格式: hostname-PID)
 	deadPID := 9999998
@@ -328,7 +328,7 @@ func TestRecovery_SingletonLockDeadPID_Cleaned(t *testing.T) {
 		t.Skipf("symlink creation failed (filesystem limitation): %v", err)
 	}
 	// 同时创建一个 SingletonCookie 普通文件
-	if err := os.WriteFile(filepath.Join(dir, "SingletonCookie"), byte("x"), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "SingletonCookie"), []byte("x"), 0644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -352,18 +352,18 @@ func TestRecovery_SingletonLockDeadPID_Cleaned(t *testing.T) {
 
 // TestRecovery_readSingletonLockPID — symlink target 解析正反例.
 func TestRecovery_readSingletonLockPID(t *testing.T) {
-	dir := t.TempDir
-	cases := struct {
-		name string
+	dir := t.TempDir()
+	cases := []struct {
+		name   string
 		target string
 		expect int
-		err bool
+		err    bool
 	}{
-		{"standard chrome format", "MacBook-Pro-12345", 12345, false}
-		{"long hostname", "my.host.example.com-99999", 99999, false}
-		{"no PID", "MacBook-Pro", 0, true}
-		{"non-numeric", "MacBook-Pro-abc", 0, true}
-		{"zero PID", "MacBook-Pro-0", 0, true}
+		{"standard chrome format", "MacBook-Pro-12345", 12345, false},
+		{"long hostname", "my.host.example.com-99999", 99999, false},
+		{"no PID", "MacBook-Pro", 0, true},
+		{"non-numeric", "MacBook-Pro-abc", 0, true},
+		{"zero PID", "MacBook-Pro-0", 0, true},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -392,7 +392,7 @@ func TestRecovery_readSingletonLockPID(t *testing.T) {
 
 // TestRecovery_isPIDAlive — 自己 PID 存活, 大数 PID 不存活.
 func TestRecovery_isPIDAlive(t *testing.T) {
-	if !isPIDAlive(os.Getpid) {
+	if !isPIDAlive(os.Getpid()) {
 		t.Fatalf("self PID should be alive")
 	}
 	if isPIDAlive(9999998) {
@@ -403,11 +403,11 @@ func TestRecovery_isPIDAlive(t *testing.T) {
 	}
 }
 
-// TestRecovery_QuarantineAuditMessage — 隔离时 reason 包含在 .broken/ 路径? 用 log capture 验证不便
+// TestRecovery_QuarantineAuditMessage — 隔离时 reason 包含在 .broken/ 路径? 用 log capture 验证不便,
 // 此处仅断言 .broken/{ts}/ 子目录格式正确 (UTC 时间戳).
 func TestRecovery_QuarantineTimestampFormat(t *testing.T) {
-	dir := t.TempDir
-	if err := os.WriteFile(filepath.Join(dir, "Cookies"), byte("BAD"), 0644); err != nil {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "Cookies"), []byte("BAD"), 0644); err != nil {
 		t.Fatal(err)
 	}
 	if err := RunStartupRecovery(dir, IdentityKey("k-ts")); err != nil {
@@ -417,7 +417,7 @@ func TestRecovery_QuarantineTimestampFormat(t *testing.T) {
 	if len(entries) != 1 {
 		t.Fatalf("expected 1 entry in .broken/, got %d", len(entries))
 	}
-	name := entries[0].Name
+	name := entries[0].Name()
 	// 格式: YYYYMMDDTHHMMSSZ (16 字符)
 	if len(name) != 16 || !strings.HasSuffix(name, "Z") {
 		t.Fatalf("expected timestamp format YYYYMMDDTHHMMSSZ (len=16, ends with Z), got %q", name)

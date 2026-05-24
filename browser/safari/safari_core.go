@@ -14,12 +14,12 @@ import (
 // Safari engine timing constants.
 const (
 	wdSettleAfterAction = 300 * time.Millisecond // Act 后等待 DOM 稳定
-	wdSettleAfterFocus = 150 * time.Millisecond // type 前等待焦点切换
-	wdNavigateTimeout = 15 * time.Second // Navigate 最大等待
+	wdSettleAfterFocus  = 150 * time.Millisecond // type 前等待焦点切换
+	wdNavigateTimeout   = 15 * time.Second       // Navigate 最大等待
 
 	// P2: AX bridge timing (保留，iOS 模式备用)
 	axPollInterval = 400 * time.Millisecond
-	axPollTimeout = 10 * time.Second
+	axPollTimeout  = 10 * time.Second
 )
 
 // SafariOptions 创建 SafariBrowserCore 的选项。
@@ -35,20 +35,20 @@ type SafariOptions struct {
 // SafariBrowserCore 实现 browser.BrowserCore 和 browser.SessionCore。
 // 主通道：WebDriver（safaridriver）；P2 备用：AX bridge（iOS 模式）。
 type SafariBrowserCore struct {
-	mu sync.Mutex
-	wdc *WebDriverClient // 主通道：WebDriver 客户端
+	mu     sync.Mutex
+	wdc    *WebDriverClient          // 主通道：WebDriver 客户端
 	wdSnap *WebDriverSnapshotBuilder // WebDriver snapshot builder
 
 	// iOS Simulator 支持
 	simctl *SimctlManager // iOS Simulator 设备管理（仅 isIOS=true 时非 nil）
-	ax *AXBridge // P2: AX bridge fallback（仅 iOS 模式初始化）
+	ax     *AXBridge      // P2: AX bridge fallback（仅 iOS 模式初始化）
 
 	deviceUDID string
 	deviceName string
-	isIOS bool // true=iOS Simulator, false=macOS Safari
+	isIOS      bool // true=iOS Simulator, false=macOS Safari
 
 	// session ref 存储
-	refs map[string]browser.ElementRef // ref string → ElementRef
+	refs      map[string]browser.ElementRef // ref string → ElementRef
 	snapEpoch int
 }
 
@@ -58,8 +58,8 @@ type SafariBrowserCore struct {
 // 两者均为空 → macOS Safari 桌面模式（safaridriver mac 会话，无 simctl）。
 func NewSafariBrowserCore(ctx context.Context, opts SafariOptions) (*SafariBrowserCore, error) {
 	c := &SafariBrowserCore{
-		wdSnap: &WebDriverSnapshotBuilder{}
-		refs: make(map[string]browser.ElementRef)
+		wdSnap: &WebDriverSnapshotBuilder{},
+		refs:   make(map[string]browser.ElementRef),
 	}
 
 	// iOS Simulator 模式：DeviceQuery 非空或直接指定了 UDID
@@ -70,7 +70,7 @@ func NewSafariBrowserCore(ctx context.Context, opts SafariOptions) (*SafariBrows
 
 	if iosQuery != "" {
 		// iOS Simulator 模式
-		simctl := NewSimctlManager
+		simctl := NewSimctlManager()
 		c.simctl = simctl
 
 		device, err := SmartResolveDevice(ctx, simctl, iosQuery)
@@ -82,16 +82,16 @@ func NewSafariBrowserCore(ctx context.Context, opts SafariOptions) (*SafariBrows
 		c.isIOS = true
 
 		// P2: AX bridge 初始化（iOS 模式备用）
-		ax := NewAXBridge
-		if _, err := ax.EnsureCompiled; err != nil {
+		ax := NewAXBridge()
+		if _, err := ax.EnsureCompiled(); err != nil {
 			// AX bridge 编译失败不阻断启动，仅记录
 			ax = nil
 		}
 		c.ax = ax
 
 		wdc, err := NewWebDriverClient(ctx, WebDriverOpts{
-			Platform: "iOS"
-			DeviceUDID: device.UDID
+			Platform:   "iOS",
+			DeviceUDID: device.UDID,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("safari: webdriver iOS session: %w", err)
@@ -102,7 +102,7 @@ func NewSafariBrowserCore(ctx context.Context, opts SafariOptions) (*SafariBrows
 		c.isIOS = false
 
 		wdc, err := NewWebDriverClient(ctx, WebDriverOpts{
-			Platform: "mac"
+			Platform: "mac",
 		})
 		if err != nil {
 			return nil, fmt.Errorf("safari: webdriver mac session: %w", err)
@@ -138,10 +138,10 @@ func (c *SafariBrowserCore) Navigate(ctx context.Context, url string) (*browser.
 	pageURL, _ := c.wdc.CurrentURL(ctx)
 	pageTitle, _ := c.wdc.Title(ctx)
 	return &browser.Snapshot{
-		PageTitle: pageTitle
-		URL: pageURL
-		SnapshotType: "webdriver_empty"
-		LoadState: "loading"
+		PageTitle:    pageTitle,
+		URL:          pageURL,
+		SnapshotType: "webdriver_empty",
+		LoadState:    "loading",
 	}, nil
 }
 
@@ -167,8 +167,8 @@ func (c *SafariBrowserCore) Text(ctx context.Context, focus *string) (string, er
 	script := "return document.body ? document.body.innerText : ''"
 	if focus != nil && *focus != "" {
 		script = fmt.Sprintf(
-			`var el = document.querySelector(%q); return el ? el.innerText : document.body.innerText`
-			*focus
+			`var el = document.querySelector(%q); return el ? el.innerText : document.body.innerText`,
+			*focus,
 		)
 	}
 	raw, err := c.wdc.ExecuteScript(ctx, script)
@@ -185,7 +185,7 @@ func (c *SafariBrowserCore) Text(ctx context.Context, focus *string) (string, er
 
 // Screenshot 截图。
 // iOS 模式优先用 simctl（保留设备级截图语义）；macOS 模式用 WebDriver。
-func (c *SafariBrowserCore) Screenshot(ctx context.Context, annotate bool) (byte, error) {
+func (c *SafariBrowserCore) Screenshot(ctx context.Context, annotate bool) ([]byte, error) {
 	if c.isIOS && c.simctl != nil {
 		return c.simctl.Screenshot(ctx, c.deviceUDID)
 	}
@@ -248,11 +248,11 @@ func (c *SafariBrowserCore) DispatchInput(ctx context.Context, event *browser.In
 func (c *SafariBrowserCore) Close(ctx context.Context) error {
 	var firstErr error
 	if c.isIOS && c.simctl != nil && c.deviceUDID != "" {
-		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background, 5*time.Second)
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		if err := c.simctl.TerminateApp(cleanupCtx, c.deviceUDID, "com.apple.mobilesafari"); err != nil {
 			firstErr = err
 		}
-		cleanupCancel
+		cleanupCancel()
 	}
 	if err := c.wdc.Close(ctx); err != nil {
 		if firstErr == nil {
@@ -260,17 +260,17 @@ func (c *SafariBrowserCore) Close(ctx context.Context) error {
 		}
 	}
 	if c.isIOS && c.simctl != nil && c.deviceUDID != "" {
-		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background, 5*time.Second)
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		if err := c.simctl.TerminateApp(cleanupCtx, c.deviceUDID, "com.apple.mobilesafari"); err != nil && firstErr == nil {
 			firstErr = err
 		}
-		cleanupCancel
+		cleanupCancel()
 	}
 	return firstErr
 }
 
 // GetTargetTracker Safari 不支持 target tracking。
-func (c *SafariBrowserCore) GetTargetTracker *browser.TargetTracker {
+func (c *SafariBrowserCore) GetTargetTracker() *browser.TargetTracker {
 	return nil
 }
 
@@ -302,39 +302,39 @@ func (c *SafariBrowserCore) ActWithSessionMode(ctx context.Context, action strin
 }
 
 // RestoreRefsFromSession 从 session 恢复 ref 表。
-func (c *SafariBrowserCore) RestoreRefsFromSession(refs browser.SessionRef) {
-	c.mu.Lock
-	defer c.mu.Unlock
+func (c *SafariBrowserCore) RestoreRefsFromSession(refs []browser.SessionRef) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	c.refs = make(map[string]browser.ElementRef, len(refs))
 	for _, r := range refs {
 		loc := r.Locator
 		if loc.Engine == "" {
 			loc = browser.NodeLocator{
-				Engine: browser.EngineSafari
-				AXPath: r.AXPath
-				StableKey: r.StableKey
+				Engine:    browser.EngineSafari,
+				AXPath:    r.AXPath,
+				StableKey: r.StableKey,
 			}
 		}
 		c.refs[r.Ref] = browser.ElementRef{
-			Ref: r.Ref
-			Locator: loc
-			AXPath: loc.AXPath
-			Role: r.Role
-			Name: r.Name
-			NameFull: r.Name
-			NameShort: truncateNameStr(r.Name, 50)
-			TestID: r.TestID
-			Placeholder: r.Placeholder
-			Interactable: true
+			Ref:          r.Ref,
+			Locator:      loc,
+			AXPath:       loc.AXPath,
+			Role:         r.Role,
+			Name:         r.Name,
+			NameFull:     r.Name,
+			NameShort:    truncateNameStr(r.Name, 50),
+			TestID:       r.TestID,
+			Placeholder:  r.Placeholder,
+			Interactable: true,
 		}
 	}
 }
 
 // DeviceUDID 返回当前设备 UDID（iOS 模式）。
-func (c *SafariBrowserCore) DeviceUDID string { return c.deviceUDID }
+func (c *SafariBrowserCore) DeviceUDID() string { return c.deviceUDID }
 
 // DeviceName 返回当前设备名称（iOS 模式）。
-func (c *SafariBrowserCore) DeviceName string { return c.deviceName }
+func (c *SafariBrowserCore) DeviceName() string { return c.deviceName }
 
 // ============================================================
 // 内部方法
@@ -352,8 +352,8 @@ func (c *SafariBrowserCore) snap(ctx context.Context, sessionMode bool) (*browse
 
 // updateRefs 更新内部 ref 表。
 func (c *SafariBrowserCore) updateRefs(snap *browser.Snapshot) {
-	c.mu.Lock
-	defer c.mu.Unlock
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	c.refs = make(map[string]browser.ElementRef, len(snap.Refs))
 	for _, ref := range snap.Refs {
 		c.refs[ref.Ref] = ref
@@ -390,11 +390,11 @@ func (c *SafariBrowserCore) executeAction(ctx context.Context, action string) er
 		return c.executeScroll(ctx, parts[1])
 
 	case "back":
-		_, err := c.wdc.ExecuteScript(ctx, "window.history.back")
+		_, err := c.wdc.ExecuteScript(ctx, "window.history.back()")
 		return err
 
 	case "forward":
-		_, err := c.wdc.ExecuteScript(ctx, "window.history.forward")
+		_, err := c.wdc.ExecuteScript(ctx, "window.history.forward()")
 		return err
 
 	default:
@@ -462,14 +462,14 @@ func (c *SafariBrowserCore) executeScroll(ctx context.Context, direction string)
 // resolveElement 解析 target 到 WebDriver Element。
 //
 // 解析优先级:
-// 1. @rN / eN — 从 refs 表取 stableKey/testid，通过 WebDriver 重新定位
-// 2. #testid — css [data-testid='...']
-// 3. role:'name' — ARIA 语义选择器（JS 查询）
-// 4. bare role — 取第一个匹配的 interactable ref
+//  1. @rN / eN — 从 refs 表取 stableKey/testid，通过 WebDriver 重新定位
+//  2. #testid — css [data-testid='...']
+//  3. role:'name' — ARIA 语义选择器（JS 查询）
+//  4. bare role — 取第一个匹配的 interactable ref
 func (c *SafariBrowserCore) resolveElement(ctx context.Context, target string) (*Element, error) {
-	c.mu.Lock
+	c.mu.Lock()
 	refs := c.refs
-	c.mu.Unlock
+	c.mu.Unlock()
 
 	// @rN / eN — ref 表查找 → 通过 stableKey 定位
 	isRef := strings.HasPrefix(target, "@r") ||
@@ -538,7 +538,7 @@ func (c *SafariBrowserCore) elementFromRef(ctx context.Context, ref browser.Elem
 
 	// 慢路径：ordinal（按序号取第 N 个交互元素，最脆弱）
 	if ref.Locator.Ordinal > 0 {
-		elements, err := c.wdc.FindElements(ctx, "css selector"
+		elements, err := c.wdc.FindElements(ctx, "css selector",
 			"button,a,input,textarea,select,[role],[tabindex]")
 		if err == nil {
 			visible := 0
@@ -565,8 +565,8 @@ var role = arguments[0], name = arguments[1];
 var candidates = document.querySelectorAll('button,a,input,textarea,select,[role]');
 for (var i = 0; i < candidates.length; i++) {
 	var el = candidates[i];
-	var elRole = el.getAttribute('role') || el.tagName.toLowerCase;
-	var elName = (el.getAttribute('aria-label') || el.textContent || '').trim;
+	var elRole = el.getAttribute('role') || el.tagName.toLowerCase();
+	var elName = (el.getAttribute('aria-label') || el.textContent || '').trim();
 	if (elRole === role && elName.indexOf(name) >= 0) {
 		return el;
 	}
@@ -589,15 +589,15 @@ return null;`
 
 // waitForURL 等待 WebDriver 会话中当前 URL 包含 target（用于 iOS simctl 触发后确认）。
 func waitForURL(ctx context.Context, wdc *WebDriverClient, target string, timeout time.Duration) error {
-	deadline := time.Now.Add(timeout)
-	for time.Now.Before(deadline) {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
 		cur, err := wdc.CurrentURL(ctx)
 		if err == nil && strings.Contains(cur, stripScheme(target)) {
 			return nil
 		}
 		select {
-		case <-ctx.Done:
-			return ctx.Err
+		case <-ctx.Done():
+			return ctx.Err()
 		case <-time.After(axPollInterval):
 		}
 	}
@@ -656,7 +656,7 @@ func (c *SafariBrowserCore) relocateByStableKey(ctx context.Context, oldRef brow
 	if c.ax == nil {
 		return browser.ElementRef{}, fmt.Errorf("%w: AX bridge not available", browser.ErrStaleRef)
 	}
-	builder := NewSnapshotBuilder
+	builder := NewSnapshotBuilder()
 	tree, err := c.ax.Dump(ctx, c.deviceUDID, 12)
 	if err != nil {
 		return browser.ElementRef{}, fmt.Errorf("safari relocate: %w", err)

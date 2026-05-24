@@ -23,9 +23,9 @@ import (
 )
 
 const (
-	navigateReadyPollInterval = 200 * time.Millisecond
-	navigateReadyTimeout = 5 * time.Second
-	navigateDOMIdleMs = 500
+	navigateReadyPollInterval  = 200 * time.Millisecond
+	navigateReadyTimeout       = 5 * time.Second
+	navigateDOMIdleMs          = 500
 	navigateDOMSettleTimeoutMs = 5000
 )
 
@@ -35,15 +35,15 @@ const (
 
 // browserOptions 存储可选浏览器配置。
 type browserOptions struct {
-	viewportW int
-	viewportH int
-	userAgent string
-	presetID string
-	touch bool
-	mode BrowserMode // "human" / "headless"
+	viewportW   int
+	viewportH   int
+	userAgent   string
+	presetID    string
+	touch       bool
+	mode        BrowserMode // "human" / "headless"
 	hasViewport bool
-	hasUA bool
-	hasMode bool
+	hasUA       bool
+	hasMode     bool
 }
 
 // BrowserOption 是可选参数函数类型。
@@ -102,13 +102,13 @@ type CursorDetector interface {
 // CDPContextProvider 暴露 Chrome 的 CDP context 给外层（BrowserSession 注入 InputGateway 用）。
 // browserCoreImpl 实现此接口。
 type CDPContextProvider interface {
-	CDPContext context.Context
+	CDPContext() context.Context
 }
 
 // CDPContext 返回 browserCoreImpl 内部的 Chrome CDP context。
-func (impl *browserCoreImpl) CDPContext context.Context {
-	impl.mu.RLock
-	defer impl.mu.RUnlock
+func (impl *browserCoreImpl) CDPContext() context.Context {
+	impl.mu.RLock()
+	defer impl.mu.RUnlock()
 	return impl.browserCtx
 }
 
@@ -118,41 +118,41 @@ func (impl *browserCoreImpl) CDPContext context.Context {
 // 必须经此方法选择 ctx, 消除 "Navigate 走 tracker, 其它走 browserCtx" 的歧视模式 —
 // 该歧视模式是多 tab 场景下 screenshot 拍错 tab / snap 返回 0 元素的根因。
 //
-// 
+// [DDC-I-22, BRR-I-15, TH-0419-q5b]
 //
 // 调用方必须已持有 impl.mu 读/写锁 — 此方法不自行加锁。
-func (impl *browserCoreImpl) currentCtx context.Context {
-	_, ctx := impl.currentTargetRef
+func (impl *browserCoreImpl) currentCtx() context.Context {
+	_, ctx := impl.currentTargetRef()
 	return ctx
 }
 
-func (impl *browserCoreImpl) currentTargetRef (string, context.Context) {
+func (impl *browserCoreImpl) currentTargetRef() (string, context.Context) {
 	if impl.targetTracker != nil {
-		return impl.targetTracker.ActiveTargetRef
+		return impl.targetTracker.ActiveTargetRef()
 	}
 	return "", impl.browserCtx
 }
 
 func deriveTargetContext(parent context.Context, target context.Context) (context.Context, context.CancelFunc) {
-	if parent == nil || parent.Done == nil {
-		return target, func {}
+	if parent == nil || parent.Done() == nil {
+		return target, func() {}
 	}
 	var (
 		runCtx context.Context
 		cancel context.CancelFunc
 	)
-	if deadline, ok := parent.Deadline; ok {
+	if deadline, ok := parent.Deadline(); ok {
 		runCtx, cancel = context.WithDeadline(target, deadline)
 	} else {
 		runCtx, cancel = context.WithCancel(target)
 	}
-	go func {
+	go func() {
 		select {
-		case <-parent.Done:
-			cancel
-		case <-runCtx.Done:
+		case <-parent.Done():
+			cancel()
+		case <-runCtx.Done():
 		}
-	}
+	}()
 	return runCtx, cancel
 }
 
@@ -187,7 +187,7 @@ func inferFingerprintPresetID(bopts browserOptions) string {
 		}
 	}
 
-	return DefaultPresetID
+	return DefaultPresetID()
 }
 
 func applyViewportProfile(targetCtx context.Context, width, height int, dpr float64, mobile bool, touch bool, maxTouchPoints int64) error {
@@ -204,27 +204,27 @@ func applyViewportProfile(targetCtx context.Context, width, height int, dpr floa
 		maxTouchPoints = 1
 	}
 
-	return runCDPWithSoftTimeout(targetCtx, BrowserPoolCDPActionTimeout
+	return runCDPWithSoftTimeout(targetCtx, BrowserPoolCDPActionTimeout,
 		chromedp.ActionFunc(func(ctx context.Context) error {
 			override := emulation.SetDeviceMetricsOverride(int64(width), int64(height), dpr, mobile)
 			if width < height {
 				override = override.WithScreenOrientation(&emulation.ScreenOrientation{
-					Type: emulation.OrientationTypePortraitPrimary, Angle: 0
+					Type: emulation.OrientationTypePortraitPrimary, Angle: 0,
 				})
 			} else {
 				override = override.WithScreenOrientation(&emulation.ScreenOrientation{
-					Type: emulation.OrientationTypeLandscapePrimary, Angle: 90
+					Type: emulation.OrientationTypeLandscapePrimary, Angle: 90,
 				})
 			}
 			return override.Do(ctx)
-		})
+		}),
 		chromedp.ActionFunc(func(ctx context.Context) error {
 			cfg := emulation.SetTouchEmulationEnabled(touch)
 			if touch {
 				cfg = cfg.WithMaxTouchPoints(maxTouchPoints)
 			}
 			return cfg.Do(ctx)
-		})
+		}),
 	)
 }
 
@@ -244,14 +244,14 @@ func applyNativeWindowViewport(targetCtx context.Context, width, height int) err
 		height = DefaultViewportHeight
 	}
 	return runCDPWithSoftTimeout(targetCtx, BrowserMuxHostShutdownTimeout, chromedp.ActionFunc(func(ctx context.Context) error {
-		windowID, _, err := cdpbrowser.GetWindowForTarget.Do(ctx)
+		windowID, _, err := cdpbrowser.GetWindowForTarget().Do(ctx)
 		if err != nil {
 			return fmt.Errorf("get chrome window for target: %w", err)
 		}
 		return cdpbrowser.SetWindowBounds(windowID, &cdpbrowser.Bounds{
-			Width: int64(width)
-			Height: int64(height)
-			WindowState: cdpbrowser.WindowStateNormal
+			Width:       int64(width),
+			Height:      int64(height),
+			WindowState: cdpbrowser.WindowStateNormal,
 		}).Do(ctx)
 	}))
 }
@@ -278,52 +278,52 @@ func (impl *browserCoreImpl) applyLiveViewport(targetCtx context.Context, width,
 // cursorDetectScript 注入到每个新 document，监听 mouseover 并上报 cursor 样式变更。
 // 使用 CDP binding "__dwReportCursor" 回调 Go 侧。
 const cursorDetectScript = `
-(function {
- var last = '';
- document.addEventListener('mouseover', function(e) {
- var c = getComputedStyle(e.target).cursor;
- if (c !== last) { last = c; __dwReportCursor(JSON.stringify(c)); }
- }, { capture: true, passive: true });
-});
+(function() {
+  var last = '';
+  document.addEventListener('mouseover', function(e) {
+    var c = getComputedStyle(e.target).cursor;
+    if (c !== last) { last = c; __dwReportCursor(JSON.stringify(c)); }
+  }, { capture: true, passive: true });
+})();
 `
 
 // browserCoreImpl 实现 BrowserCore 接口。
 // 组合 SnapshotEngine + ActionEngine + LiveViewEngine + TakeoverController。
 type browserCoreImpl struct {
-	mu sync.RWMutex
-	allocCtx context.Context
-	allocCancel context.CancelFunc
-	browserCtx context.Context
-	browserCancel context.CancelFunc
-	snapEngine *snapshotEngine
-	actEngine *actionEngine
-	liveEngine *liveViewEngine
-	hub *FrameBroadcastHub // 帧广播 hub，fan-out 给多 WS subscriber 
-	takeoverCtrl *takeoverController
-	fingerprintPreset string
-	runtimeMode BrowserMode
-	chromePath string
-	profileID string
-	profilePath string
-	launcher *chromeLauncherImpl
-	supervisor *chromeSupervisorImpl
-	chromePID int
-	liveViewActive bool
-	liveViewportW int
-	liveViewportH int
-	liveViewportDPR float64
+	mu                 sync.RWMutex
+	allocCtx           context.Context
+	allocCancel        context.CancelFunc
+	browserCtx         context.Context
+	browserCancel      context.CancelFunc
+	snapEngine         *snapshotEngine
+	actEngine          *actionEngine
+	liveEngine         *liveViewEngine
+	hub                *FrameBroadcastHub // 帧广播 hub，fan-out 给多 WS subscriber [CAP-BS09-C3]
+	takeoverCtrl       *takeoverController
+	fingerprintPreset  string
+	runtimeMode        BrowserMode
+	chromePath         string
+	profileID          string
+	profilePath        string
+	launcher           *chromeLauncherImpl
+	supervisor         *chromeSupervisorImpl
+	chromePID          int
+	liveViewActive     bool
+	liveViewportW      int
+	liveViewportH      int
+	liveViewportDPR    float64
 	liveViewportMobile bool
-	liveViewportTouch bool
-	liveViewportMaxTP int64
-	onCursorChange func(cursor string) // cursor 变更回调（由 SetupCursorDetection 设置）
-	cursorDetectActive bool // 防止重复注入 cursor 检测脚本
-	targetTracker *TargetTracker // 多 Target 自动跟随 
-	displayMgr *DisplayManager // 虚拟 display 管理 (human 模式)
-	sessionAttached bool // true = attach 到已有 session target，不拥有其生命周期
-	chromeHandle ChromeHandle // direct/Workspace 启动路径的 Chrome 进程句柄
-	virtualDisplay *VirtualDisplayManager
-	workspace Workspace
-	ownerIdentityKey IdentityKey
+	liveViewportTouch  bool
+	liveViewportMaxTP  int64
+	onCursorChange     func(cursor string) // cursor 变更回调（由 SetupCursorDetection 设置）
+	cursorDetectActive bool                // 防止重复注入 cursor 检测脚本
+	targetTracker      *TargetTracker      // 多 Target 自动跟随 [CAP-BS09-C3 r3]
+	displayMgr         *DisplayManager     // 虚拟 display 管理 (human 模式)
+	sessionAttached    bool                // true = attach 到已有 session target，不拥有其生命周期
+	chromeHandle       ChromeHandle        // direct/Workspace 启动路径的 Chrome 进程句柄
+	virtualDisplay     *VirtualDisplayManager
+	workspace          Workspace
+	ownerIdentityKey   IdentityKey
 }
 
 // NewBrowserCore 创建并初始化 BrowserCore 实例。
@@ -333,10 +333,10 @@ type browserCoreImpl struct {
 // 先用 BuildDetachedChromeArgs fork 本机 Chrome，再通过 RemoteAllocator attach，
 // 避免 CLI/测试入口绕过 CGVirtualDisplay/Workspace。
 func NewBrowserCore(ctx context.Context, profileID string, optFns ...BrowserOption) (BrowserCore, error) {
-	launcher := NewChromeLauncher
-	supervisor := NewChromeSupervisor
+	launcher := NewChromeLauncher()
+	supervisor := NewChromeSupervisor()
 
-	chromePath, err := launcher.FindChrome
+	chromePath, err := launcher.FindChrome()
 	if err != nil {
 		return nil, err
 	}
@@ -357,7 +357,7 @@ func NewBrowserCore(ctx context.Context, profileID string, optFns ...BrowserOpti
 		width, height = bopts.viewportW, bopts.viewportH
 	}
 
-	homeDir, _ := os.UserHomeDir
+	homeDir, _ := os.UserHomeDir()
 	baseDir := filepath.Join(homeDir, ".deepwork", "browser-cli")
 	profilePath := filepath.Join(baseDir, profileID)
 	ownerKey := IdentityKey("browser-core-" + NormalizeProfileID(profileID))
@@ -381,17 +381,17 @@ func NewBrowserCore(ctx context.Context, profileID string, optFns ...BrowserOpti
 	}
 
 	launch, err := launchControlledBrowserCoreChrome(ctx, controlledBrowserCoreLaunchOptions{
-		chromePath: chromePath
-		profilePath: profilePath
-		ownerKey: ownerKey
-		mode: runtimeMode
-		presetID: fingerprintPresetID
-		preset: defaultPreset
-		width: width
-		height: height
-		userAgent: bopts.userAgent
-		hasUserAgent: bopts.hasUA
-		touch: bopts.touch
+		chromePath:   chromePath,
+		profilePath:  profilePath,
+		ownerKey:     ownerKey,
+		mode:         runtimeMode,
+		presetID:     fingerprintPresetID,
+		preset:       defaultPreset,
+		width:        width,
+		height:       height,
+		userAgent:    bopts.userAgent,
+		hasUserAgent: bopts.hasUA,
+		touch:        bopts.touch,
 	})
 	if err != nil {
 		return nil, err
@@ -399,14 +399,14 @@ func NewBrowserCore(ctx context.Context, profileID string, optFns ...BrowserOpti
 
 	allocCtx, allocCancel := chromedp.NewRemoteAllocator(ctx, launch.wsURL)
 	browserCtx, browserCancel := chromedp.NewContext(allocCtx, chromedp.WithErrorf(chromedpErrorf))
-	cleanupLaunch := func {
-		browserCancel
-		allocCancel
+	cleanupLaunch := func() {
+		browserCancel()
+		allocCancel()
 		cleanupControlledBrowserCoreLaunch(launch, profilePath, ownerKey)
 	}
 
 	if err := chromedp.Run(browserCtx); err != nil {
-		cleanupLaunch
+		cleanupLaunch()
 		return nil, fmt.Errorf("%w: CDP connection failed: %v", ErrCDPDisconnected, err)
 	}
 
@@ -425,7 +425,7 @@ func NewBrowserCore(ctx context.Context, profileID string, optFns ...BrowserOpti
 		}
 	}
 
-	snapEngine := newSnapshotEngine
+	snapEngine := newSnapshotEngine()
 	actEngine := newActionEngine(snapEngine)
 	liveEngine := newLiveViewEngine(width, height)
 	takeoverCtrl := newTakeoverController(browserCtx)
@@ -441,33 +441,33 @@ func NewBrowserCore(ctx context.Context, profileID string, optFns ...BrowserOpti
 	tracker.SetupListeners(browserCtx)
 
 	impl := &browserCoreImpl{
-		allocCtx: allocCtx
-		allocCancel: allocCancel
-		browserCtx: browserCtx
-		browserCancel: browserCancel
-		snapEngine: snapEngine
-		actEngine: actEngine
-		liveEngine: liveEngine
-		takeoverCtrl: takeoverCtrl
-		fingerprintPreset: fingerprintPresetID
-		runtimeMode: runtimeMode
-		chromePath: chromePath
-		profileID: profileID
-		profilePath: profilePath
-		launcher: launcher
-		supervisor: supervisor
-		chromePID: launch.chromePID
-		liveViewportW: width
-		liveViewportH: height
-		liveViewportDPR: 1
-		liveViewportTouch: bopts.touch
-		liveViewportMaxTP: 1
-		targetTracker: tracker
-		displayMgr: launch.displayMgr
-		chromeHandle: launch.chromeHandle
-		virtualDisplay: launch.virtualDisplay
-		workspace: launch.workspace
-		ownerIdentityKey: ownerKey
+		allocCtx:          allocCtx,
+		allocCancel:       allocCancel,
+		browserCtx:        browserCtx,
+		browserCancel:     browserCancel,
+		snapEngine:        snapEngine,
+		actEngine:         actEngine,
+		liveEngine:        liveEngine,
+		takeoverCtrl:      takeoverCtrl,
+		fingerprintPreset: fingerprintPresetID,
+		runtimeMode:       runtimeMode,
+		chromePath:        chromePath,
+		profileID:         profileID,
+		profilePath:       profilePath,
+		launcher:          launcher,
+		supervisor:        supervisor,
+		chromePID:         launch.chromePID,
+		liveViewportW:     width,
+		liveViewportH:     height,
+		liveViewportDPR:   1,
+		liveViewportTouch: bopts.touch,
+		liveViewportMaxTP: 1,
+		targetTracker:     tracker,
+		displayMgr:        launch.displayMgr,
+		chromeHandle:      launch.chromeHandle,
+		virtualDisplay:    launch.virtualDisplay,
+		workspace:         launch.workspace,
+		ownerIdentityKey:  ownerKey,
 	}
 	if defaultPreset != nil {
 		impl.liveViewportDPR = defaultPreset.DeviceScaleFactor
@@ -482,26 +482,26 @@ func NewBrowserCore(ctx context.Context, profileID string, optFns ...BrowserOpti
 }
 
 type controlledBrowserCoreLaunchOptions struct {
-	chromePath string
-	profilePath string
-	ownerKey IdentityKey
-	mode BrowserMode
-	presetID string
-	preset *FingerprintPreset
-	width int
-	height int
-	userAgent string
+	chromePath   string
+	profilePath  string
+	ownerKey     IdentityKey
+	mode         BrowserMode
+	presetID     string
+	preset       *FingerprintPreset
+	width        int
+	height       int
+	userAgent    string
 	hasUserAgent bool
-	touch bool
+	touch        bool
 }
 
 type controlledBrowserCoreLaunchResult struct {
-	wsURL string
-	chromePID int
-	chromeHandle ChromeHandle
-	displayMgr *DisplayManager
+	wsURL          string
+	chromePID      int
+	chromeHandle   ChromeHandle
+	displayMgr     *DisplayManager
 	virtualDisplay *VirtualDisplayManager
-	workspace Workspace
+	workspace      Workspace
 }
 
 func launchControlledBrowserCoreChrome(ctx context.Context, opts controlledBrowserCoreLaunchOptions) (*controlledBrowserCoreLaunchResult, error) {
@@ -517,7 +517,7 @@ func launchControlledBrowserCoreChrome(ctx context.Context, opts controlledBrows
 	}
 
 	result := &controlledBrowserCoreLaunchResult{}
-	var extraArgs string
+	var extraArgs []string
 	var virtualX, virtualY int
 
 	switch mode {
@@ -526,16 +526,16 @@ func launchControlledBrowserCoreChrome(ctx context.Context, opts controlledBrows
 		switch runtime.GOOS {
 		case "linux":
 			dm := &DisplayManager{}
-			if !dm.EnsureDisplay {
+			if !dm.EnsureDisplay() {
 				return nil, fmt.Errorf("browser: headed mode unavailable on linux: Xvfb display setup failed")
 			}
 			result.displayMgr = dm
 		case "darwin":
 			vd := &VirtualDisplayManager{}
-			if err := vd.Ensure; err != nil {
+			if err := vd.Ensure(); err != nil {
 				return nil, fmt.Errorf("browser: headed mode unavailable on macOS: CGVirtualDisplay setup failed: %w", err)
 			}
-			virtualX, virtualY = vd.WindowPosition
+			virtualX, virtualY = vd.WindowPosition()
 			extraArgs = append(extraArgs, fmt.Sprintf("--window-position=%d,%d", virtualX, virtualY))
 			result.virtualDisplay = vd
 		default:
@@ -544,17 +544,17 @@ func launchControlledBrowserCoreChrome(ctx context.Context, opts controlledBrows
 	case ModeVisible:
 		if runtime.GOOS == "linux" {
 			dm := &DisplayManager{}
-			if !dm.EnsureDisplay {
+			if !dm.EnsureDisplay() {
 				return nil, fmt.Errorf("browser: visible mode unavailable on linux: Xvfb display setup failed")
 			}
 			result.displayMgr = dm
 		}
-		result.workspace = NewWorkspace
+		result.workspace = NewWorkspace()
 	default:
 		return nil, fmt.Errorf("browser: unsupported browser mode %q", mode)
 	}
 
-	cdpPort, err := findAvailableCDPPort
+	cdpPort, err := findAvailableCDPPort()
 	if err != nil {
 		cleanupControlledBrowserCoreLaunch(result, opts.profilePath, opts.ownerKey)
 		return nil, fmt.Errorf("browser: allocate CDP port: %w", err)
@@ -565,19 +565,19 @@ func launchControlledBrowserCoreChrome(ctx context.Context, opts controlledBrows
 		userAgent = opts.userAgent
 	}
 	launchArgs := BuildDetachedChromeArgs(DetachedChromeLaunchOptions{
-		DebugPort: cdpPort
-		ProfileDir: opts.profilePath
-		Width: width
-		Height: height
-		PresetID: opts.presetID
-		UserAgent: userAgent
-		Touch: opts.touch
-		Mode: mode
+		DebugPort:  cdpPort,
+		ProfileDir: opts.profilePath,
+		Width:      width,
+		Height:     height,
+		PresetID:   opts.presetID,
+		UserAgent:  userAgent,
+		Touch:      opts.touch,
+		Mode:       mode,
 	})
 	for _, arg := range extraArgs {
 		launchArgs = appendChromeArgBeforeURL(launchArgs, arg)
 	}
-	if proxy, source := resolveBrowserPoolProxy; proxy != "" {
+	if proxy, source := resolveBrowserPoolProxy(); proxy != "" {
 		launchArgs = appendChromeArgBeforeURL(launchArgs, "--proxy-server="+proxy)
 		log.Printf("[BROWSER] controlled launch proxy-server=%s (from %s)", proxy, source)
 	}
@@ -585,10 +585,10 @@ func launchControlledBrowserCoreChrome(ctx context.Context, opts controlledBrows
 	var handle ChromeHandle
 	if mode == ModeVisible {
 		h, err := result.workspace.LaunchChromeInSpace(ChromeLaunchSpec{
-			ChromePath: opts.chromePath
-			Args: launchArgs
-			DebugPort: cdpPort
-			ReadyTimeout: BrowserMuxHostLaunchReadyTimeout
+			ChromePath:   opts.chromePath,
+			Args:         launchArgs,
+			DebugPort:    cdpPort,
+			ReadyTimeout: BrowserMuxHostLaunchReadyTimeout,
 		})
 		if err != nil {
 			cleanupControlledBrowserCoreLaunch(result, opts.profilePath, opts.ownerKey)
@@ -597,10 +597,10 @@ func launchControlledBrowserCoreChrome(ctx context.Context, opts controlledBrows
 		handle = h
 	} else {
 		h, err := startChromeProcess(ChromeLaunchSpec{
-			ChromePath: opts.chromePath
-			Args: launchArgs
-			DebugPort: cdpPort
-			ReadyTimeout: BrowserMuxHostLaunchReadyTimeout
+			ChromePath:   opts.chromePath,
+			Args:         launchArgs,
+			DebugPort:    cdpPort,
+			ReadyTimeout: BrowserMuxHostLaunchReadyTimeout,
 		})
 		if err != nil {
 			cleanupControlledBrowserCoreLaunch(result, opts.profilePath, opts.ownerKey)
@@ -609,8 +609,8 @@ func launchControlledBrowserCoreChrome(ctx context.Context, opts controlledBrows
 		handle = h
 	}
 	result.chromeHandle = handle
-	result.chromePID = handle.PID
-	result.wsURL = handle.WSURL
+	result.chromePID = handle.PID()
+	result.wsURL = handle.WSURL()
 
 	if err := WriteProfileOwnerMarker(opts.profilePath, opts.ownerKey, result.chromePID, cdpPort); err != nil {
 		cleanupControlledBrowserCoreLaunch(result, opts.profilePath, opts.ownerKey)
@@ -625,24 +625,24 @@ func launchControlledBrowserCoreChrome(ctx context.Context, opts controlledBrows
 			boundsW, boundsH = opts.preset.ViewportW, opts.preset.ViewportH
 		}
 		err := runCDPWithSoftTimeout(windowCtx, BrowserMuxHostWindowEnforceTimeout, chromedp.ActionFunc(func(ctx context.Context) error {
-			windowID, _, err := cdpbrowser.GetWindowForTarget.Do(ctx)
+			windowID, _, err := cdpbrowser.GetWindowForTarget().Do(ctx)
 			if err != nil {
 				return fmt.Errorf("get chrome window for target: %w", err)
 			}
 			bounds := &cdpbrowser.Bounds{
-				Left: int64(virtualX)
-				Top: int64(virtualY)
-				Width: int64(boundsW)
-				Height: int64(boundsH)
-				WindowState: cdpbrowser.WindowStateNormal
+				Left:        int64(virtualX),
+				Top:         int64(virtualY),
+				Width:       int64(boundsW),
+				Height:      int64(boundsH),
+				WindowState: cdpbrowser.WindowStateNormal,
 			}
 			if err := cdpbrowser.SetWindowBounds(windowID, bounds).Do(ctx); err != nil {
 				return fmt.Errorf("set chrome window bounds to virtual display: %w", err)
 			}
 			return nil
 		}))
-		windowCancel
-		allocCancel
+		windowCancel()
+		allocCancel()
 		if err != nil {
 			cleanupControlledBrowserCoreLaunch(result, opts.profilePath, opts.ownerKey)
 			return nil, fmt.Errorf("browser: enforce CGVirtualDisplay window bounds: %w", err)
@@ -661,19 +661,19 @@ func cleanupControlledBrowserCoreLaunch(result *controlledBrowserCoreLaunchResul
 		return
 	}
 	if result.chromeHandle != nil {
-		_ = result.chromeHandle.Kill
+		_ = result.chromeHandle.Kill()
 		result.chromeHandle = nil
 	}
 	if result.displayMgr != nil {
-		_ = result.displayMgr.Close
+		_ = result.displayMgr.Close()
 		result.displayMgr = nil
 	}
 	if result.virtualDisplay != nil {
-		_ = result.virtualDisplay.Close
+		_ = result.virtualDisplay.Close()
 		result.virtualDisplay = nil
 	}
 	if result.workspace != nil {
-		_ = result.workspace.Close
+		_ = result.workspace.Close()
 		result.workspace = nil
 	}
 	RemoveProfileOwnerMarker(profilePath, ownerKey)
@@ -681,8 +681,8 @@ func cleanupControlledBrowserCoreLaunch(result *controlledBrowserCoreLaunchResul
 
 // handleCrash 处理 Chrome 崩溃，尝试自动重启。
 func (impl *browserCoreImpl) handleCrash(ctx context.Context) {
-	impl.mu.Lock
-	defer impl.mu.Unlock
+	impl.mu.Lock()
+	defer impl.mu.Unlock()
 
 	// 尝试重启
 	cdpURL, pid, err := impl.supervisor.RestartWithBackoff(ctx, impl.launcher, impl.profileID, 3)
@@ -692,10 +692,10 @@ func (impl *browserCoreImpl) handleCrash(ctx context.Context) {
 
 	// 重建 CDP 连接
 	if impl.allocCancel != nil {
-		impl.allocCancel
+		impl.allocCancel()
 	}
 	if impl.browserCancel != nil {
-		impl.browserCancel
+		impl.browserCancel()
 	}
 
 	allocCtx, allocCancel := chromedp.NewRemoteAllocator(ctx, cdpURL)
@@ -713,87 +713,87 @@ func (impl *browserCoreImpl) handleCrash(ctx context.Context) {
 
 // Navigate 导航到 URL，返回 A11y 快照。
 func (impl *browserCoreImpl) Navigate(ctx context.Context, url string) (*Snapshot, error) {
-	impl.mu.RLock
-	defer impl.mu.RUnlock
-	targetID, targetCtx := impl.currentTargetRef
+	impl.mu.RLock()
+	defer impl.mu.RUnlock()
+	targetID, targetCtx := impl.currentTargetRef()
 	runCtx, cancel := deriveTargetContext(ctx, targetCtx)
-	defer cancel
+	defer cancel()
 	logCtx := obs.WithStage(ctx, STGSessionNavigate)
-	totalStart := time.Now
-	logger.Info(logCtx, "browser navigate core started"
-		"url", url
+	totalStart := time.Now()
+	logger.Info(logCtx, "browser navigate core started",
+		"url", url,
 		"target_id", targetID)
 
 	// 使用低级 Page.navigate 避免 chromedp.Navigate 在 ERR_ABORTED 时损坏 session。
 	// SPA (Vue/React) 的 module preload 常触发 ERR_ABORTED，但页面最终可正常渲染。
-	pageNavigateStart := time.Now
+	pageNavigateStart := time.Now()
 	if err := chromedp.Run(runCtx, chromedp.ActionFunc(func(ctx context.Context) error {
 		_, _, _, _, err := page.Navigate(url).Do(ctx)
 		return err
 	})); err != nil {
-		logger.Warn(logCtx, "browser navigate cdp failed"
-			"url", url
-			"target_id", targetID
-			"elapsed_ms", time.Since(pageNavigateStart).Milliseconds
+		logger.Warn(logCtx, "browser navigate cdp failed",
+			"url", url,
+			"target_id", targetID,
+			"elapsed_ms", time.Since(pageNavigateStart).Milliseconds(),
 			"error", err)
 		return nil, fmt.Errorf("browser: navigate to %q: %w", url, err)
 	}
-	logger.Info(logCtx, "browser navigate cdp completed"
-		"url", url
-		"target_id", targetID
-		"elapsed_ms", time.Since(pageNavigateStart).Milliseconds)
+	logger.Info(logCtx, "browser navigate cdp completed",
+		"url", url,
+		"target_id", targetID,
+		"elapsed_ms", time.Since(pageNavigateStart).Milliseconds())
 
 	// 等待页面进入可交互状态，再交给 DOM settle 收敛动态内容。
 	// readyState=complete 会被广告、长连接或慢资源拖慢；Human Portal 更需要首屏可用。
-	readyStart := time.Now
+	readyStart := time.Now()
 	if err := chromedp.Run(runCtx, chromedp.Poll(
-		`document.readyState === "interactive" || document.readyState === "complete" || !!document.body`
-		nil
-		chromedp.WithPollingInterval(navigateReadyPollInterval)
-		chromedp.WithPollingTimeout(navigateReadyTimeout)
+		`document.readyState === "interactive" || document.readyState === "complete" || !!document.body`,
+		nil,
+		chromedp.WithPollingInterval(navigateReadyPollInterval),
+		chromedp.WithPollingTimeout(navigateReadyTimeout),
 	)); err != nil {
-		logger.Warn(logCtx, "browser navigate ready wait failed"
-			"url", url
-			"target_id", targetID
-			"elapsed_ms", time.Since(readyStart).Milliseconds
-			"timeout_ms", navigateReadyTimeout.Milliseconds
+		logger.Warn(logCtx, "browser navigate ready wait failed",
+			"url", url,
+			"target_id", targetID,
+			"elapsed_ms", time.Since(readyStart).Milliseconds(),
+			"timeout_ms", navigateReadyTimeout.Milliseconds(),
 			"error", err)
 	} else {
-		logger.Info(logCtx, "browser navigate ready completed"
-			"url", url
-			"target_id", targetID
-			"elapsed_ms", time.Since(readyStart).Milliseconds)
+		logger.Info(logCtx, "browser navigate ready completed",
+			"url", url,
+			"target_id", targetID,
+			"elapsed_ms", time.Since(readyStart).Milliseconds())
 	}
 
 	// SPA 等待 DOM 稳定（替代硬编码 Sleep，使用 MutationObserver idle 检测）
-	domSettleStart := time.Now
+	domSettleStart := time.Now()
 	if err := waitForDOMSettle(runCtx, navigateDOMIdleMs, navigateDOMSettleTimeoutMs); err != nil {
-		logger.Warn(logCtx, "browser navigate dom settle failed"
-			"url", url
-			"target_id", targetID
-			"elapsed_ms", time.Since(domSettleStart).Milliseconds
+		logger.Warn(logCtx, "browser navigate dom settle failed",
+			"url", url,
+			"target_id", targetID,
+			"elapsed_ms", time.Since(domSettleStart).Milliseconds(),
 			"error", err)
 	} else {
-		logger.Info(logCtx, "browser navigate dom settled"
-			"url", url
-			"target_id", targetID
-			"elapsed_ms", time.Since(domSettleStart).Milliseconds)
+		logger.Info(logCtx, "browser navigate dom settled",
+			"url", url,
+			"target_id", targetID,
+			"elapsed_ms", time.Since(domSettleStart).Milliseconds())
 	}
 
 	// 终局语义: 地址栏导航应始终作用于“当前活跃 target”。
 	// 之前无条件回切 root target，会让新 tab / auth target 的 URL 输入回车误导航 root tab，
 	// 直接破坏多 tab 基本语义，也会让 ChatGPT/Apple 登录流程回错标签。
-	snapshotStart := time.Now
+	snapshotStart := time.Now()
 	snap, err := impl.snapEngine.GetSnapshot(runCtx)
 	if snap != nil {
 		snap.TargetID = targetID
 	}
 	if err != nil {
-		logger.Warn(logCtx, "browser navigate snapshot failed"
-			"url", url
-			"target_id", targetID
-			"elapsed_ms", time.Since(snapshotStart).Milliseconds
-			"total_elapsed_ms", time.Since(totalStart).Milliseconds
+		logger.Warn(logCtx, "browser navigate snapshot failed",
+			"url", url,
+			"target_id", targetID,
+			"elapsed_ms", time.Since(snapshotStart).Milliseconds(),
+			"total_elapsed_ms", time.Since(totalStart).Milliseconds(),
 			"error", err)
 	} else {
 		refsCount := 0
@@ -802,12 +802,12 @@ func (impl *browserCoreImpl) Navigate(ctx context.Context, url string) (*Snapsho
 			refsCount = len(snap.Refs)
 			snapshotType = snap.SnapshotType
 		}
-		logger.Info(logCtx, "browser navigate snapshot completed"
-			"url", url
-			"target_id", targetID
-			"elapsed_ms", time.Since(snapshotStart).Milliseconds
-			"total_elapsed_ms", time.Since(totalStart).Milliseconds
-			"refs_count", refsCount
+		logger.Info(logCtx, "browser navigate snapshot completed",
+			"url", url,
+			"target_id", targetID,
+			"elapsed_ms", time.Since(snapshotStart).Milliseconds(),
+			"total_elapsed_ms", time.Since(totalStart).Milliseconds(),
+			"refs_count", refsCount,
 			"snapshot_type", snapshotType)
 	}
 	return snap, err
@@ -817,31 +817,31 @@ func (impl *browserCoreImpl) Navigate(ctx context.Context, url string) (*Snapsho
 // after Chrome accepts Page.navigate. Human-facing live views use this path so
 // address-bar input is not blocked by A11y snapshot and screenshot collection.
 func (impl *browserCoreImpl) NavigateCommand(ctx context.Context, url string) (string, error) {
-	impl.mu.RLock
-	defer impl.mu.RUnlock
-	targetID, targetCtx := impl.currentTargetRef
+	impl.mu.RLock()
+	defer impl.mu.RUnlock()
+	targetID, targetCtx := impl.currentTargetRef()
 	runCtx, cancel := deriveTargetContext(ctx, targetCtx)
-	defer cancel
+	defer cancel()
 	logCtx := obs.WithStage(ctx, STGSessionNavigate)
-	start := time.Now
-	logger.Info(logCtx, "browser navigate command started"
-		"url", url
+	start := time.Now()
+	logger.Info(logCtx, "browser navigate command started",
+		"url", url,
 		"target_id", targetID)
 	if err := chromedp.Run(runCtx, chromedp.ActionFunc(func(ctx context.Context) error {
 		_, _, _, _, err := page.Navigate(url).Do(ctx)
 		return err
 	})); err != nil {
-		logger.Warn(logCtx, "browser navigate command failed"
-			"url", url
-			"target_id", targetID
-			"elapsed_ms", time.Since(start).Milliseconds
+		logger.Warn(logCtx, "browser navigate command failed",
+			"url", url,
+			"target_id", targetID,
+			"elapsed_ms", time.Since(start).Milliseconds(),
 			"error", err)
 		return targetID, fmt.Errorf("browser: navigate command to %q: %w", url, err)
 	}
-	logger.Info(logCtx, "browser navigate command completed"
-		"url", url
-		"target_id", targetID
-		"elapsed_ms", time.Since(start).Milliseconds)
+	logger.Info(logCtx, "browser navigate command completed",
+		"url", url,
+		"target_id", targetID,
+		"elapsed_ms", time.Since(start).Milliseconds())
 	return targetID, nil
 }
 
@@ -852,92 +852,92 @@ func (impl *browserCoreImpl) NavigateTargetCommand(ctx context.Context, targetID
 	if targetID == "" {
 		return impl.NavigateCommand(ctx, url)
 	}
-	impl.mu.RLock
+	impl.mu.RLock()
 	var targetCtx context.Context
 	if impl.targetTracker != nil {
 		targetCtx = impl.targetTracker.TargetCDPContext(targetID)
 	}
 	if targetCtx == nil {
-		_, targetCtx = impl.currentTargetRef
+		_, targetCtx = impl.currentTargetRef()
 	}
 	runCtx, cancel := deriveTargetContext(ctx, targetCtx)
-	defer cancel
-	impl.mu.RUnlock
+	defer cancel()
+	impl.mu.RUnlock()
 
 	logCtx := obs.WithStage(ctx, STGSessionNavigate)
-	start := time.Now
-	logger.Info(logCtx, "browser navigate target command started"
-		"url", url
+	start := time.Now()
+	logger.Info(logCtx, "browser navigate target command started",
+		"url", url,
 		"target_id", targetID)
 	if err := chromedp.Run(runCtx, chromedp.ActionFunc(func(ctx context.Context) error {
 		_, _, _, _, err := page.Navigate(url).Do(ctx)
 		return err
 	})); err != nil {
-		logger.Warn(logCtx, "browser navigate target command failed"
-			"url", url
-			"target_id", targetID
-			"elapsed_ms", time.Since(start).Milliseconds
+		logger.Warn(logCtx, "browser navigate target command failed",
+			"url", url,
+			"target_id", targetID,
+			"elapsed_ms", time.Since(start).Milliseconds(),
 			"error", err)
 		return targetID, fmt.Errorf("browser: navigate target command to %q: %w", url, err)
 	}
-	logger.Info(logCtx, "browser navigate target command completed"
-		"url", url
-		"target_id", targetID
-		"elapsed_ms", time.Since(start).Milliseconds)
+	logger.Info(logCtx, "browser navigate target command completed",
+		"url", url,
+		"target_id", targetID,
+		"elapsed_ms", time.Since(start).Milliseconds())
 	return targetID, nil
 }
 
 // Snap 获取当前页面 A11y 快照。
 func (impl *browserCoreImpl) Snap(ctx context.Context) (*Snapshot, error) {
-	impl.mu.RLock
-	defer impl.mu.RUnlock
-	targetCtx := impl.currentCtx
+	impl.mu.RLock()
+	defer impl.mu.RUnlock()
+	targetCtx := impl.currentCtx()
 	runCtx, cancel := deriveTargetContext(ctx, targetCtx)
-	defer cancel
+	defer cancel()
 	return impl.snapEngine.GetSnapshot(runCtx)
 }
 
 // Act 执行操作，observe=false 时不返回 Snapshot。
 func (impl *browserCoreImpl) Act(ctx context.Context, action string, observe bool) (*Snapshot, error) {
-	// 接管模式下，AI 操作被拒绝 
-	if impl.takeoverCtrl.IsTakeover {
+	// 接管模式下，AI 操作被拒绝 [TC-09-U-11]
+	if impl.takeoverCtrl.IsTakeover() {
 		return nil, ErrTakeoverActive
 	}
 	if ctx == nil {
-		ctx = context.Background
+		ctx = context.Background()
 	}
 
-	impl.mu.RLock
-	targetCtx := impl.currentCtx
+	impl.mu.RLock()
+	targetCtx := impl.currentCtx()
 	runCtx, cancelRun := deriveTargetContext(ctx, targetCtx)
 
 	type actionResult struct {
 		snap *Snapshot
-		err error
+		err  error
 	}
 	done := make(chan actionResult, 1)
-	go func {
-		defer impl.mu.RUnlock
+	go func() {
+		defer impl.mu.RUnlock()
 		snap, err := impl.actEngine.Execute(runCtx, action, observe)
 		done <- actionResult{snap: snap, err: err}
-	}
-	defer cancelRun
+	}()
+	defer cancelRun()
 
 	timeout := 20 * time.Second
-	if deadline, ok := ctx.Deadline; ok {
+	if deadline, ok := ctx.Deadline(); ok {
 		if remain := time.Until(deadline); remain <= 0 {
-			return nil, ctx.Err
+			return nil, ctx.Err()
 		} else if remain < timeout {
 			timeout = remain
 		}
 	}
 	timer := time.NewTimer(timeout)
-	defer timer.Stop
+	defer timer.Stop()
 	select {
 	case result := <-done:
 		return result.snap, result.err
-	case <-ctx.Done:
-		return nil, ctx.Err
+	case <-ctx.Done():
+		return nil, ctx.Err()
 	case <-timer.C:
 		return nil, fmt.Errorf("browser: action %q timed out after %s", action, timeout)
 	}
@@ -945,49 +945,49 @@ func (impl *browserCoreImpl) Act(ctx context.Context, action string, observe boo
 
 // Text 提取当前页面纯文本。
 func (impl *browserCoreImpl) Text(ctx context.Context, focus *string) (string, error) {
-	impl.mu.RLock
-	defer impl.mu.RUnlock
-	targetCtx := impl.currentCtx
+	impl.mu.RLock()
+	defer impl.mu.RUnlock()
+	targetCtx := impl.currentCtx()
 	runCtx, cancel := deriveTargetContext(ctx, targetCtx)
-	defer cancel
+	defer cancel()
 	return impl.snapEngine.GetText(runCtx, focus)
 }
 
 // Screenshot 截图。
-func (impl *browserCoreImpl) Screenshot(ctx context.Context, annotate bool) (byte, error) {
-	impl.mu.RLock
-	defer impl.mu.RUnlock
-	targetCtx := impl.currentCtx
+func (impl *browserCoreImpl) Screenshot(ctx context.Context, annotate bool) ([]byte, error) {
+	impl.mu.RLock()
+	defer impl.mu.RUnlock()
+	targetCtx := impl.currentCtx()
 	runCtx, cancel := deriveTargetContext(ctx, targetCtx)
-	defer cancel
+	defer cancel()
 	return impl.snapEngine.Screenshot(runCtx, annotate)
 }
 
-func (impl *browserCoreImpl) ScreenshotTarget(ctx context.Context, targetID string, annotate bool) (byte, error) {
-	impl.mu.RLock
-	defer impl.mu.RUnlock
+func (impl *browserCoreImpl) ScreenshotTarget(ctx context.Context, targetID string, annotate bool) ([]byte, error) {
+	impl.mu.RLock()
+	defer impl.mu.RUnlock()
 	var targetCtx context.Context
 	if impl.targetTracker != nil && targetID != "" {
 		targetCtx = impl.targetTracker.TargetCDPContext(targetID)
 	}
 	if targetCtx == nil {
-		targetCtx = impl.currentCtx
+		targetCtx = impl.currentCtx()
 	}
 	runCtx, cancel := deriveTargetContext(ctx, targetCtx)
-	defer cancel
+	defer cancel()
 	return impl.snapEngine.Screenshot(runCtx, annotate)
 }
 
 // StartLiveView 启动 Screencast 帧推送，返回 hub（多 WS 连接共享同一 Screencast 流）。
 //
 // 多次调用安全: 已活跃时直接返回现有 hub，不重启 Screencast。
-// subscriber 通过 hub.Subscribe(connID) 获取独立帧 channel 。
+// subscriber 通过 hub.Subscribe(connID) 获取独立帧 channel [CAP-BS09-C3 r2]。
 func (impl *browserCoreImpl) StartLiveView(ctx context.Context) (*FrameBroadcastHub, error) {
-	impl.mu.Lock
-	defer impl.mu.Unlock
+	impl.mu.Lock()
+	defer impl.mu.Unlock()
 
 	// 已有活跃 LiveView → 返回现有 hub（多 WS 连接共享同一个 Screencast 流）
-	// 不重启 — 重启会中断现有 subscriber 
+	// 不重启 — 重启会中断现有 subscriber [TH-0405-k8r]
 	if impl.liveViewActive && impl.hub != nil {
 		if impl.targetTracker != nil {
 			impl.targetTracker.SetLiveEngine(impl.liveEngine, impl.hub)
@@ -995,14 +995,14 @@ func (impl *browserCoreImpl) StartLiveView(ctx context.Context) (*FrameBroadcast
 		return impl.hub, nil
 	}
 
-	impl.hub = NewFrameBroadcastHub
+	impl.hub = NewFrameBroadcastHub()
 	if err := impl.liveEngine.StartScreencast(impl.browserCtx, impl.hub); err != nil {
 		impl.hub = nil
 		return nil, err
 	}
 	impl.liveViewActive = true
 
-	// 连接 TargetTracker → 新 Target 创建时自动切换 Screencast 
+	// 连接 TargetTracker → 新 Target 创建时自动切换 Screencast [r3]
 	if impl.targetTracker != nil {
 		impl.targetTracker.SetLiveEngine(impl.liveEngine, impl.hub)
 	}
@@ -1012,8 +1012,8 @@ func (impl *browserCoreImpl) StartLiveView(ctx context.Context) (*FrameBroadcast
 
 // StopLiveView 停止 Screencast。
 func (impl *browserCoreImpl) StopLiveView(ctx context.Context) error {
-	impl.mu.Lock
-	defer impl.mu.Unlock
+	impl.mu.Lock()
+	defer impl.mu.Unlock()
 
 	if !impl.liveViewActive {
 		return nil
@@ -1024,14 +1024,14 @@ func (impl *browserCoreImpl) StopLiveView(ctx context.Context) error {
 
 // EnableTakeover 切换到 Takeover 模式。
 func (impl *browserCoreImpl) EnableTakeover(ctx context.Context) error {
-	return impl.takeoverCtrl.EnableTakeover(func {
+	return impl.takeoverCtrl.EnableTakeover(func() {
 		// 超时自动释放时的回调（广播 WS 消息由 webui 层处理）
 	})
 }
 
 // DisableTakeover 释放接管，恢复 OBSERVE 模式。
 func (impl *browserCoreImpl) DisableTakeover(ctx context.Context) error {
-	return impl.takeoverCtrl.DisableTakeover
+	return impl.takeoverCtrl.DisableTakeover()
 }
 
 // DispatchInput 在接管模式下转发输入事件。
@@ -1041,8 +1041,8 @@ func (impl *browserCoreImpl) DispatchInput(ctx context.Context, event *InputEven
 
 // Close 关闭 Browser，释放资源。
 func (impl *browserCoreImpl) Close(ctx context.Context) error {
-	impl.mu.Lock
-	defer impl.mu.Unlock
+	impl.mu.Lock()
+	defer impl.mu.Unlock()
 
 	if impl.liveViewActive {
 		_ = impl.liveEngine.StopScreencast(impl.browserCtx)
@@ -1058,15 +1058,15 @@ func (impl *browserCoreImpl) Close(ctx context.Context) error {
 	}
 
 	if impl.browserCancel != nil {
-		impl.browserCancel
+		impl.browserCancel()
 		impl.browserCancel = nil
 	}
 	if impl.allocCancel != nil {
-		impl.allocCancel
+		impl.allocCancel()
 		impl.allocCancel = nil
 	}
 	if impl.chromeHandle != nil {
-		_ = impl.chromeHandle.Kill
+		_ = impl.chromeHandle.Kill()
 		impl.chromeHandle = nil
 	} else if impl.chromePID > 0 {
 		_ = impl.launcher.Kill(impl.chromePID)
@@ -1077,15 +1077,15 @@ func (impl *browserCoreImpl) Close(ctx context.Context) error {
 
 	// 清理虚拟 display (Xvfb)
 	if impl.displayMgr != nil {
-		_ = impl.displayMgr.Close
+		_ = impl.displayMgr.Close()
 		impl.displayMgr = nil
 	}
 	if impl.virtualDisplay != nil {
-		_ = impl.virtualDisplay.Close
+		_ = impl.virtualDisplay.Close()
 		impl.virtualDisplay = nil
 	}
 	if impl.workspace != nil {
-		_ = impl.workspace.Close
+		_ = impl.workspace.Close()
 		impl.workspace = nil
 	}
 
@@ -1095,63 +1095,63 @@ func (impl *browserCoreImpl) Close(ctx context.Context) error {
 // EvalJS 在浏览器中执行 JavaScript 表达式。
 func (impl *browserCoreImpl) EvalJS(ctx context.Context, expr string, result interface{}) error {
 	if ctx == nil {
-		ctx = context.Background
+		ctx = context.Background()
 	}
-	impl.mu.RLock
-	targetCtx := impl.currentCtx
-	impl.mu.RUnlock
+	impl.mu.RLock()
+	targetCtx := impl.currentCtx()
+	impl.mu.RUnlock()
 	runCtx, cancelRun := deriveTargetContext(ctx, targetCtx)
-	defer cancelRun
+	defer cancelRun()
 	// [BUG-FIX] GoBack/Forward/Reload + URL sync 必须在活跃 Target 执行。
-	// 走 currentCtx 统一入口, 不再内联 tracker lookup.
+	// [TH-0419-q5b] 走 currentCtx() 统一入口, 不再内联 tracker lookup.
 	return evalJSInContext(ctx, runCtx, expr, result)
 }
 
 func (impl *browserCoreImpl) EvalJSTarget(ctx context.Context, targetID string, expr string, result interface{}) error {
 	if ctx == nil {
-		ctx = context.Background
+		ctx = context.Background()
 	}
-	impl.mu.RLock
+	impl.mu.RLock()
 	var targetCtx context.Context
 	if impl.targetTracker != nil && targetID != "" {
 		targetCtx = impl.targetTracker.TargetCDPContext(targetID)
 	}
-	impl.mu.RUnlock
+	impl.mu.RUnlock()
 	if targetCtx == nil {
 		return fmt.Errorf("browser: target %q is not available", targetID)
 	}
 	runCtx, cancelRun := deriveTargetContext(ctx, targetCtx)
-	defer cancelRun
+	defer cancelRun()
 	return evalJSInContext(ctx, runCtx, expr, result)
 }
 
 func evalJSInContext(parent context.Context, runCtx context.Context, expr string, result interface{}) error {
 	timeout := 8 * time.Second
-	if deadline, ok := parent.Deadline; ok {
+	if deadline, ok := parent.Deadline(); ok {
 		if remain := time.Until(deadline); remain <= 0 {
-			return parent.Err
+			return parent.Err()
 		} else if remain < timeout {
 			timeout = remain
 		}
 	}
 	done := make(chan error, 1)
-	go func {
+	go func() {
 		done <- chromedp.Run(runCtx, chromedp.Evaluate(expr, result))
-	}
+	}()
 	timer := time.NewTimer(timeout)
-	defer timer.Stop
+	defer timer.Stop()
 	select {
 	case err := <-done:
 		return err
-	case <-parent.Done:
-		return parent.Err
+	case <-parent.Done():
+		return parent.Err()
 	case <-timer.C:
 		return fmt.Errorf("browser: JavaScript evaluation timed out after %s", timeout)
 	}
 }
 
-// GetTargetTracker 返回 TargetTracker 。
-func (impl *browserCoreImpl) GetTargetTracker *TargetTracker {
+// GetTargetTracker 返回 TargetTracker [r3]。
+func (impl *browserCoreImpl) GetTargetTracker() *TargetTracker {
 	return impl.targetTracker
 }
 
@@ -1159,7 +1159,7 @@ func (impl *browserCoreImpl) GetTargetTracker *TargetTracker {
 // 这份配置属于“当前人类可见容器语义”，必须在活跃 target 与后续新 target 间保持一致，
 // 否则多 tab / auth popup 会回退到启动时 preset viewport，产生黑边或操作区裁剪。
 func (impl *browserCoreImpl) SetLiveViewport(width, height int, dpr float64, mobile bool) error {
-	impl.mu.Lock
+	impl.mu.Lock()
 	impl.liveViewportW = width
 	impl.liveViewportH = height
 	impl.liveViewportDPR = dpr
@@ -1167,14 +1167,14 @@ func (impl *browserCoreImpl) SetLiveViewport(width, height int, dpr float64, mob
 	impl.liveEngine.viewportW = width
 	impl.liveEngine.viewportH = height
 
-	targetCtx := impl.currentCtx
+	targetCtx := impl.currentCtx()
 	screencastCtx := impl.liveEngine.ctx
 	liveViewActive := impl.liveViewActive
 	touch := impl.liveViewportTouch
 	maxTouchPoints := impl.liveViewportMaxTP
-	impl.mu.Unlock
+	impl.mu.Unlock()
 
-	go func {
+	go func() {
 		if err := impl.applyLiveViewport(targetCtx, width, height, dpr, mobile, touch, maxTouchPoints); err != nil {
 			log.Printf("[BROWSER-LIVEVIEW] viewport metrics update failed: %v", err)
 			return
@@ -1192,25 +1192,25 @@ func (impl *browserCoreImpl) SetLiveViewport(width, height int, dpr float64, mob
 				log.Printf("[BROWSER-LIVEVIEW] viewport updated: %dx%d dpr=%.1f mobile=%v", width, height, dpr, mobile)
 			}
 		}
-	}
+	}()
 
 	return nil
 }
 
 // SyncActiveTargetViewport 将最近一次 liveview viewport 配置重放到新活跃 target。
 // 典型场景:
-// - 多 tab 新建后切到新 target
-// - 登录流程跳到 auth popup / 新标签页
-// - iOS Safari 新 target 需继续保留 mobile/touch 语义
+//   - 多 tab 新建后切到新 target
+//   - 登录流程跳到 auth popup / 新标签页
+//   - iOS Safari 新 target 需继续保留 mobile/touch 语义
 func (impl *browserCoreImpl) SyncActiveTargetViewport(targetCtx context.Context) error {
-	impl.mu.RLock
+	impl.mu.RLock()
 	width := impl.liveViewportW
 	height := impl.liveViewportH
 	dpr := impl.liveViewportDPR
 	mobile := impl.liveViewportMobile
 	touch := impl.liveViewportTouch
 	maxTouchPoints := impl.liveViewportMaxTP
-	impl.mu.RUnlock
+	impl.mu.RUnlock()
 
 	if targetCtx == nil {
 		return nil
@@ -1231,22 +1231,22 @@ func (impl *browserCoreImpl) SyncActiveTargetViewport(targetCtx context.Context)
 // 幂等: 重复调用仅更新回调，不重复注入脚本。
 // onCursor 会在 cursor 样式变更时被调用（goroutine safe）。
 func (impl *browserCoreImpl) SetupCursorDetection(onCursor func(cursor string)) error {
-	impl.mu.Lock
+	impl.mu.Lock()
 	impl.onCursorChange = onCursor
 	alreadyActive := impl.cursorDetectActive
 	if !alreadyActive {
 		impl.cursorDetectActive = true
 	}
-	impl.mu.Unlock
+	impl.mu.Unlock()
 
 	// 已激活 → 仅更新回调，不重复注入
 	if alreadyActive {
 		return nil
 	}
 
-	impl.mu.RLock
+	impl.mu.RLock()
 	browserCtx := impl.browserCtx
-	impl.mu.RUnlock
+	impl.mu.RUnlock()
 
 	// 1. 绑定 JS→Go 命名 binding
 	if err := chromedp.Run(browserCtx, chromedp.ActionFunc(func(ctx context.Context) error {
@@ -1262,12 +1262,12 @@ func (impl *browserCoreImpl) SetupCursorDetection(onCursor func(cursor string)) 
 			return
 		}
 		var cursor string
-		if err := json.Unmarshal(byte(bindingEv.Payload), &cursor); err != nil {
+		if err := json.Unmarshal([]byte(bindingEv.Payload), &cursor); err != nil {
 			return
 		}
-		impl.mu.RLock
+		impl.mu.RLock()
 		cb := impl.onCursorChange
-		impl.mu.RUnlock
+		impl.mu.RUnlock()
 		if cb != nil {
 			cb(cursor)
 		}
@@ -1295,55 +1295,55 @@ func (impl *browserCoreImpl) SetupCursorDetection(onCursor func(cursor string)) 
 
 // SnapWithSessionMode 获取快照（session 模式，使用 @rN ref）。
 func (impl *browserCoreImpl) SnapWithSessionMode(ctx context.Context, snapEpoch int) (*Snapshot, error) {
-	impl.mu.RLock
-	defer impl.mu.RUnlock
-	targetCtx := impl.currentCtx
+	impl.mu.RLock()
+	defer impl.mu.RUnlock()
+	targetCtx := impl.currentCtx()
 	runCtx, cancel := deriveTargetContext(ctx, targetCtx)
-	defer cancel
+	defer cancel()
 	return impl.snapEngine.GetSnapshotWithSessionMode(runCtx, snapEpoch)
 }
 
-// SnapWithOptions 获取快照并应用 SnapOptions 过滤 。
+// SnapWithOptions 获取快照并应用 SnapOptions 过滤 [r2 Delta-REQ TH-0418-c9x]。
 func (impl *browserCoreImpl) SnapWithOptions(ctx context.Context, opts SnapOptions) (*Snapshot, error) {
-	impl.mu.RLock
-	defer impl.mu.RUnlock
-	targetCtx := impl.currentCtx
+	impl.mu.RLock()
+	defer impl.mu.RUnlock()
+	targetCtx := impl.currentCtx()
 	runCtx, cancel := deriveTargetContext(ctx, targetCtx)
-	defer cancel
+	defer cancel()
 	return impl.snapEngine.SnapWithOptions(runCtx, opts)
 }
 
 // ActWithSessionMode 执行操作（session 模式，允许 @rN ref）。
 func (impl *browserCoreImpl) ActWithSessionMode(ctx context.Context, action string, observe bool) (*Snapshot, error) {
-	if impl.takeoverCtrl.IsTakeover {
+	if impl.takeoverCtrl.IsTakeover() {
 		return nil, ErrTakeoverActive
 	}
-	impl.mu.RLock
-	defer impl.mu.RUnlock
-	targetCtx := impl.currentCtx
+	impl.mu.RLock()
+	defer impl.mu.RUnlock()
+	targetCtx := impl.currentCtx()
 	runCtx, cancel := deriveTargetContext(ctx, targetCtx)
-	defer cancel
+	defer cancel()
 	return impl.actEngine.ExecuteWithSessionMode(runCtx, action, observe, true)
 }
 
 // RestoreRefsFromSession 从 session 文件恢复 ref 表（供 act 命令使用）。
-func (impl *browserCoreImpl) RestoreRefsFromSession(refs SessionRef) {
-	impl.mu.Lock
-	defer impl.mu.Unlock
+func (impl *browserCoreImpl) RestoreRefsFromSession(refs []SessionRef) {
+	impl.mu.Lock()
+	defer impl.mu.Unlock()
 	impl.snapEngine.refTable = make(map[string]int64, len(refs))
 	impl.snapEngine.refMeta = make(map[string]*ElementRef, len(refs)*2)
 	for i := range refs {
 		r := refs[i]
 		elem := &ElementRef{
-			Ref: r.Ref
-			BackendNodeID: r.BackendNodeID
-			Role: r.Role
-			Name: r.Name
-			NameFull: r.Name
-			NameShort: r.Name
-			TestID: r.TestID
-			Placeholder: r.Placeholder
-			Interactable: true
+			Ref:           r.Ref,
+			BackendNodeID: r.BackendNodeID,
+			Role:          r.Role,
+			Name:          r.Name,
+			NameFull:      r.Name,
+			NameShort:     r.Name,
+			TestID:        r.TestID,
+			Placeholder:   r.Placeholder,
+			Interactable:  true,
 		}
 		impl.snapEngine.refTable[r.Ref] = r.BackendNodeID
 		impl.snapEngine.refMeta[r.Ref] = elem
@@ -1356,7 +1356,7 @@ func (impl *browserCoreImpl) RestoreRefsFromSession(refs SessionRef) {
 // NewBrowserCoreFromSession 连接到已有 Chrome 实例（通过 CDP WebSocket URL）。
 // 用于 session 模式：open 后 snap/act/get/wait 都连接到同一个 Chrome 进程。
 func NewBrowserCoreFromSession(ctx context.Context, wsURL string, targetID string, presetID string, modes ...BrowserMode) (SessionCore, error) {
-	var allocCtxOpts chromedp.ExecAllocatorOption
+	var allocCtxOpts []chromedp.ExecAllocatorOption
 	_ = allocCtxOpts
 	runtimeMode := ModeVisible
 	if len(modes) > 0 {
@@ -1367,34 +1367,34 @@ func NewBrowserCoreFromSession(ctx context.Context, wsURL string, targetID strin
 	// 若把 chromedp allocator/context 直接挂到调用方的超时 ctx 下面，
 	// 命令退出时的 ctx cancel 会顺带把目标页一并关闭。
 	// 这里改为独立于命令超时的 background 根 context，命令进程结束时仅丢连接，不关页面。
-	allocCtx, allocCancel := chromedp.NewRemoteAllocator(context.Background, wsURL)
+	allocCtx, allocCancel := chromedp.NewRemoteAllocator(context.Background(), wsURL)
 
-	var ctxOpts chromedp.ContextOption
+	var ctxOpts []chromedp.ContextOption
 	if targetID != "" {
 		ctxOpts = append(ctxOpts, chromedp.WithTargetID(target.ID(targetID)))
 	}
-	ctxOpts = append(chromedp.ContextOption{chromedp.WithErrorf(chromedpErrorf)}, ctxOpts...)
+	ctxOpts = append([]chromedp.ContextOption{chromedp.WithErrorf(chromedpErrorf)}, ctxOpts...)
 	browserCtx, browserCancel := chromedp.NewContext(allocCtx, ctxOpts...)
 
 	// Warm up CDP connection
 	if err := chromedp.Run(browserCtx); err != nil {
-		allocCancel
-		browserCancel
+		allocCancel()
+		browserCancel()
 		return nil, fmt.Errorf("%w: session CDP connection failed: %v", ErrCDPDisconnected, err)
 	}
 
 	// session/open 链路也必须遵守三模式隔离：headless 才补完整
 	// fingerprint/stealth；headed/visible 保留真实浏览器面，只隐藏 webdriver。
 	presetID = NormalizePresetID(presetID)
-	chromePath, _ := NewChromeLauncher.FindChrome
+	chromePath, _ := NewChromeLauncher().FindChrome()
 
 	sessionPreset := ResolveRuntimeFingerprintPreset(presetID, chromePath)
 	if sessionPreset == nil {
 		sessionPreset = BuiltinPresets[presetID]
 	}
 	if sessionPreset == nil {
-		allocCancel
-		browserCancel
+		allocCancel()
+		browserCancel()
 		return nil, fmt.Errorf("browser: unknown preset_id %q", presetID)
 	}
 	if sessionPreset != nil {
@@ -1412,31 +1412,31 @@ func NewBrowserCoreFromSession(ctx context.Context, wsURL string, targetID strin
 		}
 	}
 
-	snapEngine := newSnapshotEngine
+	snapEngine := newSnapshotEngine()
 	actEngine := newActionEngine(snapEngine)
 	liveEngine := newLiveViewEngine(DefaultViewportWidth, DefaultViewportHeight)
 	takeoverCtrl := newTakeoverController(browserCtx)
 
 	impl := &browserCoreImpl{
-		allocCtx: allocCtx
-		allocCancel: allocCancel
-		browserCtx: browserCtx
-		browserCancel: browserCancel
-		snapEngine: snapEngine
-		actEngine: actEngine
-		liveEngine: liveEngine
-		takeoverCtrl: takeoverCtrl
-		fingerprintPreset: presetID
-		runtimeMode: runtimeMode
-		chromePath: chromePath
-		profileID: "session"
-		launcher: NewChromeLauncher
-		supervisor: NewChromeSupervisor
-		chromePID: 0
-		liveViewportW: DefaultViewportWidth
-		liveViewportH: DefaultViewportHeight
-		liveViewportDPR: 1
-		sessionAttached: true
+		allocCtx:          allocCtx,
+		allocCancel:       allocCancel,
+		browserCtx:        browserCtx,
+		browserCancel:     browserCancel,
+		snapEngine:        snapEngine,
+		actEngine:         actEngine,
+		liveEngine:        liveEngine,
+		takeoverCtrl:      takeoverCtrl,
+		fingerprintPreset: presetID,
+		runtimeMode:       runtimeMode,
+		chromePath:        chromePath,
+		profileID:         "session",
+		launcher:          NewChromeLauncher(),
+		supervisor:        NewChromeSupervisor(),
+		chromePID:         0,
+		liveViewportW:     DefaultViewportWidth,
+		liveViewportH:     DefaultViewportHeight,
+		liveViewportDPR:   1,
+		sessionAttached:   true,
 	}
 	if sessionPreset != nil {
 		impl.liveViewportW = sessionPreset.ViewportW

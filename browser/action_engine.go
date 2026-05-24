@@ -16,7 +16,7 @@ import (
 )
 
 // ============================================================
-// § ActionEngine
+// § ActionEngine [Ref: CAP-BS09-C2, T5-B5]
 // ============================================================
 
 // actionEngine 实现操作解析与执行。
@@ -31,9 +31,9 @@ func newActionEngine(snapEngine *snapshotEngine) *actionEngine {
 
 // ParsedAction 是解析后的操作结构。
 type ParsedAction struct {
-	Op string // "click" | "clickat" | "tap" | "tapat" | "type" | "scroll" | "hover" | "select"
-	Ref string // Element Ref（如 "e3"）或语义选择器（如 "#testid", "button:'name'"）
-	Value string // type/select 的值
+	Op     string  // "click" | "clickat" | "tap" | "tapat" | "type" | "scroll" | "hover" | "select"
+	Ref    string  // Element Ref（如 "e3"）或语义选择器（如 "#testid", "button:'name'"）
+	Value  string  // type/select 的值
 	CoordX float64 // clickat 的相对 X 坐标（0..1）
 	CoordY float64 // clickat 的相对 Y 坐标（0..1）
 }
@@ -42,52 +42,52 @@ type ParsedAction struct {
 type SelectorType int
 
 const (
-	SelectorSessionRef SelectorType = iota // @rN — session ref
-	SelectorTestID // #testid
-	SelectorCanonical // role=button[name*="x"][nth=3]
-	SelectorScoped // A >> B
-	SelectorRoleName // role:'name' (shorthand, contains)
-	SelectorRoleNameExact // role="name" (shorthand, exact)
-	SelectorRole // role (bare role, first match)
-	SelectorCSS // css=... or fallback
-	SelectorLegacyRef // e{N} — rejected
+	SelectorSessionRef    SelectorType = iota // @rN — session ref
+	SelectorTestID                            // #testid
+	SelectorCanonical                         // role=button[name*="x"][nth=3]
+	SelectorScoped                            // A >> B
+	SelectorRoleName                          // role:'name' (shorthand, contains)
+	SelectorRoleNameExact                     // role="name" (shorthand, exact)
+	SelectorRole                              // role (bare role, first match)
+	SelectorCSS                               // css=... or fallback
+	SelectorLegacyRef                         // e{N} — rejected
 )
 
 // CanonicalFilter canonical DSL 过滤器（name/placeholder/testid + op）。
 type CanonicalFilter struct {
 	Field string // "name", "placeholder", "testid"
-	Op string // "=" (exact), "*=" (contains), "^=" (prefix)
+	Op    string // "=" (exact), "*=" (contains), "^=" (prefix)
 	Value string
 }
 
 // ParsedSelector 解析后的语义选择器。
 type ParsedSelector struct {
-	SType SelectorType
-	TestID string
-	Role string
-	Name string
-	NameOp string // "=" exact | "*=" contains | "^=" prefix
-	Filters CanonicalFilter // canonical DSL 过滤器
-	Nth int // nth filter (0 = no nth)
-	ScopeParent *ParsedSelector // A >> B 中的 A
-	Raw string // 原始字符串
-	SessionRef int // @rN 的 N
+	SType       SelectorType
+	TestID      string
+	Role        string
+	Name        string
+	NameOp      string            // "=" exact | "*=" contains | "^=" prefix
+	Filters     []CanonicalFilter // canonical DSL 过滤器
+	Nth         int               // nth filter (0 = no nth)
+	ScopeParent *ParsedSelector   // A >> B 中的 A
+	Raw         string            // 原始字符串
+	SessionRef  int               // @rN 的 N
 }
 
 // ParseSelector 解析选择器字符串。
 //
 // 优先级顺序:
-// 1. @rN — session ref（仅 session 模式有效）
-// 2. #testid — data-testid
-// 3. role=TYPE[...] — canonical DSL
-// 4. A >> B — scoped selector
-// 5. role:'name' — shorthand（contains）
-// 6. role="name" — shorthand（exact）
-// 7. css=... — explicit CSS
-// 8. e{N} — legacy ref（拒绝）
-// 9. pure identifier — bare role
+//  1. @rN               — session ref（仅 session 模式有效）
+//  2. #testid           — data-testid
+//  3. role=TYPE[...]    — canonical DSL
+//  4. A >> B            — scoped selector
+//  5. role:'name'       — shorthand（contains）
+//  6. role="name"       — shorthand（exact）
+//  7. css=...           — explicit CSS
+//  8. e{N}              — legacy ref（拒绝）
+//  9. pure identifier   — bare role
 //
-// 10. everything else — CSS fallback
+// 10. everything else   — CSS fallback
 func ParseSelector(selector string) (*ParsedSelector, error) {
 	selector = strings.TrimSpace(selector)
 	if selector == "" {
@@ -115,10 +115,10 @@ func ParseSelector(selector string) (*ParsedSelector, error) {
 		return nil, fmt.Errorf(
 			"位置编码 %q 不可用于 act（DOM 变化会导致序号漂移）。\n"+
 				"请使用语义选择器:\n"+
-				" click #<testid> — 按 data-testid\n"+
-				" click button:'<名称>' — 按 ARIA role + name\n"+
-				" type textbox:'<名称>' 'text'\n"+
-				"运行 'dw-browser snap <url>' 查看可用的 role 和 name。"
+				"  click #<testid>           — 按 data-testid\n"+
+				"  click button:'<名称>'      — 按 ARIA role + name\n"+
+				"  type textbox:'<名称>' 'text'\n"+
+				"运行 'dw-browser snap <url>' 查看可用的 role 和 name。",
 			selector)
 	}
 
@@ -233,7 +233,7 @@ func parseCanonicalSelector(selector string) (*ParsedSelector, error) {
 		}
 
 		// Detect operator
-		ops := string{"*=", "^=", "="}
+		ops := []string{"*=", "^=", "="}
 		var field, op, val string
 		for _, candidate := range ops {
 			if idx := strings.Index(inner, candidate); idx > 0 {
@@ -298,22 +298,22 @@ func isLegacyRef(s string) bool {
 	return true
 }
 
-// ParseAction 解析操作语法字符串 。
+// ParseAction 解析操作语法字符串 [TC-09-U-05, TC-09-U-06]。
 //
 // 支持操作:
-// - "click #testid" | "click button:'名称'"
-// - "clickat #canvas 92% 8%" — 对元素相对坐标执行真实鼠标点击
-// - "tap button:'接管'" | "tapat #browser-liveview 92% 8%" — 对元素执行真实触控点击
-// - "fill #input 'text'" — 清空后输入
-// - "type textbox:'名称' 'hello'"
-// - "press Enter" | "press Ctrl+A" | "press #btn Ctrl+K"
-// - "hover button:'名称'"
-// - "scroll down" | "scroll up"
-// - "select e4 'opt2'"
-// - "back" | "forward"
-// - "focus #selector"
-// - "scrollinto #selector"
-// - "check #selector" | "uncheck #selector"
+//   - "click #testid" | "click button:'名称'"
+//   - "clickat #canvas 92% 8%" — 对元素相对坐标执行真实鼠标点击
+//   - "tap button:'接管'" | "tapat #browser-liveview 92% 8%" — 对元素执行真实触控点击
+//   - "fill #input 'text'" — 清空后输入
+//   - "type textbox:'名称' 'hello'"
+//   - "press Enter" | "press Ctrl+A" | "press #btn Ctrl+K"
+//   - "hover button:'名称'"
+//   - "scroll down" | "scroll up"
+//   - "select e4 'opt2'"
+//   - "back" | "forward"
+//   - "focus #selector"
+//   - "scrollinto #selector"
+//   - "check #selector" | "uncheck #selector"
 func ParseAction(action string) (*ParsedAction, error) {
 	action = strings.TrimSpace(action)
 	if action == "" {
@@ -383,7 +383,7 @@ func ParseAction(action string) (*ParsedAction, error) {
 		return &ParsedAction{Op: "type", Ref: parts[1], Value: value}, nil
 
 	case "press":
-		// press <key> OR press <selector> <key>
+		// press <key>  OR  press <selector> <key>
 		if len(parts) < 2 {
 			return nil, fmt.Errorf("%w: press requires key argument", ErrActFailed)
 		}
@@ -453,8 +453,8 @@ func parseNormalizedCoordinate(raw string) (float64, error) {
 // 例: "click button:'open dialog'" → ["click", "button:'open dialog'"]
 //
 //	"type textbox:'名称' 'hello'" → ["type", "textbox:'名称'", "'hello'"]
-func splitActionParts(action string) string {
-	var parts string
+func splitActionParts(action string) []string {
+	var parts []string
 	var cur strings.Builder
 	inSingle := false
 	inDouble := false
@@ -469,16 +469,16 @@ func splitActionParts(action string) string {
 			inDouble = !inDouble
 			cur.WriteByte(c)
 		case c == ' ' && !inSingle && !inDouble:
-			if cur.Len > 0 {
-				parts = append(parts, cur.String)
-				cur.Reset
+			if cur.Len() > 0 {
+				parts = append(parts, cur.String())
+				cur.Reset()
 			}
 		default:
 			cur.WriteByte(c)
 		}
 	}
-	if cur.Len > 0 {
-		parts = append(parts, cur.String)
+	if cur.Len() > 0 {
+		parts = append(parts, cur.String())
 	}
 	return parts
 }
@@ -495,7 +495,7 @@ func extractQuotedValue(action string, afterRef string) (string, bool) {
 	rest := strings.TrimSpace(action[idx+len(afterRef):])
 
 	// 处理单引号或双引号
-	for _, quote := range byte{'\'', '"'} {
+	for _, quote := range []byte{'\'', '"'} {
 		if len(rest) > 0 && rest[0] == quote {
 			end := strings.LastIndexByte(rest, quote)
 			if end > 0 {
@@ -506,9 +506,9 @@ func extractQuotedValue(action string, afterRef string) (string, bool) {
 	return "", false
 }
 
-// Execute 执行操作 [~08, ]。
-// observe=false 时返回 nil Snapshot 。
-// 语义选择器（）: #testid / role:'name' / role
+// Execute 执行操作 [TC-09-U-05~08, TC-09-U-27, TC-09-U-28]。
+// observe=false 时返回 nil Snapshot [TC-09-U-28]。
+// 语义选择器（TH-0405-p7c）: #testid / role:'name' / role
 // 位置编码 e{N} 被拒绝并返回引导性错误。
 // sessionMode=true 时允许 @rN ref。
 func (e *actionEngine) Execute(ctx context.Context, action string, observe bool) (*Snapshot, error) {
@@ -610,7 +610,7 @@ func (e *actionEngine) ExecuteWithSessionMode(ctx context.Context, action string
 	}
 
 	// 点击/输入后等待 DOM 稳定（MutationObserver idle 检测）
-	// 灵感来源: Stagehand _waitForSettledDom
+	// 灵感来源: Stagehand _waitForSettledDom()
 	// 注意: 直接使用 ctx，不创建派生 context（chromedp remote allocator 兼容性）
 	// back/forward 不需要 DOM settle — 导航本身有 readyState 等待机制
 	// clickat/tapat 是坐标式 Human pointer 输入，主要服务 LiveView/takeover。
@@ -621,7 +621,7 @@ func (e *actionEngine) ExecuteWithSessionMode(ctx context.Context, action string
 		_ = waitForDOMSettle(ctx, 500, 5000)
 	}
 
-	// observe=false 时不返回 Snapshot 
+	// observe=false 时不返回 Snapshot [TC-09-U-28]
 	if !observe {
 		return nil, nil
 	}
@@ -633,30 +633,30 @@ func (e *actionEngine) ExecuteWithSessionMode(ctx context.Context, action string
 }
 
 // waitForDOMSettle 等待 DOM 稳定 — 通过 MutationObserver 检测连续 idleMs 毫秒无变化。
-// 参考: Stagehand (browserbase) 的 _waitForSettledDom 方案。
+// 参考: Stagehand (browserbase) 的 _waitForSettledDom() 方案。
 // 使用纯 JS Promise + MutationObserver，不调用 CDP DOM API。
 func waitForDOMSettle(ctx context.Context, idleMs, timeoutMs int) error {
 	js := fmt.Sprintf(`new Promise((resolve) => {
 		let timer = null, settled = false;
 		const IDLE = %d, MAX = %d;
-		const maxT = setTimeout( => {
-			if (!settled) { settled = true; obs.disconnect; resolve('timeout'); }
+		const maxT = setTimeout(() => {
+			if (!settled) { settled = true; obs.disconnect(); resolve('timeout'); }
 		}, MAX);
-		const reset = => {
+		const reset = () => {
 			if (timer) clearTimeout(timer);
-			timer = setTimeout( => {
-				if (!settled) { settled = true; obs.disconnect; clearTimeout(maxT); resolve('idle'); }
+			timer = setTimeout(() => {
+				if (!settled) { settled = true; obs.disconnect(); clearTimeout(maxT); resolve('idle'); }
 			}, IDLE);
 		};
-		const obs = new MutationObserver( => reset);
+		const obs = new MutationObserver(() => reset());
 		obs.observe(document.body, { childList: true, subtree: true, attributes: true, characterData: true });
-		reset;
+		reset();
 	})`, idleMs, timeoutMs)
 
 	var result string
-	return chromedp.Run(ctx, chromedp.Evaluate(js, &result
-		chromedp.EvalAsValue
-		evalAwaitPromise
+	return chromedp.Run(ctx, chromedp.Evaluate(js, &result,
+		chromedp.EvalAsValue,
+		evalAwaitPromise,
 	))
 }
 
@@ -708,10 +708,10 @@ func (e *actionEngine) resolveSemanticSelectorWithSession(selector string, sessi
 		if len(allMeta) == 0 {
 			byRole := e.snapEngine.AllByRole(sel.Role)
 			if len(byRole) == 0 {
-				return "", fmt.Errorf("%w: 元素 %s:'%s' 未找到。当前页面无 %s 元素"
+				return "", fmt.Errorf("%w: 元素 %s:'%s' 未找到。当前页面无 %s 元素",
 					ErrRefNotFound, sel.Role, sel.Name, sel.Role)
 			}
-			return "", fmt.Errorf("%w: 元素 %s:'%s' 未找到。可用的 %s: %v"
+			return "", fmt.Errorf("%w: 元素 %s:'%s' 未找到。可用的 %s: %v",
 				ErrRefNotFound, sel.Role, sel.Name, sel.Role, byRole)
 		}
 		if len(allMeta) > 1 {
@@ -763,7 +763,7 @@ func (e *actionEngine) resolveCanonicalSelector(sel *ParsedSelector, sessionMode
 	// Apply placeholder filter
 	for _, f := range sel.Filters {
 		if f.Field == "placeholder" {
-			var filtered *ElementRef
+			var filtered []*ElementRef
 			for _, m := range allMeta {
 				if matchOp(m.Placeholder, f.Op, f.Value) {
 					filtered = append(filtered, m)
@@ -780,7 +780,7 @@ func (e *actionEngine) resolveCanonicalSelector(sel *ParsedSelector, sessionMode
 	// Apply nth filter
 	if sel.Nth > 0 {
 		if sel.Nth > len(allMeta) {
-			return "", fmt.Errorf("%w: nth=%d out of range (matched %d elements for %q)"
+			return "", fmt.Errorf("%w: nth=%d out of range (matched %d elements for %q)",
 				ErrRefNotFound, sel.Nth, len(allMeta), sel.Raw)
 		}
 		return allMeta[sel.Nth-1].Ref, nil
@@ -807,19 +807,19 @@ func matchOp(haystack, op, needle string) bool {
 }
 
 // buildAmbiguousError 构建歧义错误信息，附带候选项和消歧建议。
-func buildAmbiguousError(locator string, matches *ElementRef) error {
-	suggestions := make(string, 0, len(matches))
+func buildAmbiguousError(locator string, matches []*ElementRef) error {
+	suggestions := make([]string, 0, len(matches))
 	for i, m := range matches {
 		if m.TestID != "" {
-			suggestions = append(suggestions, fmt.Sprintf(" - #%s", m.TestID))
+			suggestions = append(suggestions, fmt.Sprintf("  - #%s", m.TestID))
 		} else if m.RecommendedLocator != "" {
-			suggestions = append(suggestions, fmt.Sprintf(" - %s", m.RecommendedLocator))
+			suggestions = append(suggestions, fmt.Sprintf("  - %s", m.RecommendedLocator))
 		} else {
-			suggestions = append(suggestions, fmt.Sprintf(" - role=%s[name=\"%s\"][nth=%d]", m.Role, m.Name, i+1))
+			suggestions = append(suggestions, fmt.Sprintf("  - role=%s[name=\"%s\"][nth=%d]", m.Role, m.Name, i+1))
 		}
 	}
-	msg := fmt.Sprintf("%s:\n locator: %s\n matches: %d\n suggestions:\n%s"
-		ErrAmbiguousLocator.Error, locator, len(matches), strings.Join(suggestions, "\n"))
+	msg := fmt.Sprintf("%s:\n  locator: %s\n  matches: %d\n  suggestions:\n%s",
+		ErrAmbiguousLocator.Error(), locator, len(matches), strings.Join(suggestions, "\n"))
 	return fmt.Errorf("%w: %s", ErrAmbiguousLocator, msg)
 }
 
@@ -886,7 +886,7 @@ func (e *actionEngine) executeClick(ctx context.Context, ref string) error {
 	// 通过 BackendNodeID 找到节点并点击
 	return chromedp.Run(ctx, chromedp.ActionFunc(func(ctx context.Context) error {
 		// 将 BackendNodeID 解析为 NodeID
-		nodeIDs, err := dom.PushNodesByBackendIDsToFrontend(cdp.BackendNodeID{cdp.BackendNodeID(backendNodeID)}).Do(ctx)
+		nodeIDs, err := dom.PushNodesByBackendIDsToFrontend([]cdp.BackendNodeID{cdp.BackendNodeID(backendNodeID)}).Do(ctx)
 		if err != nil {
 			return fmt.Errorf("%w: backend node not found: %v", ErrActFailed, err)
 		}
@@ -894,38 +894,38 @@ func (e *actionEngine) executeClick(ctx context.Context, ref string) error {
 			return fmt.Errorf("%w: node not found for ref %q", ErrRefNotFound, ref)
 		}
 		// 通过 NodeID 执行点击
-		return chromedp.Run(ctx, chromedp.Click(cdp.NodeID{nodeIDs[0]}, chromedp.ByNodeID))
+		return chromedp.Run(ctx, chromedp.Click([]cdp.NodeID{nodeIDs[0]}, chromedp.ByNodeID))
 	}))
 }
 
 type actionElementBox struct {
-	Left float64 `json:"left"`
-	Top float64 `json:"top"`
-	Width float64 `json:"width"`
+	Left   float64 `json:"left"`
+	Top    float64 `json:"top"`
+	Width  float64 `json:"width"`
 	Height float64 `json:"height"`
 }
 
 type fillSelectorResult struct {
-	Found bool `json:"found"`
+	Found    bool `json:"found"`
 	Editable bool `json:"editable"`
 	Password bool `json:"password"`
-	Applied bool `json:"applied"`
-	Exact bool `json:"exact"`
+	Applied  bool `json:"applied"`
+	Exact    bool `json:"exact"`
 }
 
 type editableValueProbe struct {
-	Present bool `json:"present"`
-	Value string `json:"value"`
+	Present bool   `json:"present"`
+	Value   string `json:"value"`
 }
 
 func (e *actionEngine) elementBoxForSelector(ctx context.Context, ref string) (actionElementBox, error) {
 	var boxJSON string
-	js := fmt.Sprintf(`( => {
+	js := fmt.Sprintf(`(() => {
 		const el = document.querySelector(%q);
 		if (!el) return null;
-		const r = el.getBoundingClientRect;
+		const r = el.getBoundingClientRect();
 		return JSON.stringify({left: r.left, top: r.top, width: r.width, height: r.height});
-	})`, ref)
+	})()`, ref)
 	if err := chromedp.Run(ctx, chromedp.WaitVisible(ref, chromedp.ByQuery), chromedp.Evaluate(js, &boxJSON)); err != nil {
 		return actionElementBox{}, err
 	}
@@ -933,7 +933,7 @@ func (e *actionEngine) elementBoxForSelector(ctx context.Context, ref string) (a
 		return actionElementBox{}, fmt.Errorf("%w: element %q not found", ErrRefNotFound, ref)
 	}
 	var box actionElementBox
-	if err := json.Unmarshal(byte(boxJSON), &box); err != nil {
+	if err := json.Unmarshal([]byte(boxJSON), &box); err != nil {
 		return actionElementBox{}, fmt.Errorf("%w: parse element box: %v", ErrActFailed, err)
 	}
 	return box, nil
@@ -947,11 +947,11 @@ func (e *actionEngine) elementBoxForRef(ctx context.Context, ref string) (action
 
 	var box actionElementBox
 	err = chromedp.Run(ctx, chromedp.ActionFunc(func(ctx context.Context) error {
-		nodeIDs, err := dom.PushNodesByBackendIDsToFrontend(cdp.BackendNodeID{cdp.BackendNodeID(backendNodeID)}).Do(ctx)
+		nodeIDs, err := dom.PushNodesByBackendIDsToFrontend([]cdp.BackendNodeID{cdp.BackendNodeID(backendNodeID)}).Do(ctx)
 		if err != nil || len(nodeIDs) == 0 {
 			return fmt.Errorf("%w: node not found for ref %q", ErrRefNotFound, ref)
 		}
-		boxModel, err := dom.GetBoxModel.WithNodeID(nodeIDs[0]).Do(ctx)
+		boxModel, err := dom.GetBoxModel().WithNodeID(nodeIDs[0]).Do(ctx)
 		if err != nil || boxModel == nil || len(boxModel.Border) < 8 {
 			return fmt.Errorf("%w: box model unavailable for ref %q", ErrActFailed, ref)
 		}
@@ -974,10 +974,10 @@ func (e *actionEngine) elementBoxForRef(ctx context.Context, ref string) (action
 			}
 		}
 		box = actionElementBox{
-			Left: minX
-			Top: minY
-			Width: maxX - minX
-			Height: maxY - minY
+			Left:   minX,
+			Top:    minY,
+			Width:  maxX - minX,
+			Height: maxY - minY,
 		}
 		return nil
 	}))
@@ -1017,23 +1017,23 @@ func dispatchMouseClickAt(ctx context.Context, x, y float64) error {
 
 func dispatchTouchTapAt(ctx context.Context, x, y float64) error {
 	return chromedp.Run(ctx, chromedp.ActionFunc(func(ctx context.Context) error {
-		points := *input.TouchPoint{{
-			X: x
-			Y: y
-			ID: 1
+		points := []*input.TouchPoint{{
+			X:  x,
+			Y:  y,
+			ID: 1,
 		}}
 		if err := input.DispatchTouchEvent(input.TouchStart, points).Do(ctx); err != nil {
 			return err
 		}
 		time.Sleep(60 * time.Millisecond)
-		return input.DispatchTouchEvent(input.TouchEnd, *input.TouchPoint{}).Do(ctx)
+		return input.DispatchTouchEvent(input.TouchEnd, []*input.TouchPoint{}).Do(ctx)
 	}))
 }
 
 // executeClickAt 对目标元素的相对坐标执行真实鼠标点击。
 // 设计意图:
-// - 保持现有 click 语义不变，避免把宿主 DOM 自动化和人类指针输入混为一谈
-// - 为 liveview/takeover 这类需要真实 clientX/clientY 的桌面鼠标交互提供稳定入口
+//   - 保持现有 click 语义不变，避免把宿主 DOM 自动化和人类指针输入混为一谈
+//   - 为 liveview/takeover 这类需要真实 clientX/clientY 的桌面鼠标交互提供稳定入口
 func (e *actionEngine) executeClickAt(ctx context.Context, ref string, relX, relY float64) error {
 	box, err := e.resolveElementBox(ctx, ref)
 	if err != nil {
@@ -1053,8 +1053,8 @@ func (e *actionEngine) executeTap(ctx context.Context, ref string) error {
 
 // executeTapAt 对目标元素的相对坐标执行真实触控点击。
 // 设计意图:
-// - 作为 clickat 的触控对偶，支撑 iOS / Android / coarse pointer 测试
-// - 在 liveview 宿主页上触发 BrowserPanel 的 touch* 链路，而不是退化成 mouse 事件
+//   - 作为 clickat 的触控对偶，支撑 iOS / Android / coarse pointer 测试
+//   - 在 liveview 宿主页上触发 BrowserPanel 的 touch* 链路，而不是退化成 mouse 事件
 func (e *actionEngine) executeTapAt(ctx context.Context, ref string, relX, relY float64) error {
 	box, err := e.resolveElementBox(ctx, ref)
 	if err != nil {
@@ -1068,13 +1068,13 @@ func (e *actionEngine) executeTapAt(ctx context.Context, ref string, relX, relY 
 	return dispatchTouchTapAt(ctx, x, y)
 }
 
-// executeType 执行文本输入操作，密码字段拒绝 。
+// executeType 执行文本输入操作，密码字段拒绝 [TC-09-U-07, TC-09-U-08]。
 func (e *actionEngine) executeType(ctx context.Context, ref string, value string) error {
 	// CSS 选择器模式
 	if isCSSSelector(ref) {
-		return chromedp.Run(ctx
-			chromedp.WaitVisible(ref, chromedp.ByQuery)
-			chromedp.SendKeys(ref, value, chromedp.ByQuery)
+		return chromedp.Run(ctx,
+			chromedp.WaitVisible(ref, chromedp.ByQuery),
+			chromedp.SendKeys(ref, value, chromedp.ByQuery),
 		)
 	}
 
@@ -1083,7 +1083,7 @@ func (e *actionEngine) executeType(ctx context.Context, ref string, value string
 		return err
 	}
 
-	// 检查是否为密码字段 
+	// 检查是否为密码字段 [IR-03, TC-09-U-07, TC-09-U-08]
 	isPassword, err := checkPasswordField(ctx, nodeID)
 	if err != nil {
 		// 检查失败时保守处理（不执行）
@@ -1095,13 +1095,13 @@ func (e *actionEngine) executeType(ctx context.Context, ref string, value string
 
 	// 使用 chromedp.SendKeys 发送键盘输入
 	return chromedp.Run(ctx, chromedp.ActionFunc(func(ctx context.Context) error {
-		nodeIDs, err := dom.PushNodesByBackendIDsToFrontend(cdp.BackendNodeID{cdp.BackendNodeID(nodeID)}).Do(ctx)
+		nodeIDs, err := dom.PushNodesByBackendIDsToFrontend([]cdp.BackendNodeID{cdp.BackendNodeID(nodeID)}).Do(ctx)
 		if err != nil || len(nodeIDs) == 0 {
 			return fmt.Errorf("%w: node not found for ref %q", ErrRefNotFound, ref)
 		}
-		return chromedp.Run(ctx
-			chromedp.Focus(cdp.NodeID{nodeIDs[0]}, chromedp.ByNodeID)
-			chromedp.SendKeys(cdp.NodeID{nodeIDs[0]}, value, chromedp.ByNodeID)
+		return chromedp.Run(ctx,
+			chromedp.Focus([]cdp.NodeID{nodeIDs[0]}, chromedp.ByNodeID),
+			chromedp.SendKeys([]cdp.NodeID{nodeIDs[0]}, value, chromedp.ByNodeID),
 		)
 	}))
 }
@@ -1112,12 +1112,12 @@ func (e *actionEngine) executeHover(ctx context.Context, ref string) error {
 	if isCSSSelector(ref) {
 		// For CSS selector: use chromedp.MouseClickXY after getting bounding box via JS
 		var boxJSON string
-		js := fmt.Sprintf(`( => {
+		js := fmt.Sprintf(`(() => {
 			const el = document.querySelector(%q);
 			if (!el) return null;
-			const r = el.getBoundingClientRect;
+			const r = el.getBoundingClientRect();
 			return JSON.stringify({x: r.left + r.width/2, y: r.top + r.height/2});
-		})`, ref)
+		})()`, ref)
 		if err := chromedp.Run(ctx, chromedp.Evaluate(js, &boxJSON)); err != nil || boxJSON == "" || boxJSON == "null" {
 			return fmt.Errorf("%w: element %q not found for hover", ErrRefNotFound, ref)
 		}
@@ -1125,7 +1125,7 @@ func (e *actionEngine) executeHover(ctx context.Context, ref string) error {
 			X float64 `json:"x"`
 			Y float64 `json:"y"`
 		}
-		if err := json.Unmarshal(byte(boxJSON), &pos); err != nil {
+		if err := json.Unmarshal([]byte(boxJSON), &pos); err != nil {
 			return fmt.Errorf("%w: hover position parse: %v", ErrActFailed, err)
 		}
 		return chromedp.Run(ctx, chromedp.ActionFunc(func(ctx context.Context) error {
@@ -1140,16 +1140,16 @@ func (e *actionEngine) executeHover(ctx context.Context, ref string) error {
 
 	// Use CDP getBoxModel to get element bounding box (safe path — no DOM state mutation)
 	return chromedp.Run(ctx, chromedp.ActionFunc(func(ctx context.Context) error {
-		nodeIDs, err := dom.PushNodesByBackendIDsToFrontend(cdp.BackendNodeID{cdp.BackendNodeID(backendNodeID)}).Do(ctx)
+		nodeIDs, err := dom.PushNodesByBackendIDsToFrontend([]cdp.BackendNodeID{cdp.BackendNodeID(backendNodeID)}).Do(ctx)
 		if err != nil || len(nodeIDs) == 0 {
 			return fmt.Errorf("%w: node not found for ref %q", ErrRefNotFound, ref)
 		}
 
 		// Get box model for the node
-		boxModel, err := dom.GetBoxModel.WithNodeID(nodeIDs[0]).Do(ctx)
+		boxModel, err := dom.GetBoxModel().WithNodeID(nodeIDs[0]).Do(ctx)
 		if err != nil || boxModel == nil || len(boxModel.Content) < 8 {
 			// Fallback: just focus the element
-			_ = chromedp.Run(ctx, chromedp.Focus(cdp.NodeID{nodeIDs[0]}, chromedp.ByNodeID))
+			_ = chromedp.Run(ctx, chromedp.Focus([]cdp.NodeID{nodeIDs[0]}, chromedp.ByNodeID))
 			return nil
 		}
 
@@ -1166,18 +1166,18 @@ func (e *actionEngine) executeFill(ctx context.Context, ref string, value string
 	// CSS 选择器模式
 	if isCSSSelector(ref) {
 		var result fillSelectorResult
-		setJS := fmt.Sprintf(`( => {
+		setJS := fmt.Sprintf(`(() => {
 			const el = document.querySelector(%q);
 			if (!el) return { found: false };
-			const tag = (el.tagName || '').toUpperCase;
+			const tag = (el.tagName || '').toUpperCase();
 			if (tag !== 'INPUT' && tag !== 'TEXTAREA') {
 				return { found: true, editable: false };
 			}
-			const type = tag === 'INPUT' ? String(el.type || '').toLowerCase : '';
+			const type = tag === 'INPUT' ? String(el.type || '').toLowerCase() : '';
 			if (type === 'password') {
 				return { found: true, editable: true, password: true };
 			}
-			el.focus;
+			el.focus();
 			const proto = tag === 'TEXTAREA'
 				? window.HTMLTextAreaElement.prototype
 				: window.HTMLInputElement.prototype;
@@ -1190,10 +1190,10 @@ func (e *actionEngine) executeFill(ctx context.Context, ref string, value string
 			el.dispatchEvent(new Event('input', { bubbles: true }));
 			el.dispatchEvent(new Event('change', { bubbles: true }));
 			return { found: true, editable: true, applied: true, exact: String(el.value ?? '') === %q };
-		})`, ref, value, value, value)
-		if err := chromedp.Run(ctx
-			chromedp.WaitVisible(ref, chromedp.ByQuery)
-			chromedp.Evaluate(setJS, &result)
+		})()`, ref, value, value, value)
+		if err := chromedp.Run(ctx,
+			chromedp.WaitVisible(ref, chromedp.ByQuery),
+			chromedp.Evaluate(setJS, &result),
 		); err != nil {
 			return err
 		}
@@ -1216,9 +1216,9 @@ func (e *actionEngine) executeFill(ctx context.Context, ref string, value string
 		if value == "" {
 			return fmt.Errorf("%w: fill %q did not converge to empty value", ErrActFailed, ref)
 		}
-		if err := chromedp.Run(ctx
-			chromedp.Focus(ref, chromedp.ByQuery)
-			chromedp.SendKeys(ref, value, chromedp.ByQuery)
+		if err := chromedp.Run(ctx,
+			chromedp.Focus(ref, chromedp.ByQuery),
+			chromedp.SendKeys(ref, value, chromedp.ByQuery),
 		); err != nil {
 			return err
 		}
@@ -1240,16 +1240,16 @@ func (e *actionEngine) executeFill(ctx context.Context, ref string, value string
 	}
 
 	return chromedp.Run(ctx, chromedp.ActionFunc(func(ctx context.Context) error {
-		nodeIDs, err := dom.PushNodesByBackendIDsToFrontend(cdp.BackendNodeID{cdp.BackendNodeID(nodeID)}).Do(ctx)
+		nodeIDs, err := dom.PushNodesByBackendIDsToFrontend([]cdp.BackendNodeID{cdp.BackendNodeID(nodeID)}).Do(ctx)
 		if err != nil || len(nodeIDs) == 0 {
 			return fmt.Errorf("%w: node not found for ref %q", ErrRefNotFound, ref)
 		}
 		// BUG-1 修复: KeyEvent("\u0001") 不能可靠地触发 Ctrl+A 选全，会插入控制字符导致 URL 重复拼接。
 		// 对 fill 直接设置最终值，而不是依赖逐键输入，避免 Vue/React 受控输入把旧值重新拼回去。
-		// BUG-FIX (baidu textarea): 必须按 active.tagName 选 proto。
+		// BUG-FIX (TH-0419-q5b, baidu textarea): 必须按 active.tagName 选 proto。
 		// 旧实现用 `INPUT desc || TEXTAREA desc`，对 TEXTAREA 仍命中 INPUT setter，
 		// `desc.set.call(textarea, '')` → TypeError "Illegal invocation"。
-		clearJS := `( => {
+		clearJS := `(() => {
 			const active = document.activeElement;
 			if (!active || (active.tagName !== 'INPUT' && active.tagName !== 'TEXTAREA')) {
 				return;
@@ -1269,7 +1269,7 @@ func (e *actionEngine) executeFill(ctx context.Context, ref string, value string
 			}
 			active.dispatchEvent(new Event('input', { bubbles: true }));
 			active.dispatchEvent(new Event('change', { bubbles: true }));
-		})`
+		})()`
 		setJS := fmt.Sprintf(`((value) => {
 			const active = document.activeElement;
 			if (!active || (active.tagName !== 'INPUT' && active.tagName !== 'TEXTAREA')) {
@@ -1289,10 +1289,10 @@ func (e *actionEngine) executeFill(ctx context.Context, ref string, value string
 			return true;
 		})(%q)`, value)
 		var applied bool
-		if err := chromedp.Run(ctx
-			chromedp.Focus(cdp.NodeID{nodeIDs[0]}, chromedp.ByNodeID)
-			chromedp.Evaluate(clearJS, nil)
-			chromedp.Evaluate(setJS, &applied)
+		if err := chromedp.Run(ctx,
+			chromedp.Focus([]cdp.NodeID{nodeIDs[0]}, chromedp.ByNodeID),
+			chromedp.Evaluate(clearJS, nil),
+			chromedp.Evaluate(setJS, &applied),
 		); err != nil {
 			return err
 		}
@@ -1301,7 +1301,7 @@ func (e *actionEngine) executeFill(ctx context.Context, ref string, value string
 				return nil
 			}
 		}
-		if err := chromedp.Run(ctx, chromedp.SetValue(cdp.NodeID{nodeIDs[0]}, value, chromedp.ByNodeID)); err == nil {
+		if err := chromedp.Run(ctx, chromedp.SetValue([]cdp.NodeID{nodeIDs[0]}, value, chromedp.ByNodeID)); err == nil {
 			if err := e.waitForActiveEditableValue(ctx, value); err == nil {
 				return nil
 			}
@@ -1309,7 +1309,7 @@ func (e *actionEngine) executeFill(ctx context.Context, ref string, value string
 		if value == "" {
 			return fmt.Errorf("%w: fill %q did not converge to empty value", ErrActFailed, ref)
 		}
-		if err := chromedp.Run(ctx, chromedp.SendKeys(cdp.NodeID{nodeIDs[0]}, value, chromedp.ByNodeID)); err != nil {
+		if err := chromedp.Run(ctx, chromedp.SendKeys([]cdp.NodeID{nodeIDs[0]}, value, chromedp.ByNodeID)); err != nil {
 			return err
 		}
 		return e.waitForActiveEditableValue(ctx, value)
@@ -1317,29 +1317,29 @@ func (e *actionEngine) executeFill(ctx context.Context, ref string, value string
 }
 
 func (e *actionEngine) waitForSelectorEditableValue(ctx context.Context, ref string, want string) error {
-	js := fmt.Sprintf(`( => {
+	js := fmt.Sprintf(`(() => {
 		const el = document.querySelector(%q);
 		if (!el || (el.tagName !== 'INPUT' && el.tagName !== 'TEXTAREA')) {
 			return { present: false, value: '' };
 		}
 		return { present: true, value: String(el.value ?? '') };
-	})`, ref)
+	})()`, ref)
 	return waitForEditableProbe(ctx, js, want)
 }
 
 func (e *actionEngine) waitForActiveEditableValue(ctx context.Context, want string) error {
-	js := `( => {
+	js := `(() => {
 		const el = document.activeElement;
 		if (!el || (el.tagName !== 'INPUT' && el.tagName !== 'TEXTAREA')) {
 			return { present: false, value: '' };
 		}
 		return { present: true, value: String(el.value ?? '') };
-	})`
+	})()`
 	return waitForEditableProbe(ctx, js, want)
 }
 
 func waitForEditableProbe(ctx context.Context, js string, want string) error {
-	deadline := time.Now.Add(1500 * time.Millisecond)
+	deadline := time.Now().Add(1500 * time.Millisecond)
 	for {
 		var probe editableValueProbe
 		if err := chromedp.Run(ctx, chromedp.Evaluate(js, &probe)); err == nil {
@@ -1347,12 +1347,12 @@ func waitForEditableProbe(ctx context.Context, js string, want string) error {
 				return nil
 			}
 		}
-		if time.Now.After(deadline) {
+		if time.Now().After(deadline) {
 			return fmt.Errorf("%w: editable value mismatch (want=%q)", ErrActFailed, want)
 		}
 		select {
-		case <-ctx.Done:
-			return ctx.Err
+		case <-ctx.Done():
+			return ctx.Err()
 		case <-time.After(50 * time.Millisecond):
 		}
 	}
@@ -1372,11 +1372,11 @@ func (e *actionEngine) executePress(ctx context.Context, ref string, key string)
 				return err
 			}
 			if err := chromedp.Run(ctx, chromedp.ActionFunc(func(ctx context.Context) error {
-				nodeIDs, err := dom.PushNodesByBackendIDsToFrontend(cdp.BackendNodeID{cdp.BackendNodeID(backendNodeID)}).Do(ctx)
+				nodeIDs, err := dom.PushNodesByBackendIDsToFrontend([]cdp.BackendNodeID{cdp.BackendNodeID(backendNodeID)}).Do(ctx)
 				if err != nil || len(nodeIDs) == 0 {
 					return fmt.Errorf("%w: node not found for ref %q", ErrRefNotFound, ref)
 				}
-				return chromedp.Run(ctx, chromedp.Focus(cdp.NodeID{nodeIDs[0]}, chromedp.ByNodeID))
+				return chromedp.Run(ctx, chromedp.Focus([]cdp.NodeID{nodeIDs[0]}, chromedp.ByNodeID))
 			})); err != nil {
 				return err
 			}
@@ -1393,25 +1393,25 @@ func mapKeyName(key string) string {
 	// Handle combos like Ctrl+A, Shift+Enter
 	// For simple keys, use chromedp key event symbols
 	keyMap := map[string]string{
-		"Enter": "\r"
-		"Tab": "\t"
-		"Escape": "\u001b"
-		"Backspace": "\u0008"
-		"Delete": "\u007f"
-		"ArrowUp": "\ue012"
-		"ArrowDown": "\ue015"
-		"ArrowLeft": "\ue011"
-		"ArrowRight": "\ue014"
-		"Home": "\ue011"
-		"End": "\ue010"
-		"PageUp": "\ue00e"
-		"PageDown": "\ue00f"
-		"F1": "\ue031"
-		"F2": "\ue032"
-		"F3": "\ue033"
-		"F4": "\ue034"
-		"F5": "\ue035"
-		"F12": "\ue03c"
+		"Enter":      "\r",
+		"Tab":        "\t",
+		"Escape":     "\u001b",
+		"Backspace":  "\u0008",
+		"Delete":     "\u007f",
+		"ArrowUp":    "\ue012",
+		"ArrowDown":  "\ue015",
+		"ArrowLeft":  "\ue011",
+		"ArrowRight": "\ue014",
+		"Home":       "\ue011",
+		"End":        "\ue010",
+		"PageUp":     "\ue00e",
+		"PageDown":   "\ue00f",
+		"F1":         "\ue031",
+		"F2":         "\ue032",
+		"F3":         "\ue033",
+		"F4":         "\ue034",
+		"F5":         "\ue035",
+		"F12":        "\ue03c",
 	}
 
 	// Handle modifier combos
@@ -1451,12 +1451,12 @@ func mapKeyName(key string) string {
 // setTimeout(0) 延迟导航：让 Evaluate CDP 响应先返回，避免页面 unload 销毁 JS context
 // 导致 chromedp.Evaluate 收到 context destroyed 错误。
 func (e *actionEngine) executeBack(ctx context.Context) error {
-	return chromedp.Run(ctx, chromedp.Evaluate("setTimeout( => history.back, 0)", nil))
+	return chromedp.Run(ctx, chromedp.Evaluate("setTimeout(() => history.back(), 0)", nil))
 }
 
 // executeForward 导航前进。
 func (e *actionEngine) executeForward(ctx context.Context) error {
-	return chromedp.Run(ctx, chromedp.Evaluate("setTimeout( => history.forward, 0)", nil))
+	return chromedp.Run(ctx, chromedp.Evaluate("setTimeout(() => history.forward(), 0)", nil))
 }
 
 // executeFocusSelector 聚焦元素。
@@ -1469,11 +1469,11 @@ func (e *actionEngine) executeFocusSelector(ctx context.Context, ref string) err
 		return err
 	}
 	return chromedp.Run(ctx, chromedp.ActionFunc(func(ctx context.Context) error {
-		nodeIDs, err := dom.PushNodesByBackendIDsToFrontend(cdp.BackendNodeID{cdp.BackendNodeID(backendNodeID)}).Do(ctx)
+		nodeIDs, err := dom.PushNodesByBackendIDsToFrontend([]cdp.BackendNodeID{cdp.BackendNodeID(backendNodeID)}).Do(ctx)
 		if err != nil || len(nodeIDs) == 0 {
 			return fmt.Errorf("%w: node not found for ref %q", ErrRefNotFound, ref)
 		}
-		return chromedp.Run(ctx, chromedp.Focus(cdp.NodeID{nodeIDs[0]}, chromedp.ByNodeID))
+		return chromedp.Run(ctx, chromedp.Focus([]cdp.NodeID{nodeIDs[0]}, chromedp.ByNodeID))
 	}))
 }
 
@@ -1487,11 +1487,11 @@ func (e *actionEngine) executeScrollIntoView(ctx context.Context, ref string) er
 		return err
 	}
 	return chromedp.Run(ctx, chromedp.ActionFunc(func(ctx context.Context) error {
-		nodeIDs, err := dom.PushNodesByBackendIDsToFrontend(cdp.BackendNodeID{cdp.BackendNodeID(backendNodeID)}).Do(ctx)
+		nodeIDs, err := dom.PushNodesByBackendIDsToFrontend([]cdp.BackendNodeID{cdp.BackendNodeID(backendNodeID)}).Do(ctx)
 		if err != nil || len(nodeIDs) == 0 {
 			return fmt.Errorf("%w: node not found for ref %q", ErrRefNotFound, ref)
 		}
-		return chromedp.Run(ctx, chromedp.ScrollIntoView(cdp.NodeID{nodeIDs[0]}, chromedp.ByNodeID))
+		return chromedp.Run(ctx, chromedp.ScrollIntoView([]cdp.NodeID{nodeIDs[0]}, chromedp.ByNodeID))
 	}))
 }
 
@@ -1517,11 +1517,11 @@ func (e *actionEngine) executeToggleCheckbox(ctx context.Context, ref string, wa
 	}
 
 	var isChecked bool
-	checkJS := fmt.Sprintf(`( => {
+	checkJS := fmt.Sprintf(`(() => {
 		const el = document.querySelector(%q);
 		if (!el) return false;
 		return el.checked === true;
-	})`, checkedSelector)
+	})()`, checkedSelector)
 
 	if isCSSSelector(ref) {
 		if err := chromedp.Run(ctx, chromedp.Evaluate(checkJS, &isChecked)); err != nil {
@@ -1579,24 +1579,24 @@ func (e *actionEngine) executeSelect(ctx context.Context, ref string, value stri
 	}
 
 	return chromedp.Run(ctx, chromedp.ActionFunc(func(ctx context.Context) error {
-		nodeIDs, err := dom.PushNodesByBackendIDsToFrontend(cdp.BackendNodeID{cdp.BackendNodeID(nodeID)}).Do(ctx)
+		nodeIDs, err := dom.PushNodesByBackendIDsToFrontend([]cdp.BackendNodeID{cdp.BackendNodeID(nodeID)}).Do(ctx)
 		if err != nil || len(nodeIDs) == 0 {
 			return fmt.Errorf("%w: node not found for ref %q", ErrRefNotFound, ref)
 		}
-		if err := chromedp.Run(ctx
-			chromedp.Focus(cdp.NodeID{nodeIDs[0]}, chromedp.ByNodeID)
-			chromedp.SetValue(cdp.NodeID{nodeIDs[0]}, value, chromedp.ByNodeID)
+		if err := chromedp.Run(ctx,
+			chromedp.Focus([]cdp.NodeID{nodeIDs[0]}, chromedp.ByNodeID),
+			chromedp.SetValue([]cdp.NodeID{nodeIDs[0]}, value, chromedp.ByNodeID),
 		); err != nil {
 			return err
 		}
 		var selected string
-		if err := chromedp.Run(ctx, chromedp.Evaluate(`( => {
+		if err := chromedp.Run(ctx, chromedp.Evaluate(`(() => {
 			const el = document.activeElement;
 			if (!el || el.tagName !== 'SELECT') return '';
 			el.dispatchEvent(new Event('input', { bubbles: true }));
 			el.dispatchEvent(new Event('change', { bubbles: true }));
 			return String(el.value || '');
-		})`, &selected)); err != nil {
+		})()`, &selected)); err != nil {
 			return err
 		}
 		if selected != "" && selected != value {
@@ -1608,22 +1608,22 @@ func (e *actionEngine) executeSelect(ctx context.Context, ref string, value stri
 
 func (e *actionEngine) executeSelectBySelector(ctx context.Context, selector string, value string) error {
 	var result struct {
-		Found bool `json:"found"`
+		Found bool   `json:"found"`
 		Value string `json:"value"`
 	}
-	js := fmt.Sprintf(`( => {
+	js := fmt.Sprintf(`(() => {
 		const el = document.querySelector(%q);
 		if (!el) return { found: false, value: '' };
 		if (el.tagName !== 'SELECT') return { found: true, value: String(el.value || '') };
-		el.focus;
+		el.focus();
 		el.value = %q;
 		el.dispatchEvent(new Event('input', { bubbles: true }));
 		el.dispatchEvent(new Event('change', { bubbles: true }));
 		return { found: true, value: String(el.value || '') };
-	})`, selector, value)
-	if err := chromedp.Run(ctx
-		chromedp.WaitVisible(selector, chromedp.ByQuery)
-		chromedp.Evaluate(js, &result)
+	})()`, selector, value)
+	if err := chromedp.Run(ctx,
+		chromedp.WaitVisible(selector, chromedp.ByQuery),
+		chromedp.Evaluate(js, &result),
 	); err != nil {
 		return err
 	}
@@ -1636,13 +1636,13 @@ func (e *actionEngine) executeSelectBySelector(ctx context.Context, selector str
 	return nil
 }
 
-// checkPasswordField 通过 CDP 检查节点是否为密码字段 。
+// checkPasswordField 通过 CDP 检查节点是否为密码字段 [TC-09-U-07, TC-09-U-08]。
 func checkPasswordField(ctx context.Context, backendNodeID int64) (bool, error) {
 	var isPassword bool
 	err := chromedp.Run(ctx, chromedp.ActionFunc(func(ctx context.Context) error {
 		// 将 BackendNodeID 转换为 NodeID
 		nodeIDs, err := dom.PushNodesByBackendIDsToFrontend(
-			cdp.BackendNodeID{cdp.BackendNodeID(backendNodeID)}
+			[]cdp.BackendNodeID{cdp.BackendNodeID(backendNodeID)},
 		).Do(ctx)
 		if err != nil || len(nodeIDs) == 0 {
 			return nil // 无法获取时，保守不拦截
@@ -1653,7 +1653,7 @@ func checkPasswordField(ctx context.Context, backendNodeID int64) (bool, error) 
 			return nil
 		}
 
-		// attrs 是 key-value 交替的 string: ["type", "password", "name", "pwd", ...]
+		// attrs 是 key-value 交替的 []string: ["type", "password", "name", "pwd", ...]
 		for i := 0; i+1 < len(attrs); i += 2 {
 			key := strings.ToLower(attrs[i])
 			val := strings.ToLower(attrs[i+1])

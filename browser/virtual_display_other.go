@@ -14,14 +14,14 @@ import "time"
 type VirtualDisplayManager struct{}
 
 // Ensure is a no-op on non-Darwin platforms. Always returns nil.
-func (vdm *VirtualDisplayManager) Ensure error {
+func (vdm *VirtualDisplayManager) Ensure() error {
 	return nil
 }
 
 // WindowPosition returns (0, 0) on non-Darwin platforms.
 // Linux Chrome instances are positioned via DISPLAY=:99; absolute screen
 // coordinates are managed by the window manager.
-func (vdm *VirtualDisplayManager) WindowPosition (x, y int) {
+func (vdm *VirtualDisplayManager) WindowPosition() (x, y int) {
 	return 0, 0
 }
 
@@ -31,7 +31,7 @@ func (vdm *VirtualDisplayManager) WindowPositionAt(offset int) (x, y int) {
 }
 
 // DisplayID returns 0 on non-Darwin platforms.
-func (vdm *VirtualDisplayManager) DisplayID uint32 {
+func (vdm *VirtualDisplayManager) DisplayID() uint32 {
 	return 0
 }
 
@@ -44,6 +44,6 @@ func (vdm *VirtualDisplayManager) VerifyChromeContained(pid int, timeout time.Du
 }
 
 // Close is a no-op on non-Darwin platforms. Always returns nil.
-func (vdm *VirtualDisplayManager) Close error {
+func (vdm *VirtualDisplayManager) Close() error {
 	return nil
 }

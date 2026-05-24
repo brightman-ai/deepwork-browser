@@ -7,18 +7,18 @@ import (
 	"strings"
 )
 
-func activeHeadedBrowserRuntimePIDs int {
-	root := BrowserMuxHostRootDir
+func activeHeadedBrowserRuntimePIDs() []int {
+	root := BrowserMuxHostRootDir()
 	entries, err := os.ReadDir(root)
 	if err != nil {
 		return nil
 	}
 	seen := make(map[int]bool)
 	for _, entry := range entries {
-		if !entry.IsDir {
+		if !entry.IsDir() {
 			continue
 		}
-		path := filepath.Join(root, entry.Name, "muxhost.json")
+		path := filepath.Join(root, entry.Name(), "muxhost.json")
 		body, err := os.ReadFile(path)
 		if err != nil {
 			continue
@@ -33,7 +33,7 @@ func activeHeadedBrowserRuntimePIDs int {
 			collectBrowserRuntimePID(seen, browserRuntimeProcessPID(rt.BrowserPID, rt.ChromePID), "", rt.DisplayBackend, rt.DisplayID)
 		}
 	}
-	out := make(int, 0, len(seen))
+	out := make([]int, 0, len(seen))
 	for pid := range seen {
 		out = append(out, pid)
 	}

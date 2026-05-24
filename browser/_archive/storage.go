@@ -15,30 +15,30 @@ type BrowserTaskStore struct {
 // NewBrowserTaskStore creates a BrowserTaskStore and ensures the table exists.
 func NewBrowserTaskStore(db *sql.DB) (*BrowserTaskStore, error) {
 	s := &BrowserTaskStore{db: db}
-	if err := s.migrate; err != nil {
+	if err := s.migrate(); err != nil {
 		return nil, err
 	}
 	return s, nil
 }
 
 // migrate creates browser_tasks table and indexes if not present.
-func (s *BrowserTaskStore) migrate error {
+func (s *BrowserTaskStore) migrate() error {
 	ddl := `
 CREATE TABLE IF NOT EXISTS browser_tasks (
- id INTEGER PRIMARY KEY AUTOINCREMENT
- session_id INTEGER
- workspace_id INTEGER
- url TEXT NOT NULL
- status TEXT NOT NULL DEFAULT 'pending'
- screenshot BLOB
- created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
- completed_at DATETIME
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id   INTEGER,
+    workspace_id INTEGER,
+    url          TEXT NOT NULL,
+    status       TEXT NOT NULL DEFAULT 'pending',
+    screenshot   BLOB,
+    created_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    completed_at DATETIME
 );
 
 CREATE INDEX IF NOT EXISTS idx_browser_tasks_session
- ON browser_tasks(session_id);
+    ON browser_tasks(session_id);
 CREATE INDEX IF NOT EXISTS idx_browser_tasks_status
- ON browser_tasks(status, created_at);
+    ON browser_tasks(status, created_at);
 `
 	_, err := s.db.Exec(ddl)
 	return err
@@ -53,7 +53,7 @@ func (s *BrowserTaskStore) Create(ctx context.Context, task *BrowserTask) (int64
 	if err != nil {
 		return 0, fmt.Errorf("create browser_task: %w", err)
 	}
-	id, _ := res.LastInsertId
+	id, _ := res.LastInsertId()
 	return id, nil
 }
 
@@ -67,8 +67,8 @@ func (s *BrowserTaskStore) Get(ctx context.Context, id int64) (*BrowserTask, err
 	t := &BrowserTask{}
 	var completedAt sql.NullTime
 	err := row.Scan(
-		&t.ID, &t.SessionID, &t.WorkspaceID, &t.URL
-		&t.Status, &t.Screenshot, &t.CreatedAt, &completedAt
+		&t.ID, &t.SessionID, &t.WorkspaceID, &t.URL,
+		&t.Status, &t.Screenshot, &t.CreatedAt, &completedAt,
 	)
 	if err == sql.ErrNoRows {
 		return nil, fmt.Errorf("browser_task %d not found", id)
@@ -83,10 +83,10 @@ func (s *BrowserTaskStore) Get(ctx context.Context, id int64) (*BrowserTask, err
 }
 
 // UpdateStatus updates the task status and optionally sets completed_at.
-func (s *BrowserTaskStore) UpdateStatus(ctx context.Context, id int64, status string, screenshot byte) error {
+func (s *BrowserTaskStore) UpdateStatus(ctx context.Context, id int64, status string, screenshot []byte) error {
 	var err error
 	if status == "completed" || status == "failed" {
-		now := time.Now
+		now := time.Now()
 		_, err = s.db.ExecContext(ctx, `
 			UPDATE browser_tasks
 			SET status = ?, screenshot = ?, completed_at = ?

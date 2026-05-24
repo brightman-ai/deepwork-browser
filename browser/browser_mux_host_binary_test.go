@@ -7,7 +7,7 @@ import (
 )
 
 func TestResolveBrowserMuxHostBinary_AppBundlePrefersExternalPeer(t *testing.T) {
-	root := t.TempDir
+	root := t.TempDir()
 	binDir := filepath.Join(root, "bin")
 	appMacOS := filepath.Join(binDir, "Deepwork.app", "Contents", "MacOS")
 	if err := os.MkdirAll(appMacOS, 0755); err != nil {
@@ -16,8 +16,8 @@ func TestResolveBrowserMuxHostBinary_AppBundlePrefersExternalPeer(t *testing.T) 
 	appExe := filepath.Join(appMacOS, "Deepwork")
 	bundled := filepath.Join(appMacOS, "dw-browser")
 	external := filepath.Join(binDir, "dw-browser")
-	for _, path := range string{appExe, bundled, external} {
-		if err := os.WriteFile(path, byte("#!/bin/sh\n"), 0755); err != nil {
+	for _, path := range []string{appExe, bundled, external} {
+		if err := os.WriteFile(path, []byte("#!/bin/sh\n"), 0755); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -32,7 +32,7 @@ func TestResolveBrowserMuxHostBinary_AppBundlePrefersExternalPeer(t *testing.T) 
 }
 
 func TestResolveBrowserMuxHostBinary_AppBundleInstallsStableCopy(t *testing.T) {
-	root := t.TempDir
+	root := t.TempDir()
 	cacheDir := filepath.Join(root, "cache")
 	t.Setenv(browserMuxHostBinaryCacheEnv, cacheDir)
 
@@ -42,10 +42,10 @@ func TestResolveBrowserMuxHostBinary_AppBundleInstallsStableCopy(t *testing.T) {
 	}
 	appExe := filepath.Join(appMacOS, "Deepwork")
 	bundled := filepath.Join(appMacOS, "dw-browser")
-	if err := os.WriteFile(appExe, byte("#!/bin/sh\n"), 0755); err != nil {
+	if err := os.WriteFile(appExe, []byte("#!/bin/sh\n"), 0755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(bundled, byte("#!/bin/sh\necho muxhost\n"), 0755); err != nil {
+	if err := os.WriteFile(bundled, []byte("#!/bin/sh\necho muxhost\n"), 0755); err != nil {
 		t.Fatal(err)
 	}
 
@@ -53,7 +53,7 @@ func TestResolveBrowserMuxHostBinary_AppBundleInstallsStableCopy(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolve muxhost binary: %v", err)
 	}
-	want := filepath.Join(cacheDir, browserMuxHostBinaryName)
+	want := filepath.Join(cacheDir, browserMuxHostBinaryName())
 	if got != want {
 		t.Fatalf("expected stable copied binary %s, got %s", want, got)
 	}
@@ -70,9 +70,9 @@ func TestResolveBrowserMuxHostBinary_AppBundleInstallsStableCopy(t *testing.T) {
 }
 
 func TestResolveBrowserMuxHostBinary_ExplicitEnvWins(t *testing.T) {
-	explicit := filepath.Join(t.TempDir, "custom-dw-browser")
+	explicit := filepath.Join(t.TempDir(), "custom-dw-browser")
 	t.Setenv(browserMuxHostBinaryEnv, explicit)
-	got, err := resolveBrowserMuxHostBinaryFrom("", "/tmp/Deepwork.app/Contents/MacOS/Deepwork", t.TempDir)
+	got, err := resolveBrowserMuxHostBinaryFrom("", "/tmp/Deepwork.app/Contents/MacOS/Deepwork", t.TempDir())
 	if err != nil {
 		t.Fatalf("resolve muxhost binary: %v", err)
 	}

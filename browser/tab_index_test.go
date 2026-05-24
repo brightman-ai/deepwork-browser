@@ -1,8 +1,8 @@
-// Package browser — TabIndex 单元测试 [v2 ]
+// Package browser — TabIndex 单元测试 [v2 Phase_v2_2]
 //
 // 绑定 TC (T6 v2):
-// - (P1): Tab 四元身份唯一性 — 同 (TargetID, IdentityKey, WorkspaceID, Role) 不可重复 Register
-// - 辅助: Role 矩阵守护 (IsValidRole), ByIdentity / ByWorkspace 切片正确性, Snapshot 顺序确定性
+//   - TC-09-U-43 (P1): Tab 四元身份唯一性 — 同 (TargetID, IdentityKey, WorkspaceID, Role) 不可重复 Register
+//   - 辅助: Role 矩阵守护 (IsValidRole), ByIdentity / ByWorkspace 切片正确性, Snapshot 顺序确定性
 package browser
 
 import (
@@ -14,12 +14,12 @@ import (
 // TestTabIndex_Register_Lookup_Unregister_BasicHappyPath
 // 验证 Register → Lookup 命中 → Unregister → Lookup 不命中.
 func TestTabIndex_Register_Lookup_Unregister_BasicHappyPath(t *testing.T) {
-	idx := NewTabIndex
+	idx := NewTabIndex()
 	h := &TabHandle{
-		TargetID: "target-A"
-		IdentityKey: IdentityKey("idkey-1")
-		WorkspaceID: "ws-0"
-		Role: RoleAgent
+		TargetID:    "target-A",
+		IdentityKey: IdentityKey("idkey-1"),
+		WorkspaceID: "ws-0",
+		Role:        RoleAgent,
 	}
 
 	if err := idx.Register(h); err != nil {
@@ -33,7 +33,7 @@ func TestTabIndex_Register_Lookup_Unregister_BasicHappyPath(t *testing.T) {
 	if got.TargetID != "target-A" || got.IdentityKey != "idkey-1" || got.WorkspaceID != "ws-0" || got.Role != RoleAgent {
 		t.Fatalf("Lookup returned wrong handle: %+v", got)
 	}
-	if got.AcquiredAt.IsZero {
+	if got.AcquiredAt.IsZero() {
 		t.Fatalf("AcquiredAt should be auto-populated, got zero")
 	}
 
@@ -46,12 +46,12 @@ func TestTabIndex_Register_Lookup_Unregister_BasicHappyPath(t *testing.T) {
 }
 
 // TestTabIndex_Register_DuplicateTargetID_Rejects
-// : 同 TargetID 第二次 Register → ErrTabAlreadyRegistered.
+// TC-09-U-43: 同 TargetID 第二次 Register → ErrTabAlreadyRegistered.
 //
 // 即使其他三元 (IdentityKey/Workspace/Role) 不同, TargetID 重复仍必须拒绝
 // (TargetID 由 Chrome CDP 唯一生成, 重复 = 索引污染).
 func TestTabIndex_TC09U43_DuplicateTargetIDRejected(t *testing.T) {
-	idx := NewTabIndex
+	idx := NewTabIndex()
 	h1 := &TabHandle{TargetID: "T1", IdentityKey: "id-1", WorkspaceID: "ws-0", Role: RoleAgent}
 	h2 := &TabHandle{TargetID: "T1", IdentityKey: "id-2", WorkspaceID: "ws-1", Role: RoleHuman}
 
@@ -64,8 +64,8 @@ func TestTabIndex_TC09U43_DuplicateTargetIDRejected(t *testing.T) {
 	}
 
 	// 正向断言: store size 仍为 1, 原 handle 未被覆盖.
-	if idx.Len != 1 {
-		t.Fatalf("Len: expected 1, got %d", idx.Len)
+	if idx.Len() != 1 {
+		t.Fatalf("Len: expected 1, got %d", idx.Len())
 	}
 	got, _ := idx.Lookup("T1")
 	if got.IdentityKey != "id-1" || got.Role != RoleAgent {
@@ -74,9 +74,9 @@ func TestTabIndex_TC09U43_DuplicateTargetIDRejected(t *testing.T) {
 }
 
 // TestTabIndex_TC09U43_QuadrupleUniquenessSameIdentitySameWorkspaceDifferentRole
-// P1: 同 identity + 同 ws + 不同 Role → 两 Tab 共存 (各自有键, key 不等).
+// TC-09-U-43 P1: 同 identity + 同 ws + 不同 Role → 两 Tab 共存 (各自有键, key 不等).
 func TestTabIndex_TC09U43_QuadrupleUniqueness_SameIdSameWsDiffRole(t *testing.T) {
-	idx := NewTabIndex
+	idx := NewTabIndex()
 	hAgent := &TabHandle{TargetID: "T-agent", IdentityKey: "id-1", WorkspaceID: "ws-0", Role: RoleAgent}
 	hHuman := &TabHandle{TargetID: "T-human", IdentityKey: "id-1", WorkspaceID: "ws-0", Role: RoleHuman}
 
@@ -87,8 +87,8 @@ func TestTabIndex_TC09U43_QuadrupleUniqueness_SameIdSameWsDiffRole(t *testing.T)
 		t.Fatalf("Register hHuman: %v", err)
 	}
 
-	if idx.Len != 2 {
-		t.Fatalf("Len: expected 2, got %d", idx.Len)
+	if idx.Len() != 2 {
+		t.Fatalf("Len: expected 2, got %d", idx.Len())
 	}
 
 	tabs := idx.ByIdentity("id-1")
@@ -106,22 +106,22 @@ func TestTabIndex_TC09U43_QuadrupleUniqueness_SameIdSameWsDiffRole(t *testing.T)
 
 // TestTabIndex_Register_RejectsInvalidRole — 防御 4 枚举矩阵.
 func TestTabIndex_Register_RejectsInvalidRole(t *testing.T) {
-	idx := NewTabIndex
-	cases := TabRole{TabRole(""), TabRole("robot"), TabRole("HUMAN"), TabRole("admin")}
+	idx := NewTabIndex()
+	cases := []TabRole{TabRole(""), TabRole("robot"), TabRole("HUMAN"), TabRole("admin")}
 	for _, r := range cases {
 		err := idx.Register(&TabHandle{TargetID: "T", IdentityKey: "id-1", WorkspaceID: "ws-0", Role: r})
 		if err == nil {
 			t.Fatalf("Register role=%q: expected err, got nil", r)
 		}
 	}
-	if idx.Len != 0 {
-		t.Fatalf("Len: expected 0 after all rejections, got %d", idx.Len)
+	if idx.Len() != 0 {
+		t.Fatalf("Len: expected 0 after all rejections, got %d", idx.Len())
 	}
 }
 
 // TestTabIndex_Register_RejectsEmptyFields — 防御.
 func TestTabIndex_Register_RejectsEmptyFields(t *testing.T) {
-	idx := NewTabIndex
+	idx := NewTabIndex()
 	if err := idx.Register(nil); err == nil {
 		t.Fatalf("Register nil: expected err, got nil")
 	}
@@ -135,7 +135,7 @@ func TestTabIndex_Register_RejectsEmptyFields(t *testing.T) {
 
 // TestTabIndex_Unregister_NotFound — 校验 ErrTabNotFound.
 func TestTabIndex_Unregister_NotFound(t *testing.T) {
-	idx := NewTabIndex
+	idx := NewTabIndex()
 	if err := idx.Unregister("ghost"); err != ErrTabNotFound {
 		t.Fatalf("Unregister ghost: expected ErrTabNotFound, got %v", err)
 	}
@@ -143,9 +143,9 @@ func TestTabIndex_Unregister_NotFound(t *testing.T) {
 
 // TestTabIndex_ByIdentity_ByWorkspace_Filtering — 三元交叉过滤.
 func TestTabIndex_ByIdentity_ByWorkspace_Filtering(t *testing.T) {
-	idx := NewTabIndex
+	idx := NewTabIndex()
 	register := func(t *testing.T, target string, id IdentityKey, ws string, role TabRole) {
-		t.Helper
+		t.Helper()
 		if err := idx.Register(&TabHandle{TargetID: target, IdentityKey: id, WorkspaceID: ws, Role: role}); err != nil {
 			t.Fatalf("Register %s: %v", target, err)
 		}
@@ -170,12 +170,12 @@ func TestTabIndex_ByIdentity_ByWorkspace_Filtering(t *testing.T) {
 
 // TestTabIndex_Snapshot_DeterministicOrder — 确定输出.
 func TestTabIndex_Snapshot_DeterministicOrder(t *testing.T) {
-	idx := NewTabIndex
+	idx := NewTabIndex()
 	_ = idx.Register(&TabHandle{TargetID: "T-Z", IdentityKey: "id-Z", WorkspaceID: "ws", Role: RoleAgent})
 	_ = idx.Register(&TabHandle{TargetID: "T-A", IdentityKey: "id-A", WorkspaceID: "ws", Role: RoleAgent})
 	_ = idx.Register(&TabHandle{TargetID: "T-M", IdentityKey: "id-A", WorkspaceID: "ws", Role: RoleHuman})
 
-	snap := idx.Snapshot
+	snap := idx.Snapshot()
 	if len(snap) != 2 {
 		t.Fatalf("Snapshot: expected 2 identities, got %d", len(snap))
 	}
@@ -189,26 +189,26 @@ func TestTabIndex_Snapshot_DeterministicOrder(t *testing.T) {
 
 // TestTabIndex_ConcurrentRegister — race detector 触发场景.
 func TestTabIndex_ConcurrentRegister(t *testing.T) {
-	idx := NewTabIndex
+	idx := NewTabIndex()
 	var wg sync.WaitGroup
 	const N = 50
 	for i := 0; i < N; i++ {
 		wg.Add(1)
 		go func(i int) {
-			defer wg.Done
+			defer wg.Done()
 			h := &TabHandle{
-				TargetID: targetIDForI(i)
-				IdentityKey: IdentityKey("id-" + targetIDForI(i%5))
-				WorkspaceID: "ws-0"
-				Role: RoleAgent
-				AcquiredAt: time.Now
+				TargetID:    targetIDForI(i),
+				IdentityKey: IdentityKey("id-" + targetIDForI(i%5)),
+				WorkspaceID: "ws-0",
+				Role:        RoleAgent,
+				AcquiredAt:  time.Now(),
 			}
 			_ = idx.Register(h)
 		}(i)
 	}
-	wg.Wait
-	if idx.Len != N {
-		t.Fatalf("Len: expected %d unique tabs, got %d", N, idx.Len)
+	wg.Wait()
+	if idx.Len() != N {
+		t.Fatalf("Len: expected %d unique tabs, got %d", N, idx.Len())
 	}
 }
 
@@ -218,13 +218,13 @@ func targetIDForI(i int) string {
 
 // TestIsValidRole_FourEnumOnly — 矩阵守护.
 func TestIsValidRole_FourEnumOnly(t *testing.T) {
-	good := TabRole{RoleHuman, RoleAgent, RoleCouncil, RoleBackground}
+	good := []TabRole{RoleHuman, RoleAgent, RoleCouncil, RoleBackground}
 	for _, r := range good {
 		if !IsValidRole(r) {
 			t.Fatalf("IsValidRole(%q): expected true", r)
 		}
 	}
-	bad := TabRole{"", "robot", "Human", "agent ", "Bg"}
+	bad := []TabRole{"", "robot", "Human", "agent ", "Bg"}
 	for _, r := range bad {
 		if IsValidRole(r) {
 			t.Fatalf("IsValidRole(%q): expected false", r)

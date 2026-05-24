@@ -1,11 +1,11 @@
 // Package safari provides the Safari engine for dw-browser.
 //
-// Architecture (v4, MERGED):
+// Architecture (v4, TH-0505-q3k MERGED):
 //
 //	SafariBrowserCore
-//	├── WebDriverClient → W3C WebDriver protocol (safaridriver)
-//	├── SimctlManager → xcrun simctl (iOS Simulator only)
-//	└── AXBridge → macOS AX API (P2 optional, native UI only)
+//	├── WebDriverClient  → W3C WebDriver protocol (safaridriver)
+//	├── SimctlManager    → xcrun simctl (iOS Simulator only)
+//	└── AXBridge         → macOS AX API (P2 optional, native UI only)
 //
 // safaridriver supports both macOS Safari (platformName=mac) and
 // iOS Simulator Safari (platformName=iOS). The --device flag routes
@@ -29,15 +29,15 @@ import (
 )
 
 // WebDriverClient is a minimal W3C WebDriver protocol client for safaridriver.
-// It covers the subset needed by SafariBrowserCore: session management
+// It covers the subset needed by SafariBrowserCore: session management,
 // navigation, element finding, JS execution, screenshots, and element interaction.
 type WebDriverClient struct {
-	mu sync.Mutex
-	baseURL string
+	mu        sync.Mutex
+	baseURL   string
 	sessionID string
-	http *http.Client
-	driver *exec.Cmd // safaridriver process (owned lifecycle)
-	port int
+	http      *http.Client
+	driver    *exec.Cmd // safaridriver process (owned lifecycle)
+	port      int
 }
 
 // WebDriverOpts configures a WebDriver session.
@@ -57,16 +57,16 @@ type Element struct {
 
 // ElementInfo holds element metadata retrieved via WebDriver.
 type ElementInfo struct {
-	ID string
-	TagName string
-	Text string
-	Role string
-	AriaLabel string
-	TestID string
+	ID          string
+	TagName     string
+	Text        string
+	Role        string
+	AriaLabel   string
+	TestID      string
 	Placeholder string
-	Href string
-	Visible bool
-	Enabled bool
+	Href        string
+	Visible     bool
+	Enabled     bool
 }
 
 // w3c element identifier key per spec.
@@ -76,7 +76,7 @@ const w3cElementKey = "element-6066-11e4-a52e-4f735466cecf"
 func NewWebDriverClient(ctx context.Context, opts WebDriverOpts) (*WebDriverClient, error) {
 	port := opts.Port
 	if port == 0 {
-		p, err := freePort
+		p, err := freePort()
 		if err != nil {
 			return nil, fmt.Errorf("webdriver: find free port: %w", err)
 		}
@@ -88,26 +88,26 @@ func NewWebDriverClient(ctx context.Context, opts WebDriverOpts) (*WebDriverClie
 	driver := exec.CommandContext(ctx, "safaridriver", "-p", strconv.Itoa(port))
 	driver.Stdout = nil
 	driver.Stderr = nil
-	if err := driver.Start; err != nil {
+	if err := driver.Start(); err != nil {
 		return nil, fmt.Errorf("webdriver: start safaridriver: %w\nRun 'sudo safaridriver --enable' first", err)
 	}
 
 	c := &WebDriverClient{
-		baseURL: fmt.Sprintf("http://localhost:%d", port)
-		http: &http.Client{Timeout: 30 * time.Second}
-		driver: driver
-		port: port
+		baseURL: fmt.Sprintf("http://localhost:%d", port),
+		http:    &http.Client{Timeout: 30 * time.Second},
+		driver:  driver,
+		port:    port,
 	}
 
 	// Wait for safaridriver to be ready.
 	if err := c.waitReady(ctx); err != nil {
-		driver.Process.Kill
+		driver.Process.Kill()
 		return nil, err
 	}
 
 	// Create session.
 	if err := c.createSession(ctx, opts); err != nil {
-		driver.Process.Kill
+		driver.Process.Kill()
 		return nil, err
 	}
 
@@ -116,17 +116,17 @@ func NewWebDriverClient(ctx context.Context, opts WebDriverOpts) (*WebDriverClie
 
 // waitReady polls safaridriver until it responds.
 func (c *WebDriverClient) waitReady(ctx context.Context) error {
-	deadline := time.Now.Add(10 * time.Second)
-	for time.Now.Before(deadline) {
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
 		req, _ := http.NewRequestWithContext(ctx, "GET", c.baseURL+"/status", nil)
 		resp, err := c.http.Do(req)
 		if err == nil {
-			resp.Body.Close
+			resp.Body.Close()
 			return nil
 		}
 		select {
-		case <-ctx.Done:
-			return ctx.Err
+		case <-ctx.Done():
+			return ctx.Err()
 		case <-time.After(200 * time.Millisecond):
 		}
 	}
@@ -141,8 +141,8 @@ func (c *WebDriverClient) createSession(ctx context.Context, opts WebDriverOpts)
 	}
 
 	caps := map[string]any{
-		"browserName": "safari"
-		"platformName": platform
+		"browserName":  "safari",
+		"platformName": platform,
 	}
 	if opts.DeviceUDID != "" {
 		caps["safari:deviceUDID"] = opts.DeviceUDID
@@ -151,16 +151,16 @@ func (c *WebDriverClient) createSession(ctx context.Context, opts WebDriverOpts)
 
 	body := map[string]any{
 		"capabilities": map[string]any{
-			"alwaysMatch": caps
-		}
+			"alwaysMatch": caps,
+		},
 	}
 
 	var result struct {
 		Value struct {
-			SessionID string `json:"sessionId"`
+			SessionID    string         `json:"sessionId"`
 			Capabilities map[string]any `json:"capabilities"`
-			Error string `json:"error"`
-			Message string `json:"message"`
+			Error        string         `json:"error"`
+			Message      string         `json:"message"`
 		} `json:"value"`
 	}
 
@@ -183,7 +183,7 @@ func (c *WebDriverClient) createSession(ctx context.Context, opts WebDriverOpts)
 }
 
 // SessionID returns the active session identifier.
-func (c *WebDriverClient) SessionID string { return c.sessionID }
+func (c *WebDriverClient) SessionID() string { return c.sessionID }
 
 // Navigate loads a URL and waits for page load.
 func (c *WebDriverClient) Navigate(ctx context.Context, url string) error {
@@ -213,15 +213,15 @@ func (c *WebDriverClient) Title(ctx context.Context) (string, error) {
 }
 
 // FindElements finds elements by CSS selector.
-func (c *WebDriverClient) FindElements(ctx context.Context, using, value string) (Element, error) {
+func (c *WebDriverClient) FindElements(ctx context.Context, using, value string) ([]Element, error) {
 	var result struct {
-		Value map[string]string `json:"value"`
+		Value []map[string]string `json:"value"`
 	}
 	body := map[string]any{"using": using, "value": value}
 	if err := c.sessionPost(ctx, "/elements", body, &result); err != nil {
 		return nil, err
 	}
-	elements := make(Element, 0, len(result.Value))
+	elements := make([]Element, 0, len(result.Value))
 	for _, m := range result.Value {
 		if id, ok := m[w3cElementKey]; ok {
 			elements = append(elements, Element{ID: id})
@@ -336,7 +336,7 @@ func (c *WebDriverClient) ClearElement(ctx context.Context, el Element) error {
 // ExecuteScript runs synchronous JavaScript and returns the result.
 func (c *WebDriverClient) ExecuteScript(ctx context.Context, script string, args ...any) (json.RawMessage, error) {
 	if args == nil {
-		args = any{}
+		args = []any{}
 	}
 	body := map[string]any{"script": script, "args": args}
 	var result struct {
@@ -351,7 +351,7 @@ func (c *WebDriverClient) ExecuteScript(ctx context.Context, script string, args
 // ExecuteAsyncScript runs asynchronous JavaScript.
 func (c *WebDriverClient) ExecuteAsyncScript(ctx context.Context, script string, args ...any) (json.RawMessage, error) {
 	if args == nil {
-		args = any{}
+		args = []any{}
 	}
 	body := map[string]any{"script": script, "args": args}
 	var result struct {
@@ -364,7 +364,7 @@ func (c *WebDriverClient) ExecuteAsyncScript(ctx context.Context, script string,
 }
 
 // Screenshot takes a page screenshot, returns PNG bytes.
-func (c *WebDriverClient) Screenshot(ctx context.Context) (byte, error) {
+func (c *WebDriverClient) Screenshot(ctx context.Context) ([]byte, error) {
 	var result struct {
 		Value string `json:"value"` // base64 PNG
 	}
@@ -375,7 +375,7 @@ func (c *WebDriverClient) Screenshot(ctx context.Context) (byte, error) {
 }
 
 // ElementScreenshot takes an element screenshot, returns PNG bytes.
-func (c *WebDriverClient) ElementScreenshot(ctx context.Context, el Element) (byte, error) {
+func (c *WebDriverClient) ElementScreenshot(ctx context.Context, el Element) ([]byte, error) {
 	var result struct {
 		Value string `json:"value"`
 	}
@@ -391,14 +391,14 @@ func (c *WebDriverClient) GetElementInfo(ctx context.Context, el Element) (*Elem
 	script := `
 var el = arguments[0];
 return {
-	tagName: el.tagName || ''
-	text: (el.textContent || '').substring(0, 100).trim
-	role: el.getAttribute('role') || el.tagName.toLowerCase
-	ariaLabel: el.getAttribute('aria-label') || ''
-	testid: el.getAttribute('data-testid') || ''
-	placeholder: el.getAttribute('placeholder') || ''
-	href: el.getAttribute('href') || ''
-	visible: el.offsetParent !== null || el.tagName === 'BODY'
+	tagName: el.tagName || '',
+	text: (el.textContent || '').substring(0, 100).trim(),
+	role: el.getAttribute('role') || el.tagName.toLowerCase(),
+	ariaLabel: el.getAttribute('aria-label') || '',
+	testid: el.getAttribute('data-testid') || '',
+	placeholder: el.getAttribute('placeholder') || '',
+	href: el.getAttribute('href') || '',
+	visible: el.offsetParent !== null || el.tagName === 'BODY',
 	enabled: !el.disabled
 };`
 	raw, err := c.ExecuteScript(ctx, script, map[string]string{w3cElementKey: el.ID})
@@ -414,31 +414,31 @@ return {
 }
 
 // BatchGetElementInfo retrieves metadata for multiple elements in one JS eval.
-func (c *WebDriverClient) BatchGetElementInfo(ctx context.Context, elements Element) (ElementInfo, error) {
+func (c *WebDriverClient) BatchGetElementInfo(ctx context.Context, elements []Element) ([]ElementInfo, error) {
 	if len(elements) == 0 {
 		return nil, nil
 	}
 
 	// Build element refs array for JS
-	refs := make(map[string]string, len(elements))
+	refs := make([]map[string]string, len(elements))
 	for i, el := range elements {
 		refs[i] = map[string]string{w3cElementKey: el.ID}
 	}
 
 	script := `
 var els = arguments[0];
-var result = ;
+var result = [];
 for (var i = 0; i < els.length; i++) {
 	var el = els[i];
 	result.push({
-		tagName: el.tagName || ''
-		text: (el.textContent || '').substring(0, 100).trim
-		role: el.getAttribute('role') || el.tagName.toLowerCase
-		ariaLabel: el.getAttribute('aria-label') || ''
-		testid: el.getAttribute('data-testid') || ''
-		placeholder: el.getAttribute('placeholder') || ''
-		href: el.getAttribute('href') || ''
-		visible: el.offsetParent !== null || el.tagName === 'BODY'
+		tagName: el.tagName || '',
+		text: (el.textContent || '').substring(0, 100).trim(),
+		role: el.getAttribute('role') || el.tagName.toLowerCase(),
+		ariaLabel: el.getAttribute('aria-label') || '',
+		testid: el.getAttribute('data-testid') || '',
+		placeholder: el.getAttribute('placeholder') || '',
+		href: el.getAttribute('href') || '',
+		visible: el.offsetParent !== null || el.tagName === 'BODY',
 		enabled: !el.disabled
 	});
 }
@@ -448,7 +448,7 @@ return result;`
 	if err != nil {
 		return nil, fmt.Errorf("webdriver: batch get element info: %w", err)
 	}
-	var infos ElementInfo
+	var infos []ElementInfo
 	if err := json.Unmarshal(raw, &infos); err != nil {
 		return nil, fmt.Errorf("webdriver: parse batch info: %w", err)
 	}
@@ -462,8 +462,8 @@ return result;`
 
 // Close deletes the session and stops safaridriver.
 func (c *WebDriverClient) Close(ctx context.Context) error {
-	c.mu.Lock
-	defer c.mu.Unlock
+	c.mu.Lock()
+	defer c.mu.Unlock()
 
 	var firstErr error
 	if c.sessionID != "" {
@@ -472,18 +472,18 @@ func (c *WebDriverClient) Close(ctx context.Context) error {
 		if err != nil {
 			firstErr = err
 		} else {
-			resp.Body.Close
+			resp.Body.Close()
 		}
 		c.sessionID = ""
 	}
 	if c.driver != nil && c.driver.Process != nil {
 		_ = c.driver.Process.Signal(os.Interrupt)
 		done := make(chan error, 1)
-		go func { done <- c.driver.Wait }
+		go func() { done <- c.driver.Wait() }()
 		select {
 		case <-done:
 		case <-time.After(500 * time.Millisecond):
-			_ = c.driver.Process.Kill
+			_ = c.driver.Process.Kill()
 			select {
 			case <-done:
 			case <-time.After(3 * time.Second):
@@ -530,7 +530,7 @@ func (c *WebDriverClient) doJSON(req *http.Request, result any) error {
 	if err != nil {
 		return fmt.Errorf("webdriver: %s %s: %w", req.Method, req.URL.Path, err)
 	}
-	defer resp.Body.Close
+	defer resp.Body.Close()
 
 	if result == nil {
 		io.Copy(io.Discard, resp.Body)
@@ -549,7 +549,7 @@ func (c *WebDriverClient) doJSON(req *http.Request, result any) error {
 	if resp.StatusCode >= 400 {
 		var errResp struct {
 			Value struct {
-				Error string `json:"error"`
+				Error   string `json:"error"`
 				Message string `json:"message"`
 			} `json:"value"`
 		}
@@ -563,16 +563,16 @@ func (c *WebDriverClient) doJSON(req *http.Request, result any) error {
 }
 
 // freePort finds an available TCP port.
-func freePort (int, error) {
+func freePort() (int, error) {
 	l, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		return 0, err
 	}
-	defer l.Close
-	return l.Addr.(*net.TCPAddr).Port, nil
+	defer l.Close()
+	return l.Addr().(*net.TCPAddr).Port, nil
 }
 
 // decodeBase64 decodes a base64-encoded string to bytes.
-func decodeBase64(s string) (byte, error) {
+func decodeBase64(s string) ([]byte, error) {
 	return base64.StdEncoding.DecodeString(s)
 }

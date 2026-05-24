@@ -1,11 +1,11 @@
 // Package browser — observability: STG constants, package logger, metrics, ValidateDeps.
-// [pkg/obs, : zero deepwork context dependency]
+// [T5-BS-09, pkg/obs, IR-01: zero deepwork context dependency]
 package browser
 
 import "github.com/brightman-ai/kit/obs"
 
 // ─────────────────────────────────────────
-// STG constants — business stage coordinates [pkg/obs ]
+// STG constants — business stage coordinates [pkg/obs CAP-TSOBS-C1]
 // Format: {package}/{phase}
 // ─────────────────────────────────────────
 
@@ -59,13 +59,13 @@ var (
 	// browserLiveViewFrames counts Screencast frames published to FrameBroadcastHub.
 	browserLiveViewFrames = obs.NewCounter("browser_liveview_frames_total")
 
-	// browserSnapshotFallbacks counts A11y→DOM→screenshot fallback activations .
+	// browserSnapshotFallbacks counts A11y→DOM→screenshot fallback activations [IR-07].
 	browserSnapshotFallbacks = obs.NewCounter("browser_snapshot_fallbacks_total")
 
 	// browserTakeoverSwitches counts Takeover enable/disable transitions.
 	browserTakeoverSwitches = obs.NewCounter("browser_takeover_switches_total")
 
-	// browserTargetSwitches counts TargetTracker automatic target-follow switches .
+	// browserTargetSwitches counts TargetTracker automatic target-follow switches [CAP-BS09-C3 r3].
 	browserTargetSwitches = obs.NewCounter("browser_target_switches_total")
 )
 

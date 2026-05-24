@@ -14,27 +14,27 @@ import (
 )
 
 // ============================================================
-// § ProfileManager
+// § ProfileManager [Ref: CAP-BS09-C4, T5-B7]
 // ============================================================
 
-// Profile 是 Browser Profile 实体。
+// Profile 是 Browser Profile 实体 [Ref: T5-B2.1]。
 type Profile struct {
-	ID string `json:"id"`
-	Name string `json:"name"`
-	UserDataDir string `json:"user_data_dir"`
-	Status string `json:"status"` // "active" | "crashed" | "inactive"
-	CreatedAt time.Time `json:"created_at"`
+	ID          string    `json:"id"`
+	Name        string    `json:"name"`
+	UserDataDir string    `json:"user_data_dir"`
+	Status      string    `json:"status"` // "active" | "crashed" | "inactive"
+	CreatedAt   time.Time `json:"created_at"`
 }
 
 // profileMetadata 是元数据文件结构 [Ref: BP §A4]。
 type profileMetadata struct {
-	Profiles *Profile `json:"profiles"`
+	Profiles []*Profile `json:"profiles"`
 }
 
 // ProfileManager 管理 Browser Profile 生命周期（元数据用 JSON 文件，不用 SQLite）[Ref: BP §B3]。
 type ProfileManager struct {
-	mu sync.RWMutex
-	baseDir string // ~/.deepwork/browser-data/
+	mu       sync.RWMutex
+	baseDir  string // ~/.deepwork/browser-data/
 	metaPath string // ~/.deepwork/browser-profiles.json
 }
 
@@ -50,8 +50,8 @@ const (
 )
 
 // NewProfileManager 创建 ProfileManager 实例。
-func NewProfileManager (*ProfileManager, error) {
-	homeDir, err := os.UserHomeDir
+func NewProfileManager() (*ProfileManager, error) {
+	homeDir, err := os.UserHomeDir()
 	if err != nil {
 		return nil, fmt.Errorf("browser: get home dir: %w", err)
 	}
@@ -68,8 +68,8 @@ func NewProfileManagerForDataDir(dataDir string) (*ProfileManager, error) {
 	}
 
 	return &ProfileManager{
-		baseDir: baseDir
-		metaPath: metaPath
+		baseDir:  baseDir,
+		metaPath: metaPath,
 	}, nil
 }
 
@@ -80,13 +80,13 @@ func NewProfileManagerWithBase(baseDir string) (*ProfileManager, error) {
 	}
 	metaPath := filepath.Join(baseDir, "browser-profiles.json")
 	return &ProfileManager{
-		baseDir: baseDir
-		metaPath: metaPath
+		baseDir:  baseDir,
+		metaPath: metaPath,
 	}, nil
 }
 
 // DefaultProfileID 返回逻辑默认 profile ID。
-func DefaultProfileID string {
+func DefaultProfileID() string {
 	return defaultLogicalProfileID
 }
 
@@ -109,31 +109,31 @@ func NormalizeProfileID(id string) string {
 			b.WriteRune(r)
 			lastDash = false
 		case r == '-' || r == '_' || r == ' ':
-			if !lastDash && b.Len > 0 {
+			if !lastDash && b.Len() > 0 {
 				b.WriteByte('-')
 				lastDash = true
 			}
 		}
 	}
-	out := strings.Trim(b.String, "-")
+	out := strings.Trim(b.String(), "-")
 	if out == "" {
 		return defaultLogicalProfileID
 	}
 	return out
 }
 
-// GetOrCreate 获取或创建 Profile，确保目录存在 。
+// GetOrCreate 获取或创建 Profile，确保目录存在 [TC-09-U-12, TC-09-U-13]。
 func (m *ProfileManager) GetOrCreate(id string) (*Profile, error) {
 	id = NormalizeProfileID(id)
-	m.mu.Lock
-	defer m.mu.Unlock
+	m.mu.Lock()
+	defer m.mu.Unlock()
 
-	meta, err := m.loadMeta
+	meta, err := m.loadMeta()
 	if err != nil {
 		meta = &profileMetadata{}
 	}
 
-	// 查找已有 Profile 
+	// 查找已有 Profile [TC-09-U-13]
 	for _, p := range meta.Profiles {
 		if p.ID == id {
 			// 已有 Profile，确认目录存在
@@ -148,7 +148,7 @@ func (m *ProfileManager) GetOrCreate(id string) (*Profile, error) {
 		}
 	}
 
-	// 首次创建 
+	// 首次创建 [TC-09-U-12]
 	userDataDir := filepath.Join(m.baseDir, id)
 	if err := os.MkdirAll(userDataDir, 0755); err != nil {
 		return nil, fmt.Errorf("browser: create profile dir: %w", err)
@@ -159,11 +159,11 @@ func (m *ProfileManager) GetOrCreate(id string) (*Profile, error) {
 		name = "Default"
 	}
 	profile := &Profile{
-		ID: id
-		Name: name
-		UserDataDir: userDataDir
-		Status: "active"
-		CreatedAt: time.Now
+		ID:          id,
+		Name:        name,
+		UserDataDir: userDataDir,
+		Status:      "active",
+		CreatedAt:   time.Now(),
 	}
 	meta.Profiles = append(meta.Profiles, profile)
 
@@ -175,8 +175,8 @@ func (m *ProfileManager) GetOrCreate(id string) (*Profile, error) {
 }
 
 // EnsureDefault 确保默认 profile 存在。
-func (m *ProfileManager) EnsureDefault (*Profile, error) {
-	return m.GetOrCreate(DefaultProfileID)
+func (m *ProfileManager) EnsureDefault() (*Profile, error) {
+	return m.GetOrCreate(DefaultProfileID())
 }
 
 // Create 创建新的逻辑 profile。
@@ -188,10 +188,10 @@ func (m *ProfileManager) Create(name string) (*Profile, error) {
 		displayName = baseID
 	}
 
-	m.mu.Lock
-	defer m.mu.Unlock
+	m.mu.Lock()
+	defer m.mu.Unlock()
 
-	meta, err := m.loadMeta
+	meta, err := m.loadMeta()
 	if err != nil {
 		meta = &profileMetadata{}
 	}
@@ -212,11 +212,11 @@ func (m *ProfileManager) Create(name string) (*Profile, error) {
 	}
 
 	profile := &Profile{
-		ID: id
-		Name: displayName
-		UserDataDir: userDataDir
-		Status: "inactive"
-		CreatedAt: time.Now
+		ID:          id,
+		Name:        displayName,
+		UserDataDir: userDataDir,
+		Status:      "inactive",
+		CreatedAt:   time.Now(),
 	}
 	meta.Profiles = append(meta.Profiles, profile)
 
@@ -226,22 +226,22 @@ func (m *ProfileManager) Create(name string) (*Profile, error) {
 	return profile, nil
 }
 
-// Repair 修复损坏的 Profile（备份旧目录 + 重建）。
+// Repair 修复损坏的 Profile（备份旧目录 + 重建）[TC-09-U-14]。
 func (m *ProfileManager) Repair(id string) (*Profile, error) {
 	id = NormalizeProfileID(id)
-	m.mu.Lock
-	defer m.mu.Unlock
+	m.mu.Lock()
+	defer m.mu.Unlock()
 
-	meta, err := m.loadMeta
+	meta, err := m.loadMeta()
 	if err != nil {
 		meta = &profileMetadata{}
 	}
 
 	userDataDir := filepath.Join(m.baseDir, id)
 
-	// 备份旧目录 
+	// 备份旧目录 [TC-09-U-14]
 	if _, err := os.Stat(userDataDir); err == nil {
-		backupDir := fmt.Sprintf("%s.bak.%d", userDataDir, time.Now.Unix)
+		backupDir := fmt.Sprintf("%s.bak.%d", userDataDir, time.Now().Unix())
 		if err := os.Rename(userDataDir, backupDir); err != nil {
 			return nil, fmt.Errorf("browser: backup profile: %w", err)
 		}
@@ -264,16 +264,16 @@ func (m *ProfileManager) Repair(id string) (*Profile, error) {
 	}
 	if found == nil {
 		found = &Profile{
-			ID: id
-			Name: func string {
+			ID: id,
+			Name: func() string {
 				if id == defaultLogicalProfileID {
 					return "Default"
 				}
 				return id
-			}
-			UserDataDir: userDataDir
-			Status: "active"
-			CreatedAt: time.Now
+			}(),
+			UserDataDir: userDataDir,
+			Status:      "active",
+			CreatedAt:   time.Now(),
 		}
 		meta.Profiles = append(meta.Profiles, found)
 	}
@@ -285,30 +285,30 @@ func (m *ProfileManager) Repair(id string) (*Profile, error) {
 	return found, nil
 }
 
-// List 返回所有 Profile 。
-func (m *ProfileManager) List (*Profile, error) {
-	m.mu.RLock
-	defer m.mu.RUnlock
+// List 返回所有 Profile [TC-09-I-14]。
+func (m *ProfileManager) List() ([]*Profile, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 
-	meta, err := m.loadMeta
+	meta, err := m.loadMeta()
 	if err != nil {
 		return nil, err
 	}
 	return meta.Profiles, nil
 }
 
-// Delete 删除 Profile（元数据 + user-data-dir）。
+// Delete 删除 Profile（元数据 + user-data-dir）[TC-09-I-14]。
 func (m *ProfileManager) Delete(id string) error {
 	id = NormalizeProfileID(id)
-	m.mu.Lock
-	defer m.mu.Unlock
+	m.mu.Lock()
+	defer m.mu.Unlock()
 
-	meta, err := m.loadMeta
+	meta, err := m.loadMeta()
 	if err != nil {
 		return err
 	}
 
-	var remaining *Profile
+	var remaining []*Profile
 	var deleted *Profile
 	for _, p := range meta.Profiles {
 		if p.ID == id {
@@ -331,99 +331,99 @@ func (m *ProfileManager) Delete(id string) error {
 	return m.saveMeta(meta)
 }
 
-// InjectStealth 注入 Stealth 脚本（webdriver 伪装）。
+// InjectStealth 注入 Stealth 脚本（webdriver 伪装）[TC-09-U-15]。
 func (m *ProfileManager) InjectStealth(ctx context.Context) error {
 	return chromedp.Run(ctx, chromedp.Evaluate(stealthScript, nil))
 }
 
-// stealthScript webdriver 伪装脚本 。
+// stealthScript webdriver 伪装脚本 [TC-09-U-15]。
 // 包含 navigator.webdriver + chrome.runtime 模拟。
 const stealthScript = `
-(function {
- // === navigator.webdriver 伪装 ===
- Object.defineProperty(navigator, 'webdriver', {
- get: => undefined
- configurable: true
- });
+(function() {
+    // === navigator.webdriver 伪装 ===
+    Object.defineProperty(navigator, 'webdriver', {
+        get: () => undefined,
+        configurable: true,
+    });
 
- // === chrome.runtime 模拟 ===
- if (!window.chrome) window.chrome = {};
- if (!window.chrome.runtime) {
- window.chrome.runtime = {
- id: undefined
- connect: function { return { onMessage: { addListener: function {} }, postMessage: function {} }; }
- sendMessage: function {}
- onConnect: { addListener: function {} }
- onMessage: { addListener: function {} }
- };
- }
+    // === chrome.runtime 模拟 ===
+    if (!window.chrome) window.chrome = {};
+    if (!window.chrome.runtime) {
+        window.chrome.runtime = {
+            id: undefined,
+            connect: function() { return { onMessage: { addListener: function() {} }, postMessage: function() {} }; },
+            sendMessage: function() {},
+            onConnect: { addListener: function() {} },
+            onMessage: { addListener: function() {} },
+        };
+    }
 
- // === plugins 伪装 (模拟真实 PluginArray) ===
- Object.defineProperty(navigator, 'plugins', {
- get: => {
- var p = {
- 0: {type: 'application/x-google-chrome-pdf', suffixes: 'pdf', description: 'Portable Document Format', name: 'Chrome PDF Plugin'}
- 1: {type: 'application/pdf', suffixes: 'pdf', description: '', name: 'Chrome PDF Viewer'}
- length: 2
- item: function(i) { return this[i]; }
- namedItem: function(n) { for(var i=0;i<this.length;i++) if(this[i].name===n) return this[i]; return null; }
- refresh: function {}
- };
- return p;
- }
- configurable: true
- });
+    // === plugins 伪装 (模拟真实 PluginArray) ===
+    Object.defineProperty(navigator, 'plugins', {
+        get: () => {
+            var p = {
+                0: {type: 'application/x-google-chrome-pdf', suffixes: 'pdf', description: 'Portable Document Format', name: 'Chrome PDF Plugin'},
+                1: {type: 'application/pdf', suffixes: 'pdf', description: '', name: 'Chrome PDF Viewer'},
+                length: 2,
+                item: function(i) { return this[i]; },
+                namedItem: function(n) { for(var i=0;i<this.length;i++) if(this[i].name===n) return this[i]; return null; },
+                refresh: function() {},
+            };
+            return p;
+        },
+        configurable: true,
+    });
 
- // === languages ===
- Object.defineProperty(navigator, 'languages', {
- get: => ['zh-CN', 'zh', 'en-US', 'en']
- configurable: true
- });
+    // === languages ===
+    Object.defineProperty(navigator, 'languages', {
+        get: () => ['zh-CN', 'zh', 'en-US', 'en'],
+        configurable: true,
+    });
 
- // === platform ===
- Object.defineProperty(navigator, 'platform', {
- get: => 'Linux x86_64'
- configurable: true
- });
+    // === platform ===
+    Object.defineProperty(navigator, 'platform', {
+        get: () => 'Linux x86_64',
+        configurable: true,
+    });
 
- // === WebGL vendor/renderer 伪装 (关键 — SwiftShader 是最大暴露点) ===
- var getParameter = WebGLRenderingContext.prototype.getParameter;
- WebGLRenderingContext.prototype.getParameter = function(param) {
- if (param === 37445) return 'Google Inc. (NVIDIA)'; // UNMASKED_VENDOR_WEBGL
- if (param === 37446) return 'ANGLE (NVIDIA, NVIDIA GeForce GTX 1060 6GB Direct3D11 vs_5_0 ps_5_0, D3D11)'; // UNMASKED_RENDERER_WEBGL
- return getParameter.call(this, param);
- };
- var getParameter2 = WebGL2RenderingContext.prototype.getParameter;
- WebGL2RenderingContext.prototype.getParameter = function(param) {
- if (param === 37445) return 'Google Inc. (NVIDIA)';
- if (param === 37446) return 'ANGLE (NVIDIA, NVIDIA GeForce GTX 1060 6GB Direct3D11 vs_5_0 ps_5_0, D3D11)';
- return getParameter2.call(this, param);
- };
+    // === WebGL vendor/renderer 伪装 (关键 — SwiftShader 是最大暴露点) ===
+    var getParameter = WebGLRenderingContext.prototype.getParameter;
+    WebGLRenderingContext.prototype.getParameter = function(param) {
+        if (param === 37445) return 'Google Inc. (NVIDIA)';           // UNMASKED_VENDOR_WEBGL
+        if (param === 37446) return 'ANGLE (NVIDIA, NVIDIA GeForce GTX 1060 6GB Direct3D11 vs_5_0 ps_5_0, D3D11)'; // UNMASKED_RENDERER_WEBGL
+        return getParameter.call(this, param);
+    };
+    var getParameter2 = WebGL2RenderingContext.prototype.getParameter;
+    WebGL2RenderingContext.prototype.getParameter = function(param) {
+        if (param === 37445) return 'Google Inc. (NVIDIA)';
+        if (param === 37446) return 'ANGLE (NVIDIA, NVIDIA GeForce GTX 1060 6GB Direct3D11 vs_5_0 ps_5_0, D3D11)';
+        return getParameter2.call(this, param);
+    };
 
- // === Permissions API 伪装 ===
- if (navigator.permissions) {
- var origQuery = navigator.permissions.query;
- navigator.permissions.query = function(params) {
- if (params.name === 'notifications') {
- return Promise.resolve({state: Notification.permission});
- }
- return origQuery.call(this, params);
- };
- }
+    // === Permissions API 伪装 ===
+    if (navigator.permissions) {
+        var origQuery = navigator.permissions.query;
+        navigator.permissions.query = function(params) {
+            if (params.name === 'notifications') {
+                return Promise.resolve({state: Notification.permission});
+            }
+            return origQuery.call(this, params);
+        };
+    }
 
- // === 隐藏 automation flags ===
- delete navigator.__proto__.webdriver;
+    // === 隐藏 automation flags ===
+    delete navigator.__proto__.webdriver;
 
- // === window.outerWidth/outerHeight (headless 通常为 0) ===
- if (window.outerWidth === 0) {
- Object.defineProperty(window, 'outerWidth', { get: => window.innerWidth });
- Object.defineProperty(window, 'outerHeight', { get: => window.innerHeight + 85 });
- }
-});
+    // === window.outerWidth/outerHeight (headless 通常为 0) ===
+    if (window.outerWidth === 0) {
+        Object.defineProperty(window, 'outerWidth', { get: () => window.innerWidth });
+        Object.defineProperty(window, 'outerHeight', { get: () => window.innerHeight + 85 });
+    }
+})();
 `
 
 // loadMeta 从 JSON 文件加载元数据。
-func (m *ProfileManager) loadMeta (*profileMetadata, error) {
+func (m *ProfileManager) loadMeta() (*profileMetadata, error) {
 	data, err := os.ReadFile(m.metaPath)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -440,7 +440,7 @@ func (m *ProfileManager) loadMeta (*profileMetadata, error) {
 
 // saveMeta 保存元数据到 JSON 文件（零 SQLite）[Ref: BP §B3]。
 func (m *ProfileManager) saveMeta(meta *profileMetadata) error {
-	data, err := json.MarshalIndent(meta, "", " ")
+	data, err := json.MarshalIndent(meta, "", "  ")
 	if err != nil {
 		return fmt.Errorf("browser: marshal profile meta: %w", err)
 	}

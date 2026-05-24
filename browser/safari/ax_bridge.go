@@ -16,81 +16,81 @@ import (
 
 // AXNode 对应 ax-bridge.swift 的 AXNodeJSON。
 type AXNode struct {
-	Role string `json:"role"`
-	Label *string `json:"label"`
-	Value *string `json:"value"`
-	Identifier *string `json:"identifier"`
-	Traits string `json:"traits"`
-	Frame AXFrame `json:"frame"`
-	Visible bool `json:"visible"`
-	Enabled bool `json:"enabled"`
-	Focused bool `json:"focused"`
-	Children AXNode `json:"children"`
-	Path string `json:"path"`
+	Role       string   `json:"role"`
+	Label      *string  `json:"label"`
+	Value      *string  `json:"value"`
+	Identifier *string  `json:"identifier"`
+	Traits     []string `json:"traits"`
+	Frame      AXFrame  `json:"frame"`
+	Visible    bool     `json:"visible"`
+	Enabled    bool     `json:"enabled"`
+	Focused    bool     `json:"focused"`
+	Children   []AXNode `json:"children"`
+	Path       string   `json:"path"`
 }
 
 // AXFrame 对应 ax-bridge.swift 的 FrameJSON。
 type AXFrame struct {
-	X float64 `json:"x"`
-	Y float64 `json:"y"`
-	Width float64 `json:"width"`
+	X      float64 `json:"x"`
+	Y      float64 `json:"y"`
+	Width  float64 `json:"width"`
 	Height float64 `json:"height"`
 }
 
 // AXQueryInfo 对应 ax-bridge.swift 的 QueryJSON（嵌套在 QueryResultJSON.query 中）。
 type AXQueryInfo struct {
-	Identifier *string `json:"identifier"`
-	Label *string `json:"label"`
-	Text *string `json:"text"`
-	Role *string `json:"role"`
-	Traits string `json:"traits"`
+	Identifier *string  `json:"identifier"`
+	Label      *string  `json:"label"`
+	Text       *string  `json:"text"`
+	Role       *string  `json:"role"`
+	Traits     []string `json:"traits"`
 }
 
 // AXQueryResult 对应 ax-bridge.swift 的 QueryResultJSON。
 type AXQueryResult struct {
-	Matches AXNode `json:"matches"`
-	Total int `json:"total"`
-	Query AXQueryInfo `json:"query"`
-	Ambiguous bool `json:"ambiguous"`
+	Matches   []AXNode    `json:"matches"`
+	Total     int         `json:"total"`
+	Query     AXQueryInfo `json:"query"`
+	Ambiguous bool        `json:"ambiguous"`
 }
 
 // AXPressResult 对应 ax-bridge.swift 的 PressResponseJSON。
 type AXPressResult struct {
-	OK bool `json:"ok"`
-	Code string `json:"code"`
-	Path string `json:"path"`
-	Actions string `json:"actions"`
-	Role *string `json:"role"`
-	Identifier *string `json:"identifier"`
-	Label *string `json:"label"`
-	Message *string `json:"message"`
-	AXErrorCode *int32 `json:"axErrorCode"`
+	OK          bool     `json:"ok"`
+	Code        string   `json:"code"`
+	Path        string   `json:"path"`
+	Actions     []string `json:"actions"`
+	Role        *string  `json:"role"`
+	Identifier  *string  `json:"identifier"`
+	Label       *string  `json:"label"`
+	Message     *string  `json:"message"`
+	AXErrorCode *int32   `json:"axErrorCode"`
 }
 
 // AXQueryOpts 查询选项。
 type AXQueryOpts struct {
-	Label string
+	Label      string
 	Identifier string
-	Role string
-	Text string
+	Role       string
+	Text       string
 }
 
 // AXBridge 封装 ax-bridge.swift 的调用。
 type AXBridge struct {
-	mu sync.Mutex
+	mu         sync.Mutex
 	binaryPath string
 }
 
 // NewAXBridge 创建 AXBridge。
-func NewAXBridge *AXBridge {
+func NewAXBridge() *AXBridge {
 	return &AXBridge{}
 }
 
 // EnsureCompiled 确保 ax-bridge.swift 已编译为 binary。
 // 首次调用时编译，后续复用缓存。若已编译产物比源码新则跳过重新编译。
-func (b *AXBridge) EnsureCompiled (string, error) {
-	b.mu.Lock
-	defer b.mu.Unlock
+func (b *AXBridge) EnsureCompiled() (string, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
 
 	if b.binaryPath != "" {
 		if _, err := os.Stat(b.binaryPath); err == nil {
@@ -98,12 +98,12 @@ func (b *AXBridge) EnsureCompiled (string, error) {
 		}
 	}
 
-	srcPath := findAXBridgeSource
+	srcPath := findAXBridgeSource()
 	if srcPath == "" {
 		return "", fmt.Errorf("ax-bridge: source file not found")
 	}
 
-	cacheDir := filepath.Join(os.TempDir, "dw-browser-safari")
+	cacheDir := filepath.Join(os.TempDir(), "dw-browser-safari")
 	if err := os.MkdirAll(cacheDir, 0755); err != nil {
 		return "", fmt.Errorf("ax-bridge: cannot create cache dir: %w", err)
 	}
@@ -112,16 +112,16 @@ func (b *AXBridge) EnsureCompiled (string, error) {
 	// 若已编译产物比源码新，直接复用
 	if binStat, err := os.Stat(binaryPath); err == nil {
 		if srcStat, err := os.Stat(srcPath); err == nil {
-			if binStat.ModTime.After(srcStat.ModTime) {
+			if binStat.ModTime().After(srcStat.ModTime()) {
 				b.binaryPath = binaryPath
 				return binaryPath, nil
 			}
 		}
 	}
 
-	cmd := exec.Command("swiftc", "-O", "-o", binaryPath, srcPath
+	cmd := exec.Command("swiftc", "-O", "-o", binaryPath, srcPath,
 		"-framework", "ApplicationServices", "-framework", "Foundation")
-	if out, err := cmd.CombinedOutput; err != nil {
+	if out, err := cmd.CombinedOutput(); err != nil {
 		return "", fmt.Errorf("ax-bridge compile failed: %w\n%s", err, string(out))
 	}
 
@@ -131,7 +131,7 @@ func (b *AXBridge) EnsureCompiled (string, error) {
 
 // findAXBridgeSource 查找 ax-bridge.swift 源码路径。
 // 优先使用与本 Go 文件相邻的 native/ 子目录，回退到工作目录。
-func findAXBridgeSource string {
+func findAXBridgeSource() string {
 	// 方法1: 相对于此 Go 文件的路径（runtime.Caller 返回编译时路径）
 	_, thisFile, _, ok := runtime.Caller(0)
 	if ok {
@@ -141,7 +141,7 @@ func findAXBridgeSource string {
 		}
 	}
 	// 方法2: 从工作目录查找
-	if wd, err := os.Getwd; err == nil {
+	if wd, err := os.Getwd(); err == nil {
 		candidate := filepath.Join(wd, "internal", "browser", "safari", "native", "ax-bridge.swift")
 		if _, err := os.Stat(candidate); err == nil {
 			return candidate
@@ -152,28 +152,28 @@ func findAXBridgeSource string {
 
 // run 执行 ax-bridge binary 并返回 stdout 内容。
 // 若 binary 以非零状态退出且 stdout 含 JSON 错误，将其解析后返回。
-func (b *AXBridge) run(ctx context.Context, args ...string) (byte, error) {
-	binPath, err := b.EnsureCompiled
+func (b *AXBridge) run(ctx context.Context, args ...string) ([]byte, error) {
+	binPath, err := b.EnsureCompiled()
 	if err != nil {
 		return nil, err
 	}
 
 	cmd := exec.CommandContext(ctx, binPath, args...)
-	out, err := cmd.Output
+	out, err := cmd.Output()
 	if err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok {
 			// 尝试从 stdout 解析 JSON 错误体
 			if len(out) > 0 {
 				var errJSON struct {
 					Error string `json:"error"`
-					Code string `json:"code"`
+					Code  string `json:"code"`
 				}
 				if json.Unmarshal(out, &errJSON) == nil && errJSON.Error != "" {
 					return nil, fmt.Errorf("ax-bridge: %s (%s)", errJSON.Error, errJSON.Code)
 				}
 			}
 			stderr := string(exitErr.Stderr)
-			return nil, fmt.Errorf("ax-bridge exited %d: %s", exitErr.ExitCode, stderr)
+			return nil, fmt.Errorf("ax-bridge exited %d: %s", exitErr.ExitCode(), stderr)
 		}
 		return nil, fmt.Errorf("ax-bridge: %w", err)
 	}
@@ -185,7 +185,7 @@ func (b *AXBridge) Dump(ctx context.Context, deviceUDID string, maxDepth int) (*
 	if maxDepth <= 0 {
 		maxDepth = 10
 	}
-	args := string{"dump", "--device", deviceUDID, "--max-depth", fmt.Sprintf("%d", maxDepth)}
+	args := []string{"dump", "--device", deviceUDID, "--max-depth", fmt.Sprintf("%d", maxDepth)}
 	out, err := b.run(ctx, args...)
 	if err != nil {
 		return nil, err
@@ -236,7 +236,7 @@ func (b *AXBridge) Press(ctx context.Context, deviceUDID, path string) (*AXPress
 
 // Query 查询匹配条件的元素列表。
 func (b *AXBridge) Query(ctx context.Context, deviceUDID string, opts AXQueryOpts) (*AXQueryResult, error) {
-	args := string{"query", "--device", deviceUDID}
+	args := []string{"query", "--device", deviceUDID}
 	if opts.Label != "" {
 		args = append(args, "--label", opts.Label)
 	}
@@ -265,7 +265,7 @@ func IsPermissionError(err error) bool {
 	if err == nil {
 		return false
 	}
-	s := err.Error
+	s := err.Error()
 	return strings.Contains(s, "permission") ||
 		strings.Contains(s, "AX_PERMISSION_DENIED") ||
 		strings.Contains(s, "not trusted")

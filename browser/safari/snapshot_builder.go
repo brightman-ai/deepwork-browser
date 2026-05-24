@@ -12,7 +12,7 @@ import (
 type SafariSnapshotBuilder struct{}
 
 // NewSnapshotBuilder 创建 SafariSnapshotBuilder。
-func NewSnapshotBuilder *SafariSnapshotBuilder {
+func NewSnapshotBuilder() *SafariSnapshotBuilder {
 	return &SafariSnapshotBuilder{}
 }
 
@@ -21,8 +21,8 @@ func NewSnapshotBuilder *SafariSnapshotBuilder {
 func (b *SafariSnapshotBuilder) Build(tree *AXNode, sessionMode bool) *browser.Snapshot {
 	if tree == nil {
 		return &browser.Snapshot{
-			SnapshotType: "ax_empty"
-			LoadState: "unavailable"
+			SnapshotType: "ax_empty",
+			LoadState:    "unavailable",
 		}
 	}
 
@@ -34,7 +34,7 @@ func (b *SafariSnapshotBuilder) Build(tree *AXNode, sessionMode bool) *browser.S
 	}
 
 	// 2. DFS 遍历，提取 ElementRef
-	var refs browser.ElementRef
+	var refs []browser.ElementRef
 	counter := 0
 
 	var walk func(n *AXNode)
@@ -74,24 +74,24 @@ func (b *SafariSnapshotBuilder) Build(tree *AXNode, sessionMode bool) *browser.S
 			nameShort := truncateNameStr(name, 50)
 
 			refs = append(refs, browser.ElementRef{
-				Ref: refStr
+				Ref: refStr,
 				Locator: browser.NodeLocator{
-					Engine: browser.EngineSafari
-					AXPath: n.Path
-					StableKey: stableKey
+					Engine:    browser.EngineSafari,
+					AXPath:    n.Path,
+					StableKey: stableKey,
 					Frame: browser.Rect{
-						X: n.Frame.X, Y: n.Frame.Y
-						Width: n.Frame.Width, Height: n.Frame.Height
-					}
-				}
-				AXPath: n.Path
-				Role: ariaRole
-				Name: name
-				NameFull: name
-				NameShort: nameShort
-				Placeholder: placeholder
-				TestID: testID
-				Interactable: isInteractable
+						X: n.Frame.X, Y: n.Frame.Y,
+						Width: n.Frame.Width, Height: n.Frame.Height,
+					},
+				},
+				AXPath:       n.Path,
+				Role:         ariaRole,
+				Name:         name,
+				NameFull:     name,
+				NameShort:    nameShort,
+				Placeholder:  placeholder,
+				TestID:       testID,
+				Interactable: isInteractable,
 			})
 		}
 
@@ -112,14 +112,14 @@ func (b *SafariSnapshotBuilder) Build(tree *AXNode, sessionMode bool) *browser.S
 	}
 
 	return &browser.Snapshot{
-		PageTitle: pageTitle
-		URL: pageURL
-		Text: text
-		Refs: refs
-		SnapshotType: snapshotType
-		TokenEst: len(text) / 4
-		LoadState: loadState
-		ReadyState: "", // Safari 无 JS eval，不可获取 document.readyState
+		PageTitle:    pageTitle,
+		URL:          pageURL,
+		Text:         text,
+		Refs:         refs,
+		SnapshotType: snapshotType,
+		TokenEst:     len(text) / 4,
+		LoadState:    loadState,
+		ReadyState:   "", // Safari 无 JS eval，不可获取 document.readyState
 	}
 }
 
@@ -192,7 +192,7 @@ func extractURLFromToolbar(root *AXNode) string {
 
 // buildCompactText 构建与 Chrome buildCompactTextWithMode 完全对齐的紧凑文本。
 // 格式: `[@r1 button 'name' #testid] [@r2 link 'href'] ...`
-func buildCompactText(refs browser.ElementRef, sessionMode bool) string {
+func buildCompactText(refs []browser.ElementRef, sessionMode bool) string {
 	if len(refs) == 0 {
 		return ""
 	}
@@ -212,7 +212,7 @@ func buildCompactText(refs browser.ElementRef, sessionMode bool) string {
 			sb.WriteByte('\'')
 		} else if ref.Name != "" {
 			name := ref.Name
-			if runes := rune(name); len(runes) > 50 {
+			if runes := []rune(name); len(runes) > 50 {
 				name = string(runes[:47]) + "..."
 			}
 			sb.WriteString(" '")
@@ -230,7 +230,7 @@ func buildCompactText(refs browser.ElementRef, sessionMode bool) string {
 		sb.WriteByte(']')
 		sb.WriteByte(' ')
 	}
-	return strings.TrimSpace(sb.String)
+	return strings.TrimSpace(sb.String())
 }
 
 // SnapshotSignature 生成快照内容签名，用于页面加载稳定性检测。
@@ -247,7 +247,7 @@ func SnapshotSignature(snap *browser.Snapshot) string {
 		sb.WriteString(ref.Locator.StableKey)
 		sb.WriteByte(';')
 	}
-	return sb.String
+	return sb.String()
 }
 
 // accessibleNameFromAX 从 AXNode 提取 accessible name。
@@ -278,13 +278,13 @@ func buildStableKey(role, name, testID, placeholder string, frame AXFrame) strin
 	if testID != "" {
 		return fmt.Sprintf("id:%s", testID)
 	}
-	return fmt.Sprintf("%s|%s|%s|%.0fx%.0f"
+	return fmt.Sprintf("%s|%s|%s|%.0fx%.0f",
 		role, name, placeholder, frame.Width, frame.Height)
 }
 
 // truncateNameStr 截断名称到指定 rune 数。
 func truncateNameStr(name string, maxRunes int) string {
-	runes := rune(name)
+	runes := []rune(name)
 	if len(runes) <= maxRunes {
 		return name
 	}

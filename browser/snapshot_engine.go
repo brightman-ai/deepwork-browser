@@ -17,10 +17,10 @@ import (
 )
 
 // ============================================================
-// § SnapshotEngine
+// § SnapshotEngine [Ref: CAP-BS09-C2, T5-B4]
 // ============================================================
 
-// snapshotEngine 实现 A11y 快照获取与 Fallback 链 。
+// snapshotEngine 实现 A11y 快照获取与 Fallback 链 [IR-07]。
 type snapshotEngine struct {
 	// refTable 当前快照的 Ref → BackendNodeID 映射（每次 snap 后重建）
 	refTable map[string]int64
@@ -29,52 +29,52 @@ type snapshotEngine struct {
 }
 
 const (
-	snapshotTypeA11y = "a11y"
-	snapshotTypeDOMFallback = "dom_fallback"
+	snapshotTypeA11y               = "a11y"
+	snapshotTypeDOMFallback        = "dom_fallback"
 	snapshotTypeScreenshotFallback = "screenshot_fallback"
 	snapshotTypeProgressiveLoading = "progressive_loading"
 
-	loadStateActionable = "actionable"
-	loadStateReadable = "readable"
-	loadStateVisual = "visual"
-	loadStateLoading = "loading"
-	loadStateWaitingForApp = "waiting_for_app"
-	loadStateUnavailable = "unavailable"
+	loadStateActionable     = "actionable"
+	loadStateReadable       = "readable"
+	loadStateVisual         = "visual"
+	loadStateLoading        = "loading"
+	loadStateWaitingForApp  = "waiting_for_app"
+	loadStateUnavailable    = "unavailable"
 	progressiveRetryDefault = 1000
 )
 
 const (
-	a11yProbeTimeout = 8 * time.Second
-	snapshotBasicTimeout = 2 * time.Second
-	domFallbackTimeout = 2500 * time.Millisecond
+	a11yProbeTimeout       = 8 * time.Second
+	snapshotBasicTimeout   = 2 * time.Second
+	domFallbackTimeout     = 2500 * time.Millisecond
 	screenshotProbeTimeout = 1800 * time.Millisecond
-	pageStateProbeTimeout = 1200 * time.Millisecond
-	jsEnrichmentTimeout = 1200 * time.Millisecond
+	pageStateProbeTimeout  = 1200 * time.Millisecond
+	jsEnrichmentTimeout    = 1200 * time.Millisecond
 	selectorResolveTimeout = 3 * time.Second
-	partialAXProbeTimeout = 5 * time.Second
+	partialAXProbeTimeout  = 5 * time.Second
 )
 
 type pageLoadProbe struct {
-	URL string `json:"url"`
-	Title string `json:"title"`
-	ReadyState string `json:"readyState"`
+	URL             string `json:"url"`
+	Title           string `json:"title"`
+	ReadyState      string `json:"readyState"`
 	VisibilityState string `json:"visibilityState"`
-	HasBody bool `json:"hasBody"`
-	BodyTextLength int `json:"bodyTextLength"`
-	BodyChildCount int `json:"bodyChildCount"`
-	ViewportWidth int `json:"viewportWidth"`
-	ViewportHeight int `json:"viewportHeight"`
+	HasBody         bool   `json:"hasBody"`
+	BodyTextLength  int    `json:"bodyTextLength"`
+	BodyChildCount  int    `json:"bodyChildCount"`
+	ViewportWidth   int    `json:"viewportWidth"`
+	ViewportHeight  int    `json:"viewportHeight"`
 }
 
 // newSnapshotEngine 创建 SnapshotEngine 实例。
-func newSnapshotEngine *snapshotEngine {
+func newSnapshotEngine() *snapshotEngine {
 	return &snapshotEngine{
-		refTable: make(map[string]int64)
-		refMeta: make(map[string]*ElementRef)
+		refTable: make(map[string]int64),
+		refMeta:  make(map[string]*ElementRef),
 	}
 }
 
-func (e *snapshotEngine) clearRefs {
+func (e *snapshotEngine) clearRefs() {
 	e.refTable = make(map[string]int64)
 	e.refMeta = make(map[string]*ElementRef)
 }
@@ -88,35 +88,35 @@ func (e *snapshotEngine) LookupRefMeta(ref string) (*ElementRef, bool) {
 	return meta, ok
 }
 
-// GetSnapshot 获取当前页面 A11y 快照，带 Fallback 链 。
+// GetSnapshot 获取当前页面 A11y 快照，带 Fallback 链 [IR-07, TC-09-U-03, TC-09-U-04]。
 //
 // Fallback 链:
-// 1. CDP Accessibility.getFullAXTree → 过滤 → DFS Refs 分配 → compact 格式化
-// 2. A11y Refs < 3 → DOM fallback，SnapshotType="dom_fallback" 
-// 3. DOM 也空 → screenshot fallback，SnapshotType="screenshot_fallback" 
-// 4. 页面正在水合/挑战/启动且 fallback 暂不可用 → progressive_loading，调用方稍后重试
+//  1. CDP Accessibility.getFullAXTree → 过滤 → DFS Refs 分配 → compact 格式化
+//  2. A11y Refs < 3 → DOM fallback，SnapshotType="dom_fallback" [TC-09-U-03]
+//  3. DOM 也空 → screenshot fallback，SnapshotType="screenshot_fallback" [TC-09-U-04]
+//  4. 页面正在水合/挑战/启动且 fallback 暂不可用 → progressive_loading，调用方稍后重试
 func (e *snapshotEngine) GetSnapshot(ctx context.Context) (*Snapshot, error) {
 	// 步骤 1: 获取当前 URL 和 Title
 	var currentURL, title string
 	basicCtx, basicCancel := context.WithTimeout(ctx, snapshotBasicTimeout)
-	err := chromedp.Run(basicCtx
-		chromedp.Location(&currentURL)
-		chromedp.Title(&title)
+	err := chromedp.Run(basicCtx,
+		chromedp.Location(&currentURL),
+		chromedp.Title(&title),
 	)
-	basicCancel
+	basicCancel()
 	if err != nil {
 		return e.progressiveFallback(ctx, currentURL, title, "basic_info_unavailable", err), nil
 	}
 
 	// 步骤 2: 获取 A11y Tree
-	var axNodes *accessibility.Node
+	var axNodes []*accessibility.Node
 	a11yCtx, a11yCancel := context.WithTimeout(ctx, a11yProbeTimeout)
 	err = chromedp.Run(a11yCtx, chromedp.ActionFunc(func(ctx context.Context) error {
 		var fetchErr error
-		axNodes, fetchErr = accessibility.GetFullAXTree.Do(ctx)
+		axNodes, fetchErr = accessibility.GetFullAXTree().Do(ctx)
 		return fetchErr
 	}))
-	a11yCancel
+	a11yCancel()
 	if err != nil {
 		// A11y 获取失败，走 DOM fallback
 		return e.domFallback(ctx, currentURL, title, "a11y_unavailable", err)
@@ -125,13 +125,13 @@ func (e *snapshotEngine) GetSnapshot(ctx context.Context) (*Snapshot, error) {
 	// 步骤 3: 过滤 + DFS Refs 分配
 	refs := extractInteractableRefs(axNodes)
 
-	// 步骤 4: 检查 Refs 数量，< 3 时走 fallback 
+	// 步骤 4: 检查 Refs 数量，< 3 时走 fallback [IR-07, TC-09-U-03]
 	if len(refs) < 3 {
 		return e.domFallback(ctx, currentURL, title, "a11y_insufficient_refs", nil)
 	}
 
 	// 步骤 4.5: 纯 JS enrichment + DOM-only 元素发现
-	// 验证结论: CDP DOM 域 AND DOMSnapshot 域 均破坏 chromedp Click 状态。
+	// TH-0405-p7c 验证结论: CDP DOM 域 AND DOMSnapshot 域 均破坏 chromedp Click 状态。
 	// 唯一安全路径: Accessibility.getFullAXTree + Runtime.evaluate（JS 执行）。
 	// 文本匹配是该约束下的最优解，非降级（业界 Playwright 也用 JS 计算 role/name）。
 	enrichTestIDsViaJS(ctx, refs)
@@ -174,30 +174,30 @@ func (e *snapshotEngine) GetSnapshot(ctx context.Context) (*Snapshot, error) {
 	}
 
 	return &Snapshot{
-		PageTitle: title
-		URL: currentURL
-		Text: text
-		Refs: refs
-		SnapshotType: snapshotTypeA11y
-		TokenEst: tokenEst
-		LoadState: loadStateActionable
+		PageTitle:    title,
+		URL:          currentURL,
+		Text:         text,
+		Refs:         refs,
+		SnapshotType: snapshotTypeA11y,
+		TokenEst:     tokenEst,
+		LoadState:    loadStateActionable,
 	}, nil
 }
 
-// domFallback 当 A11y Refs < 3 时的 DOM fallback 。
+// domFallback 当 A11y Refs < 3 时的 DOM fallback [TC-09-U-03]。
 func (e *snapshotEngine) domFallback(ctx context.Context, url, title, reason string, cause error) (*Snapshot, error) {
 	var rawText string
 	domCtx, domCancel := context.WithTimeout(ctx, domFallbackTimeout)
-	err := chromedp.Run(domCtx, chromedp.Evaluate(`( => {
+	err := chromedp.Run(domCtx, chromedp.Evaluate(`(() => {
 		const body = document.body;
 		if (!body) return "";
-		const text = (body.innerText || body.textContent || "").trim;
+		const text = (body.innerText || body.textContent || "").trim();
 		return text.slice(0, 12000);
-	})`, &rawText))
-	domCancel
+	})()`, &rawText))
+	domCancel()
 	text := normalizeVisibleText(rawText)
 	if err != nil || text == "" {
-		// DOM 也空，走 screenshot fallback 
+		// DOM 也空，走 screenshot fallback [TC-09-U-04]
 		if err != nil {
 			return e.screenshotFallback(ctx, url, title, reason+":dom_unavailable", err)
 		}
@@ -209,29 +209,29 @@ func (e *snapshotEngine) domFallback(ctx context.Context, url, title, reason str
 	}
 
 	tokenEst := estimateTokens(text)
-	e.clearRefs
+	e.clearRefs()
 
 	return &Snapshot{
-		PageTitle: title
-		URL: url
-		Text: text
-		Refs: nil
-		SnapshotType: snapshotTypeDOMFallback
-		TokenEst: tokenEst
-		LoadState: loadStateReadable
+		PageTitle:    title,
+		URL:          url,
+		Text:         text,
+		Refs:         nil,
+		SnapshotType: snapshotTypeDOMFallback,
+		TokenEst:     tokenEst,
+		LoadState:    loadStateReadable,
 	}, nil
 }
 
-// screenshotFallback 当 A11y + DOM 均空时的截图 fallback 。
+// screenshotFallback 当 A11y + DOM 均空时的截图 fallback [TC-09-U-04]。
 // 使用 CaptureScreenshot 仅截取当前 viewport，不修改 DeviceMetrics。
 func (e *snapshotEngine) screenshotFallback(ctx context.Context, url, title, reason string, cause error) (*Snapshot, error) {
 	// 仅验证页面可截图（数据不使用），显式 JPEG 格式匹配前端 (Codex #3)
 	shotCtx, shotCancel := context.WithTimeout(ctx, screenshotProbeTimeout)
 	err := chromedp.Run(shotCtx, chromedp.ActionFunc(func(actCtx context.Context) error {
-		_, e := page.CaptureScreenshot.WithFormat(page.CaptureScreenshotFormatJpeg).WithQuality(80).Do(actCtx)
+		_, e := page.CaptureScreenshot().WithFormat(page.CaptureScreenshotFormatJpeg).WithQuality(80).Do(actCtx)
 		return e
 	}))
-	shotCancel
+	shotCancel()
 	if err != nil {
 		if cause != nil {
 			return e.progressiveFallback(ctx, url, title, reason+":screenshot_unavailable", fmt.Errorf("%v; screenshot fallback failed: %w", cause, err)), nil
@@ -239,15 +239,15 @@ func (e *snapshotEngine) screenshotFallback(ctx context.Context, url, title, rea
 		return e.progressiveFallback(ctx, url, title, reason+":screenshot_unavailable", err), nil
 	}
 
-	e.clearRefs
+	e.clearRefs()
 	return &Snapshot{
-		PageTitle: title
-		URL: url
-		Text: "[screenshot]"
-		Refs: nil
-		SnapshotType: snapshotTypeScreenshotFallback
-		TokenEst: estimateTokens("[screenshot]")
-		LoadState: loadStateVisual
+		PageTitle:    title,
+		URL:          url,
+		Text:         "[screenshot]",
+		Refs:         nil,
+		SnapshotType: snapshotTypeScreenshotFallback,
+		TokenEst:     estimateTokens("[screenshot]"),
+		LoadState:    loadStateVisual,
 	}, nil
 }
 
@@ -261,64 +261,64 @@ func (e *snapshotEngine) progressiveFallback(ctx context.Context, url, title, re
 	}
 	loadState := deriveProgressiveLoadState(probe)
 	diagnostics := map[string]interface{}{
-		"reason": reason
-		"document_ready": probe.ReadyState
-		"body_text_length": probe.BodyTextLength
-		"body_child_count": probe.BodyChildCount
-		"has_body": probe.HasBody
-		"viewport_width": probe.ViewportWidth
-		"viewport_height": probe.ViewportHeight
+		"reason":           reason,
+		"document_ready":   probe.ReadyState,
+		"body_text_length": probe.BodyTextLength,
+		"body_child_count": probe.BodyChildCount,
+		"has_body":         probe.HasBody,
+		"viewport_width":   probe.ViewportWidth,
+		"viewport_height":  probe.ViewportHeight,
 	}
 	if probe.VisibilityState != "" {
 		diagnostics["visibility_state"] = probe.VisibilityState
 	}
 	if cause != nil {
-		diagnostics["cause"] = cause.Error
+		diagnostics["cause"] = cause.Error()
 	}
 	text := fmt.Sprintf(
-		"[progressive_loading ready_state=%s load_state=%s refs=0 body_text=%d retry_after_ms=%d reason=%s]"
-		valueOrUnknown(probe.ReadyState)
-		loadState
-		probe.BodyTextLength
-		progressiveRetryDefault
-		reason
+		"[progressive_loading ready_state=%s load_state=%s refs=0 body_text=%d retry_after_ms=%d reason=%s]",
+		valueOrUnknown(probe.ReadyState),
+		loadState,
+		probe.BodyTextLength,
+		progressiveRetryDefault,
+		reason,
 	)
-	e.clearRefs
+	e.clearRefs()
 	return &Snapshot{
-		PageTitle: title
-		URL: url
-		Text: text
-		Refs: nil
-		SnapshotType: snapshotTypeProgressiveLoading
-		TokenEst: estimateTokens(text)
-		Progressive: true
-		LoadState: loadState
-		ReadyState: probe.ReadyState
-		RetryAfterMillis: progressiveRetryDefault
-		ProgressReason: reason
-		Diagnostics: diagnostics
+		PageTitle:        title,
+		URL:              url,
+		Text:             text,
+		Refs:             nil,
+		SnapshotType:     snapshotTypeProgressiveLoading,
+		TokenEst:         estimateTokens(text),
+		Progressive:      true,
+		LoadState:        loadState,
+		ReadyState:       probe.ReadyState,
+		RetryAfterMillis: progressiveRetryDefault,
+		ProgressReason:   reason,
+		Diagnostics:      diagnostics,
 	}
 }
 
 func probePageLoadState(ctx context.Context) (pageLoadProbe, error) {
 	var probe pageLoadProbe
 	probeCtx, cancel := context.WithTimeout(ctx, pageStateProbeTimeout)
-	defer cancel
-	js := `( => {
+	defer cancel()
+	js := `(() => {
 		const body = document.body;
-		const text = body ? ((body.innerText || body.textContent || '').trim) : '';
+		const text = body ? ((body.innerText || body.textContent || '').trim()) : '';
 		return {
-			url: location.href || ''
-			title: document.title || ''
-			readyState: document.readyState || ''
-			visibilityState: document.visibilityState || ''
-			hasBody: !!body
-			bodyTextLength: text.length
-			bodyChildCount: body ? body.children.length : 0
-			viewportWidth: window.innerWidth || 0
+			url: location.href || '',
+			title: document.title || '',
+			readyState: document.readyState || '',
+			visibilityState: document.visibilityState || '',
+			hasBody: !!body,
+			bodyTextLength: text.length,
+			bodyChildCount: body ? body.children.length : 0,
+			viewportWidth: window.innerWidth || 0,
 			viewportHeight: window.innerHeight || 0
 		};
-	})`
+	})()`
 	err := chromedp.Run(probeCtx, chromedp.Evaluate(js, &probe))
 	return probe, err
 }
@@ -344,7 +344,7 @@ func valueOrUnknown(value string) string {
 	return value
 }
 
-// GetText 提取当前页面纯文本（~500-800 tok）。
+// GetText 提取当前页面纯文本（~500-800 tok）[Ref: T5-B4]。
 func (e *snapshotEngine) GetText(ctx context.Context, focus *string) (string, error) {
 	if focus != nil && *focus != "" {
 		// focus 可以是 Ref（如 "e3"）或 CSS selector
@@ -372,11 +372,11 @@ func (e *snapshotEngine) GetText(ctx context.Context, focus *string) (string, er
 // 使用 CaptureScreenshot 仅截取当前 viewport，不修改 DeviceMetrics。
 // 不使用 FullScreenshot — 其内部调用 SetDeviceMetricsOverride 修改 viewport 为全文档高度，
 // 导致 Screencast 帧变成全页面高度（BUG-1）、坐标映射错误（BUG-5）、帧过大 WS 失败（BUG-6）。
-func (e *snapshotEngine) Screenshot(ctx context.Context, annotate bool) (byte, error) {
-	var buf byte
+func (e *snapshotEngine) Screenshot(ctx context.Context, annotate bool) ([]byte, error) {
+	var buf []byte
 	// 显式指定 JPEG 格式 — chromedp.CaptureScreenshot 默认 PNG，前端按 JPEG 解码 (Codex #3)
 	err := chromedp.Run(ctx, chromedp.ActionFunc(func(actCtx context.Context) error {
-		data, e := page.CaptureScreenshot.WithFormat(page.CaptureScreenshotFormatJpeg).WithQuality(80).Do(actCtx)
+		data, e := page.CaptureScreenshot().WithFormat(page.CaptureScreenshotFormatJpeg).WithQuality(80).Do(actCtx)
 		buf = data
 		return e
 	}))
@@ -387,13 +387,13 @@ func (e *snapshotEngine) Screenshot(ctx context.Context, annotate bool) (byte, e
 }
 
 // mergeWithDOMSnapshot 已废弃。
-// 实测: DOMSnapshot.captureSnapshot 虽属独立 CDP 域，
+// TH-0405-p7c 实测: DOMSnapshot.captureSnapshot 虽属独立 CDP 域，
 // 仍然破坏 chromedp 的 Click 操作（与 DOM.describeNode 同样症状）。
-// : chromedp 中任何触发 CDP DOM 树遍历的 API（DOM / DOMSnapshot 域）
+// DDC-I-05: chromedp 中任何触发 CDP DOM 树遍历的 API（DOM / DOMSnapshot 域）
 // 均会修改内部 NodeID 缓存，导致后续 Click 超时。
 // 唯一安全路径: Accessibility.getFullAXTree + Runtime.evaluate。
 
-// LookupRef 通过 Ref 字符串查找 BackendNodeID 。
+// LookupRef 通过 Ref 字符串查找 BackendNodeID [TC-09-U-27]。
 func (e *snapshotEngine) LookupRef(ref string) (int64, bool) {
 	if len(e.refTable) == 0 {
 		return 0, false
@@ -424,8 +424,8 @@ func (e *snapshotEngine) LookupByRoleName(role, nameContains string) (*ElementRe
 // LookupAllByRoleName 通过 role + name 查找所有匹配的 ElementRef。
 // nameContains 为空时只按 role 匹配。
 // op: "=" exact | "*=" contains | "^=" prefix (default "*=")
-func (e *snapshotEngine) LookupAllByRoleName(role, name, op string) *ElementRef {
-	var results *ElementRef
+func (e *snapshotEngine) LookupAllByRoleName(role, name, op string) []*ElementRef {
+	var results []*ElementRef
 	seen := make(map[string]bool)
 	for key, meta := range e.refMeta {
 		// 跳过 testid 索引条目（key 以 # 开头）
@@ -465,8 +465,8 @@ func (e *snapshotEngine) LookupAllByRoleName(role, name, op string) *ElementRef 
 }
 
 // AllTestIDs 返回当前快照中所有有 TestID 的元素的 testid 列表（用于错误提示）。
-func (e *snapshotEngine) AllTestIDs string {
-	var ids string
+func (e *snapshotEngine) AllTestIDs() []string {
+	var ids []string
 	for key := range e.refMeta {
 		if strings.HasPrefix(key, "#") {
 			ids = append(ids, key[1:])
@@ -476,9 +476,9 @@ func (e *snapshotEngine) AllTestIDs string {
 }
 
 // AllByRole 返回当前快照中指定 role 的所有元素名称（用于错误提示）。
-func (e *snapshotEngine) AllByRole(role string) string {
+func (e *snapshotEngine) AllByRole(role string) []string {
 	seen := make(map[string]bool)
-	var names string
+	var names []string
 	for key, meta := range e.refMeta {
 		if strings.HasPrefix(key, "#") {
 			continue
@@ -492,40 +492,40 @@ func (e *snapshotEngine) AllByRole(role string) string {
 }
 
 // ============================================================
-// § A11y Tree 处理函数
+// § A11y Tree 处理函数 [Ref: T5-B4, TC-09-U-01, TC-09-U-02, TC-09-U-26]
 // ============================================================
 
-// interactableRoles 是需要保留的 ARIA role 集合 。
+// interactableRoles 是需要保留的 ARIA role 集合 [TC-09-U-01]。
 // 覆盖 Vue/Quasar SPA 常见可交互角色 [HA-02 A11y SPA POC]。
 var interactableRoles = map[string]bool{
-	"button": true
-	"link": true
-	"textbox": true
-	"searchbox": true
-	"combobox": true
-	"listbox": true
-	"option": true
-	"menuitem": true
-	"checkbox": true
-	"radio": true
-	"switch": true, // Quasar QToggle → role=switch [HA-02 SPA coverage]
-	"slider": true
-	"spinbutton": true
-	"tab": true
-	"treeitem": true
+	"button":     true,
+	"link":       true,
+	"textbox":    true,
+	"searchbox":  true,
+	"combobox":   true,
+	"listbox":    true,
+	"option":     true,
+	"menuitem":   true,
+	"checkbox":   true,
+	"radio":      true,
+	"switch":     true, // Quasar QToggle → role=switch [HA-02 SPA coverage]
+	"slider":     true,
+	"spinbutton": true,
+	"tab":        true,
+	"treeitem":   true,
 }
 
-// genericRoles 是需要过滤掉的 generic/noise role 。
+// genericRoles 是需要过滤掉的 generic/noise role [TC-09-U-01]。
 var genericRoles = map[string]bool{
-	"generic": true
-	"none": true
-	"presentation": true
-	"InlineTextBox": true
+	"generic":       true,
+	"none":          true,
+	"presentation":  true,
+	"InlineTextBox": true,
 }
 
-// extractInteractableRefs 从 A11y Tree 中提取可交互元素，按 DFS 顺序分配 Refs 。
-func extractInteractableRefs(nodes *accessibility.Node) ElementRef {
-	var refs ElementRef
+// extractInteractableRefs 从 A11y Tree 中提取可交互元素，按 DFS 顺序分配 Refs [TC-09-U-26]。
+func extractInteractableRefs(nodes []*accessibility.Node) []ElementRef {
+	var refs []ElementRef
 	counter := 1
 
 	// 建立 nodeID → node 映射，用于 DFS 遍历
@@ -561,20 +561,20 @@ func extractInteractableRefs(nodes *accessibility.Node) ElementRef {
 				nameShort := name
 				if len(nameShort) > 50 {
 					// Truncate by runes, not bytes
-					runes := rune(nameShort)
+					runes := []rune(nameShort)
 					if len(runes) > 50 {
 						nameShort = string(runes[:47]) + "..."
 					}
 				}
 				refs = append(refs, ElementRef{
-					Ref: ref
-					BackendNodeID: int64(node.BackendDOMNodeID)
-					Role: roleName
-					Name: name
-					NameFull: name
-					NameShort: nameShort
-					Placeholder: placeholder
-					Interactable: true
+					Ref:           ref,
+					BackendNodeID: int64(node.BackendDOMNodeID),
+					Role:          roleName,
+					Name:          name,
+					NameFull:      name,
+					NameShort:     nameShort,
+					Placeholder:   placeholder,
+					Interactable:  true,
 				})
 			}
 		}
@@ -610,18 +610,18 @@ func extractInteractableRefs(nodes *accessibility.Node) ElementRef {
 			ref := fmt.Sprintf("e%d", counter)
 			counter++
 			nameShort := name
-			if runes := rune(nameShort); len(runes) > 50 {
+			if runes := []rune(nameShort); len(runes) > 50 {
 				nameShort = string(runes[:47]) + "..."
 			}
 			refs = append(refs, ElementRef{
-				Ref: ref
-				BackendNodeID: int64(node.BackendDOMNodeID)
-				Role: roleName
-				Name: name
-				NameFull: name
-				NameShort: nameShort
-				Placeholder: placeholder
-				Interactable: true
+				Ref:           ref,
+				BackendNodeID: int64(node.BackendDOMNodeID),
+				Role:          roleName,
+				Name:          name,
+				NameFull:      name,
+				NameShort:     nameShort,
+				Placeholder:   placeholder,
+				Interactable:  true,
 			})
 		}
 	}
@@ -630,8 +630,8 @@ func extractInteractableRefs(nodes *accessibility.Node) ElementRef {
 }
 
 // findParent 检查节点是否有父节点（简单判断：是否出现在其他节点的 ChildIDs 中）。
-func findParent(target *accessibility.Node, allNodes *accessibility.Node) *accessibility.Node {
-	var parents *accessibility.Node
+func findParent(target *accessibility.Node, allNodes []*accessibility.Node) []*accessibility.Node {
+	var parents []*accessibility.Node
 	for _, n := range allNodes {
 		if n == nil {
 			continue
@@ -651,7 +651,7 @@ func getRoleName(node *accessibility.Node) string {
 	if node.Role == nil {
 		return ""
 	}
-	return unquoteJSONString(node.Role.Value.String)
+	return unquoteJSONString(node.Role.Value.String())
 }
 
 // getAccessibleName 获取 A11y 节点的 accessible name。
@@ -659,14 +659,14 @@ func getAccessibleName(node *accessibility.Node) string {
 	if node.Name == nil {
 		return ""
 	}
-	return unquoteJSONString(node.Name.Value.String)
+	return unquoteJSONString(node.Name.Value.String())
 }
 
 // getPlaceholder 获取输入框的 placeholder。
 func getPlaceholder(node *accessibility.Node) string {
 	for _, prop := range node.Properties {
 		if prop != nil && prop.Name == "placeholder" && prop.Value != nil {
-			return unquoteJSONString(prop.Value.Value.String)
+			return unquoteJSONString(prop.Value.Value.String())
 		}
 	}
 	return ""
@@ -679,8 +679,8 @@ func isInteractableByProperties(node *accessibility.Node) bool {
 			continue
 		}
 		if prop.Name == "focusable" || prop.Name == "clickable" {
-			// jsontext.Value 是 byte，true 为 "true"
-			val := prop.Value.Value.String
+			// jsontext.Value 是 []byte，true 为 "true"
+			val := prop.Value.Value.String()
 			if val == "true" {
 				return true
 			}
@@ -695,7 +695,7 @@ func isInteractableByProperties(node *accessibility.Node) bool {
 func unquoteJSONString(s string) string {
 	if len(s) >= 2 && s[0] == '"' && s[len(s)-1] == '"' {
 		var decoded string
-		if err := json.Unmarshal(byte(s), &decoded); err == nil {
+		if err := json.Unmarshal([]byte(s), &decoded); err == nil {
 			return decoded
 		}
 		// fallback: 仅去外引号（兼容非标准格式）
@@ -705,30 +705,30 @@ func unquoteJSONString(s string) string {
 }
 
 // enrichTestIDsViaJS 用纯 JS 获取 {text→testid} 映射，通过 A11y ref.Name 文本匹配关联。
-// 验证: CDP DOM 域(describeNode) 和 DOMSnapshot 域(captureSnapshot) 均破坏状态。
+// TH-0405-p7c 验证: CDP DOM 域(describeNode) 和 DOMSnapshot 域(captureSnapshot) 均破坏状态。
 // Runtime.evaluate 是唯一安全的 DOM 属性获取路径。Playwright 同理用 JS 计算 accessible name。
-func enrichTestIDsViaJS(ctx context.Context, refs ElementRef) {
+func enrichTestIDsViaJS(ctx context.Context, refs []ElementRef) {
 	type tidEntry struct {
 		TestID string `json:"testid"`
-		Text string `json:"text"`
+		Text   string `json:"text"`
 	}
-	var entries tidEntry
-	js := `( => {
-		const r = ;
+	var entries []tidEntry
+	js := `(() => {
+		const r = [];
 		document.querySelectorAll('[data-testid]').forEach(el => {
 			const text = (
-				(el.textContent||'').trim ||
-				(el.getAttribute('aria-label')||'').trim ||
-				(el.getAttribute('placeholder')||'').trim ||
-				(el.getAttribute('title')||'').trim ||
-				(el.getAttribute('name')||'').trim
+				(el.textContent||'').trim() ||
+				(el.getAttribute('aria-label')||'').trim() ||
+				(el.getAttribute('placeholder')||'').trim() ||
+				(el.getAttribute('title')||'').trim() ||
+				(el.getAttribute('name')||'').trim()
 			);
 			r.push({testid: el.getAttribute('data-testid'), text: text.substring(0,60)});
 		});
 		return r;
-	})`
+	})()`
 	jsCtx, cancel := context.WithTimeout(ctx, jsEnrichmentTimeout)
-	defer cancel
+	defer cancel()
 	if err := chromedp.Run(jsCtx, chromedp.Evaluate(js, &entries)); err != nil || len(entries) == 0 {
 		return
 	}
@@ -753,16 +753,16 @@ func enrichTestIDsViaJS(ctx context.Context, refs ElementRef) {
 }
 
 // discoverClickableDOMViaJS 补充发现有 data-testid 但不在 A11y 树的元素。纯 JS，零 CDP DOM API。
-func discoverClickableDOMViaJS(ctx context.Context, existingRefs ElementRef) ElementRef {
+func discoverClickableDOMViaJS(ctx context.Context, existingRefs []ElementRef) []ElementRef {
 	counter := len(existingRefs) + 1
 	type domItem struct {
 		TestID string `json:"testid"`
-		Text string `json:"text"`
+		Text   string `json:"text"`
 	}
-	var items domItem
-	js := `( => {
+	var items []domItem
+	js := `(() => {
 		const skipNative = new Set(['INPUT','SELECT','TEXTAREA','LABEL']);
-		const results = ;
+		const results = [];
 		const isBlocked = (el) => {
 			for (let n = el; n && n.nodeType === 1; n = n.parentElement) {
 				if (n.hasAttribute('inert')) return true;
@@ -771,7 +771,7 @@ func discoverClickableDOMViaJS(ctx context.Context, existingRefs ElementRef) Ele
 			return false;
 		};
 		const isTopmost = (el) => {
-			const r = el.getBoundingClientRect;
+			const r = el.getBoundingClientRect();
 			if (r.width <= 0 || r.height <= 0) return false;
 			const style = window.getComputedStyle(el);
 			if (style.display === 'none' || style.visibility === 'hidden' || style.pointerEvents === 'none') return false;
@@ -784,16 +784,16 @@ func discoverClickableDOMViaJS(ctx context.Context, existingRefs ElementRef) Ele
 			if (skipNative.has(el.tagName)) return;
 			if (isBlocked(el) || !isTopmost(el)) return;
 			const text = (
-				(el.textContent||'').trim ||
-				(el.getAttribute('aria-label')||'').trim ||
-				(el.getAttribute('title')||'').trim
+				(el.textContent||'').trim() ||
+				(el.getAttribute('aria-label')||'').trim() ||
+				(el.getAttribute('title')||'').trim()
 			);
 			results.push({testid: el.getAttribute('data-testid'), text: text.substring(0,50)});
 		});
 		return results;
-	})`
+	})()`
 	jsCtx, cancel := context.WithTimeout(ctx, jsEnrichmentTimeout)
-	defer cancel
+	defer cancel()
 	if err := chromedp.Run(jsCtx, chromedp.Evaluate(js, &items)); err != nil || len(items) == 0 {
 		return nil
 	}
@@ -804,7 +804,7 @@ func discoverClickableDOMViaJS(ctx context.Context, existingRefs ElementRef) Ele
 		}
 		existing[r.Name] = true
 	}
-	var supplementary ElementRef
+	var supplementary []ElementRef
 	for _, item := range items {
 		if item.TestID == "" || existing[item.TestID] {
 			continue
@@ -817,8 +817,8 @@ func discoverClickableDOMViaJS(ctx context.Context, existingRefs ElementRef) Ele
 		ref := fmt.Sprintf("e%d", counter)
 		counter++
 		supplementary = append(supplementary, ElementRef{
-			Ref: ref, BackendNodeID: 0, Role: "clickable"
-			Name: name, TestID: item.TestID, Interactable: true
+			Ref: ref, BackendNodeID: 0, Role: "clickable",
+			Name: name, TestID: item.TestID, Interactable: true,
 		})
 	}
 	return supplementary
@@ -880,13 +880,13 @@ func extractRefNth(ref string) int {
 
 // buildCompactText 构建 compact A11y 文本。
 // 在 session 模式下，使用 @rN 格式；否则使用序号。
-func buildCompactText(refs ElementRef) string {
+func buildCompactText(refs []ElementRef) string {
 	return buildCompactTextWithMode(refs, false)
 }
 
 // buildCompactTextWithMode 构建 compact A11y 文本，格式 "[{ref} role 'name' #testid]"。
 // sessionMode=true 时用 @rN ref，否则用位置序号。
-func buildCompactTextWithMode(refs ElementRef, sessionMode bool) string {
+func buildCompactTextWithMode(refs []ElementRef, sessionMode bool) string {
 	var sb strings.Builder
 	for i, ref := range refs {
 		sb.WriteString("[")
@@ -906,7 +906,7 @@ func buildCompactTextWithMode(refs ElementRef, sessionMode bool) string {
 		} else if ref.Name != "" {
 			sb.WriteString(" '")
 			name := ref.Name
-			if runes := rune(name); len(runes) > 50 {
+			if runes := []rune(name); len(runes) > 50 {
 				name = string(runes[:47]) + "..."
 			}
 			sb.WriteString(name)
@@ -924,7 +924,7 @@ func buildCompactTextWithMode(refs ElementRef, sessionMode bool) string {
 		sb.WriteString("]")
 		sb.WriteString(" ")
 	}
-	return strings.TrimSpace(sb.String)
+	return strings.TrimSpace(sb.String())
 }
 
 // GetSnapshotWithSessionMode 获取快照，session 模式下使用 @rN ref。
@@ -980,7 +980,7 @@ func navigateTo(url string) chromedp.Action {
 }
 
 // waitForLoad 等待页面 load 事件。
-func waitForLoad chromedp.Action {
+func waitForLoad() chromedp.Action {
 	return chromedp.ActionFunc(func(ctx context.Context) error {
 		return chromedp.Run(ctx, chromedp.WaitReady("body", chromedp.ByQuery))
 	})
@@ -989,11 +989,11 @@ func waitForLoad chromedp.Action {
 // getDocumentHTML 获取 HTML 文档 outerHTML。
 func getDocumentHTML(result *string) chromedp.Action {
 	return chromedp.ActionFunc(func(ctx context.Context) error {
-		node, err := dom.GetDocument.Do(ctx)
+		node, err := dom.GetDocument().Do(ctx)
 		if err != nil {
 			return err
 		}
-		html, err := dom.GetOuterHTML.WithNodeID(node.NodeID).Do(ctx)
+		html, err := dom.GetOuterHTML().WithNodeID(node.NodeID).Do(ctx)
 		if err != nil {
 			return err
 		}
@@ -1010,8 +1010,8 @@ func getPageTitle(result *string) chromedp.Action {
 }
 
 // ============================================================
-// § SnapWithOptions —
-//
+// § SnapWithOptions — r2 Delta-REQ (TH-0418-c9x)
+// [Ref: CAP-BS09-C5 §3.2b, SC-20, SC-21, TC-C5-13~16]
 // ============================================================
 
 // SnapOptions 控制快照过滤和格式化行为。
@@ -1030,18 +1030,18 @@ type SnapOptions struct {
 
 // compactInteractableRoles 是 --compact 模式保留的可交互 role 集合 [SC-21]。
 var compactInteractableRoles = map[string]bool{
-	"button": true
-	"input": true
-	"link": true
-	"textbox": true
-	"checkbox": true
-	"radio": true
-	"combobox": true
-	"slider": true
-	"tab": true
-	"searchbox": true
-	"menuitem": true
-	"switch": true
+	"button":    true,
+	"input":     true,
+	"link":      true,
+	"textbox":   true,
+	"checkbox":  true,
+	"radio":     true,
+	"combobox":  true,
+	"slider":    true,
+	"tab":       true,
+	"searchbox": true,
+	"menuitem":  true,
+	"switch":    true,
 }
 
 // SnapWithOptions 获取快照并应用 SnapOptions 过滤/格式化 [SC-20, SC-21]。
@@ -1051,16 +1051,16 @@ func (e *snapshotEngine) SnapWithOptions(ctx context.Context, opts SnapOptions) 
 	// 步骤 1: 获取 URL / Title
 	var currentURL, title string
 	basicCtx, basicCancel := context.WithTimeout(ctx, snapshotBasicTimeout)
-	err := chromedp.Run(basicCtx
-		chromedp.Location(&currentURL)
-		chromedp.Title(&title)
+	err := chromedp.Run(basicCtx,
+		chromedp.Location(&currentURL),
+		chromedp.Title(&title),
 	)
-	basicCancel
+	basicCancel()
 	if err != nil {
 		return e.progressiveFallback(ctx, currentURL, title, "basic_info_unavailable", err), nil
 	}
 
-	var refs ElementRef
+	var refs []ElementRef
 
 	if opts.Selector != "" {
 		// SC-20: --selector 范围快照
@@ -1068,7 +1068,7 @@ func (e *snapshotEngine) SnapWithOptions(ctx context.Context, opts SnapOptions) 
 		var rootNodeID cdp.BackendNodeID
 		selectorCtx, selectorCancel := context.WithTimeout(ctx, selectorResolveTimeout)
 		err := chromedp.Run(selectorCtx, chromedp.ActionFunc(func(ctx context.Context) error {
-			doc, err := dom.GetDocument.WithDepth(-1).Do(ctx)
+			doc, err := dom.GetDocument().WithDepth(-1).Do(ctx)
 			if err != nil {
 				return err
 			}
@@ -1077,17 +1077,17 @@ func (e *snapshotEngine) SnapWithOptions(ctx context.Context, opts SnapOptions) 
 				return ErrSelectorNotFound
 			}
 			// Convert NodeID → BackendNodeID
-			nodes, err := dom.PushNodesByBackendIDsToFrontend(cdp.BackendNodeID{}).Do(ctx)
+			nodes, err := dom.PushNodesByBackendIDsToFrontend([]cdp.BackendNodeID{}).Do(ctx)
 			_ = nodes
 			// Use DescribeNode to get backendNodeId
-			described, err := dom.DescribeNode.WithNodeID(nodeID).WithDepth(0).Do(ctx)
+			described, err := dom.DescribeNode().WithNodeID(nodeID).WithDepth(0).Do(ctx)
 			if err != nil {
 				return ErrSelectorNotFound
 			}
 			rootNodeID = described.BackendNodeID
 			return nil
 		}))
-		selectorCancel
+		selectorCancel()
 		if err != nil {
 			return nil, err
 		}
@@ -1096,26 +1096,26 @@ func (e *snapshotEngine) SnapWithOptions(ctx context.Context, opts SnapOptions) 
 		}
 
 		// 2. GetPartialAXTree for root subtree
-		var axNodes *accessibility.Node
+		var axNodes []*accessibility.Node
 		partialCtx, partialCancel := context.WithTimeout(ctx, partialAXProbeTimeout)
 		err = chromedp.Run(partialCtx, chromedp.ActionFunc(func(ctx context.Context) error {
 			var fetchErr error
-			axNodes, fetchErr = accessibility.GetPartialAXTree.
+			axNodes, fetchErr = accessibility.GetPartialAXTree().
 				WithBackendNodeID(rootNodeID).
 				WithFetchRelatives(false).
 				Do(ctx)
 			return fetchErr
 		}))
-		partialCancel
+		partialCancel()
 		if err != nil || len(axNodes) == 0 {
 			// Fallback: full tree and filter manually
 			a11yCtx, a11yCancel := context.WithTimeout(ctx, a11yProbeTimeout)
 			err = chromedp.Run(a11yCtx, chromedp.ActionFunc(func(ctx context.Context) error {
 				var fetchErr error
-				axNodes, fetchErr = accessibility.GetFullAXTree.Do(ctx)
+				axNodes, fetchErr = accessibility.GetFullAXTree().Do(ctx)
 				return fetchErr
 			}))
-			a11yCancel
+			a11yCancel()
 			if err != nil {
 				return e.progressiveFallback(ctx, currentURL, title, "selector_a11y_unavailable", err), nil
 			}
@@ -1148,13 +1148,13 @@ func (e *snapshotEngine) SnapWithOptions(ctx context.Context, opts SnapOptions) 
 		tokenEst := estimateTokens(text)
 
 		snap := &Snapshot{
-			PageTitle: title
-			URL: currentURL
-			Text: text
-			Refs: refs
-			SnapshotType: snapshotTypeA11y
-			TokenEst: tokenEst
-			LoadState: loadStateActionable
+			PageTitle:    title,
+			URL:          currentURL,
+			Text:         text,
+			Refs:         refs,
+			SnapshotType: snapshotTypeA11y,
+			TokenEst:     tokenEst,
+			LoadState:    loadStateActionable,
 		}
 		return snap, nil
 	}
@@ -1208,7 +1208,7 @@ func (e *snapshotEngine) SnapWithOptions(ctx context.Context, opts SnapOptions) 
 }
 
 // filterCompactRefs 过滤只保留可交互 role 的 refs [SC-21, TC-C5-15]。
-func filterCompactRefs(refs ElementRef) ElementRef {
+func filterCompactRefs(refs []ElementRef) []ElementRef {
 	filtered := refs[:0:0]
 	for i := range refs {
 		if compactInteractableRoles[refs[i].Role] {
@@ -1219,8 +1219,8 @@ func filterCompactRefs(refs ElementRef) ElementRef {
 }
 
 // renumberRefs 重新编号 refs（session 模式 @rN，one-shot eN）。
-func renumberRefs(refs ElementRef, sessionMode bool) ElementRef {
-	result := make(ElementRef, len(refs))
+func renumberRefs(refs []ElementRef, sessionMode bool) []ElementRef {
+	result := make([]ElementRef, len(refs))
 	for i := range refs {
 		result[i] = refs[i]
 		if sessionMode {
@@ -1237,7 +1237,7 @@ func renumberRefs(refs ElementRef, sessionMode bool) ElementRef {
 // 超过 maxDepth 的连续元素折叠为 "[... N children]"。
 // 注：A11y 树已经被展平为 refs，真实深度信息不在 ElementRef 中，
 // 此处用启发式方式：将 refs 分段，每段超过阈值时折叠尾部元素。
-func applyMaxDepthText(refs ElementRef, maxDepth int, sessionMode bool) string {
+func applyMaxDepthText(refs []ElementRef, maxDepth int, sessionMode bool) string {
 	// 启发式实现: maxDepth 控制每组 top-level 元素下允许展开的子元素数。
 	// 对于扁平化后的 refs 列表，超过 maxDepth 个连续 non-button/link 元素视为深层子树。
 	// 实际效果: 当 maxDepth=1 时仅输出顶层可交互元素；maxDepth=3 输出前3层。

@@ -27,16 +27,16 @@ typedef struct {
 
 // C declarations for functions implemented in virtual_display_darwin_bridge.m.
 // The CGo preamble is compiled as C (not Objective-C), so we use plain C
-// prototypes here. The actual Objective-C implementation lives in the .m file
+// prototypes here. The actual Objective-C implementation lives in the .m file,
 // which CGo compiles separately with clang -x objective-c.
 
 void *dw_vd_create(int width, int height, uint32_t *outDisplayID);
-int dw_vd_bounds(uint32_t displayID, int *outX, int *outY, int *outW, int *outH);
-int dw_vd_quarantine(uint32_t displayID);
-int dw_vd_inspect_windows_for_pid(int pid, uint32_t displayID, int *outTotal, int *outOutside);
-int dw_vd_count_windows_outside_display(int pid, uint32_t displayID);
-int dw_vd_rescue_foreign_windows(uint32_t displayID, const int *protectedPIDs, int protectedPIDCount, dw_vd_rescue_record *records, int maxRecords, int *outDisplayID, int *outScanned, int *outMatched, int *outMoved, int *outSkipped);
-void dw_vd_destroy(void *displayRef);
+int   dw_vd_bounds(uint32_t displayID, int *outX, int *outY, int *outW, int *outH);
+int   dw_vd_quarantine(uint32_t displayID);
+int   dw_vd_inspect_windows_for_pid(int pid, uint32_t displayID, int *outTotal, int *outOutside);
+int   dw_vd_count_windows_outside_display(int pid, uint32_t displayID);
+int   dw_vd_rescue_foreign_windows(uint32_t displayID, const int *protectedPIDs, int protectedPIDCount, dw_vd_rescue_record *records, int maxRecords, int *outDisplayID, int *outScanned, int *outMatched, int *outMoved, int *outSkipped);
+void  dw_vd_destroy(void *displayRef);
 */
 import "C"
 
@@ -53,10 +53,10 @@ const virtualDisplayOrphanedSentinel = uintptr(1)
 const virtualDisplayRescueRecordLimit = 96
 const virtualDisplayContainmentStablePolls = 2
 
-func RescueForeignWindowsFromVirtualDisplay (*VirtualDisplayWindowRescueResult, error) {
-	records := make(C.dw_vd_rescue_record, virtualDisplayRescueRecordLimit)
-	protectedPIDs := activeHeadedBrowserRuntimePIDs
-	protected := make(C.int, 0, len(protectedPIDs))
+func RescueForeignWindowsFromVirtualDisplay() (*VirtualDisplayWindowRescueResult, error) {
+	records := make([]C.dw_vd_rescue_record, virtualDisplayRescueRecordLimit)
+	protectedPIDs := activeHeadedBrowserRuntimePIDs()
+	protected := make([]C.int, 0, len(protectedPIDs))
 	for _, pid := range protectedPIDs {
 		protected = append(protected, C.int(pid))
 	}
@@ -68,14 +68,14 @@ func RescueForeignWindowsFromVirtualDisplay (*VirtualDisplayWindowRescueResult, 
 	var scanned, matched, moved, skipped C.int
 	rc := C.dw_vd_rescue_foreign_windows(0, protectedPtr, C.int(len(protected)), &records[0], C.int(len(records)), &displayID, &scanned, &matched, &moved, &skipped)
 	result := &VirtualDisplayWindowRescueResult{
-		Platform: "darwin"
-		DisplayID: uint32(displayID)
-		ProtectedBrowserPIDs: protectedPIDs
-		Scanned: int(scanned)
-		Matched: int(matched)
-		Moved: int(moved)
-		Skipped: int(skipped)
-		Windows: make(VirtualDisplayWindowRescueRecord, 0, min(int(matched), len(records)))
+		Platform:             "darwin",
+		DisplayID:            uint32(displayID),
+		ProtectedBrowserPIDs: protectedPIDs,
+		Scanned:              int(scanned),
+		Matched:              int(matched),
+		Moved:                int(moved),
+		Skipped:              int(skipped),
+		Windows:              make([]VirtualDisplayWindowRescueRecord, 0, min(int(matched), len(records))),
 	}
 	if rc == 1 {
 		result.UnavailableReason = "no_deepwork_virtual_display"
@@ -88,21 +88,21 @@ func RescueForeignWindowsFromVirtualDisplay (*VirtualDisplayWindowRescueResult, 
 	for i := 0; i < limit; i++ {
 		rec := records[i]
 		result.Windows = append(result.Windows, VirtualDisplayWindowRescueRecord{
-			WindowID: int(rec.windowID)
-			PID: int(rec.pid)
-			Owner: cCharArrayString(unsafe.Pointer(&rec.owner[0]))
-			Title: cCharArrayString(unsafe.Pointer(&rec.title[0]))
-			X: int(rec.x)
-			Y: int(rec.y)
-			Width: int(rec.w)
-			Height: int(rec.h)
-			TargetX: int(rec.targetX)
-			TargetY: int(rec.targetY)
-			TargetWidth: int(rec.targetW)
-			TargetHeight: int(rec.targetH)
-			Moved: rec.moved != 0
-			Reason: virtualDisplayRescueReason(int(rec.reason))
-			VirtualRatio: float64(rec.virtualRatio)
+			WindowID:     int(rec.windowID),
+			PID:          int(rec.pid),
+			Owner:        cCharArrayString(unsafe.Pointer(&rec.owner[0])),
+			Title:        cCharArrayString(unsafe.Pointer(&rec.title[0])),
+			X:            int(rec.x),
+			Y:            int(rec.y),
+			Width:        int(rec.w),
+			Height:       int(rec.h),
+			TargetX:      int(rec.targetX),
+			TargetY:      int(rec.targetY),
+			TargetWidth:  int(rec.targetW),
+			TargetHeight: int(rec.targetH),
+			Moved:        rec.moved != 0,
+			Reason:       virtualDisplayRescueReason(int(rec.reason)),
+			VirtualRatio: float64(rec.virtualRatio),
 		})
 	}
 	return result, nil
@@ -141,18 +141,18 @@ func virtualDisplayRescueReason(reason int) string {
 // unique --window-position coordinate within the virtual display's coordinate
 // space so windows don't perfectly overlap.
 //
-// The display is created lazily on the first Ensure call and lives until
-// Close or process exit. All exported methods are goroutine-safe.
+// The display is created lazily on the first Ensure() call and lives until
+// Close() or process exit. All exported methods are goroutine-safe.
 //
 // Reference: DELTA-BS09-THREE-MODE §4, poc/macos-virtual-display/poc.m
 type VirtualDisplayManager struct {
-	mu sync.Mutex
-	display unsafe.Pointer // retained CGVirtualDisplay* (via CFBridgingRetain)
+	mu        sync.Mutex
+	display   unsafe.Pointer // retained CGVirtualDisplay* (via CFBridgingRetain)
 	displayID uint32
-	x, y int // virtual display origin (left-top) in global screen coordinates
-	w, h int // virtual display dimensions
+	x, y      int // virtual display origin (left-top) in global screen coordinates
+	w, h      int // virtual display dimensions
 
-	// instanceCount is incremented atomically on each WindowPosition call to
+	// instanceCount is incremented atomically on each WindowPosition() call to
 	// stagger multiple Chrome windows within the virtual display. 50 px steps
 	// prevent complete overlap without exceeding the default viewport bounds for typical
 	// use (≤20 concurrent instances).
@@ -163,28 +163,28 @@ type VirtualDisplayManager struct {
 // Subsequent calls are no-ops and return nil immediately.
 //
 // Sequence:
-// 1. Call dw_vd_create → obtains retained CGVirtualDisplay* and displayID.
-// 2. Sleep 1 s to allow WindowServer to register the new display in the
-// active display list (observed in PoC: ~1-2 s for registration).
-// 3. Query bounds via dw_vd_bounds — fills (x, y, w, h) for WindowPosition.
-func (vdm *VirtualDisplayManager) Ensure error {
-	startedAt := time.Now
-	vdm.mu.Lock
-	defer vdm.mu.Unlock
+//  1. Call dw_vd_create → obtains retained CGVirtualDisplay* and displayID.
+//  2. Sleep 1 s to allow WindowServer to register the new display in the
+//     active display list (observed in PoC: ~1-2 s for registration).
+//  3. Query bounds via dw_vd_bounds — fills (x, y, w, h) for WindowPosition.
+func (vdm *VirtualDisplayManager) Ensure() error {
+	startedAt := time.Now()
+	vdm.mu.Lock()
+	defer vdm.mu.Unlock()
 
-	fastPathStartedAt := time.Now
-	if vdm.display != nil && vdm.displayID != 0 && vdm.displayBoundsLocked == nil {
-		log.Printf("[VIRTUAL-DISPLAY] ensure fast-path displayID=%d elapsed_ms=%d bounds_check_ms=%d"
-			vdm.displayID, time.Since(startedAt).Milliseconds, time.Since(fastPathStartedAt).Milliseconds)
+	fastPathStartedAt := time.Now()
+	if vdm.display != nil && vdm.displayID != 0 && vdm.displayBoundsLocked() == nil {
+		log.Printf("[VIRTUAL-DISPLAY] ensure fast-path displayID=%d elapsed_ms=%d bounds_check_ms=%d",
+			vdm.displayID, time.Since(startedAt).Milliseconds(), time.Since(fastPathStartedAt).Milliseconds())
 		return nil // already created — idempotent fast path
 	}
-	vdm.destroyDisplayLocked
-	vdm.resetLocked
+	vdm.destroyDisplayLocked()
+	vdm.resetLocked()
 
 	log.Printf("[VIRTUAL-DISPLAY] creating %dx%d CGVirtualDisplay", DefaultViewportWidth, DefaultViewportHeight)
 
 	var cDisplayID C.uint32_t
-	createStartedAt := time.Now
+	createStartedAt := time.Now()
 	retained := C.dw_vd_create(DefaultViewportWidth, DefaultViewportHeight, &cDisplayID)
 	createElapsed := time.Since(createStartedAt)
 	if retained == nil {
@@ -201,8 +201,8 @@ func (vdm *VirtualDisplayManager) Ensure error {
 	if orphaned {
 		log.Printf("[VIRTUAL-DISPLAY] reusing orphaned virtual display displayID=%d (prior process did not clean up)", uint32(cDisplayID))
 	}
-	log.Printf("[VIRTUAL-DISPLAY] create completed displayID=%d orphaned=%t elapsed_ms=%d"
-		uint32(cDisplayID), orphaned, createElapsed.Milliseconds)
+	log.Printf("[VIRTUAL-DISPLAY] create completed displayID=%d orphaned=%t elapsed_ms=%d",
+		uint32(cDisplayID), orphaned, createElapsed.Milliseconds())
 
 	vdm.display = retained
 	vdm.displayID = uint32(cDisplayID)
@@ -210,29 +210,29 @@ func (vdm *VirtualDisplayManager) Ensure error {
 	if !orphaned {
 		log.Printf("[VIRTUAL-DISPLAY] created displayID=%d, sleeping 1s for WindowServer registration", vdm.displayID)
 		// Release the lock while sleeping so other goroutines don't stall.
-		sleepStartedAt := time.Now
-		vdm.mu.Unlock
+		sleepStartedAt := time.Now()
+		vdm.mu.Unlock()
 		time.Sleep(VirtualDisplayRegistrationDelay)
-		vdm.mu.Lock
-		log.Printf("[VIRTUAL-DISPLAY] registration delay completed displayID=%d elapsed_ms=%d"
-			vdm.displayID, time.Since(sleepStartedAt).Milliseconds)
+		vdm.mu.Lock()
+		log.Printf("[VIRTUAL-DISPLAY] registration delay completed displayID=%d elapsed_ms=%d",
+			vdm.displayID, time.Since(sleepStartedAt).Milliseconds())
 	}
 
-	quarantineStartedAt := time.Now
+	quarantineStartedAt := time.Now()
 	if rc := C.dw_vd_quarantine(C.uint32_t(vdm.displayID)); rc != 0 {
-		log.Printf("[VIRTUAL-DISPLAY] WARNING: quarantine placement failed displayID=%d rc=%d elapsed_ms=%d"
-			vdm.displayID, int(rc), time.Since(quarantineStartedAt).Milliseconds)
+		log.Printf("[VIRTUAL-DISPLAY] WARNING: quarantine placement failed displayID=%d rc=%d elapsed_ms=%d",
+			vdm.displayID, int(rc), time.Since(quarantineStartedAt).Milliseconds())
 	} else {
-		log.Printf("[VIRTUAL-DISPLAY] quarantine placement completed displayID=%d elapsed_ms=%d"
-			vdm.displayID, time.Since(quarantineStartedAt).Milliseconds)
+		log.Printf("[VIRTUAL-DISPLAY] quarantine placement completed displayID=%d elapsed_ms=%d",
+			vdm.displayID, time.Since(quarantineStartedAt).Milliseconds())
 	}
 
-	boundsStartedAt := time.Now
-	if err := vdm.refreshBoundsLocked; err != nil {
+	boundsStartedAt := time.Now()
+	if err := vdm.refreshBoundsLocked(); err != nil {
 		log.Printf("[VIRTUAL-DISPLAY] WARNING: %v", err)
 	}
-	log.Printf("[VIRTUAL-DISPLAY] ensure completed displayID=%d total_elapsed_ms=%d bounds_elapsed_ms=%d"
-		vdm.displayID, time.Since(startedAt).Milliseconds, time.Since(boundsStartedAt).Milliseconds)
+	log.Printf("[VIRTUAL-DISPLAY] ensure completed displayID=%d total_elapsed_ms=%d bounds_elapsed_ms=%d",
+		vdm.displayID, time.Since(startedAt).Milliseconds(), time.Since(boundsStartedAt).Milliseconds())
 
 	return nil
 }
@@ -241,22 +241,22 @@ func (vdm *VirtualDisplayManager) Ensure error {
 // longer appears in WindowServer's online display list. This repairs the
 // orphaned-display reuse path: BrowserMuxHost must keep Chrome and display as a
 // valid pair even when macOS drops a previously reused display.
-func (vdm *VirtualDisplayManager) EnsurePresent error {
-	vdm.mu.Lock
-	needsRepair := vdm.display == nil || vdm.displayID == 0 || vdm.displayBoundsLocked != nil
+func (vdm *VirtualDisplayManager) EnsurePresent() error {
+	vdm.mu.Lock()
+	needsRepair := vdm.display == nil || vdm.displayID == 0 || vdm.displayBoundsLocked() != nil
 	if needsRepair {
 		log.Printf("[VIRTUAL-DISPLAY] display missing, recreating displayID=%d", vdm.displayID)
-		vdm.destroyDisplayLocked
-		vdm.resetLocked
+		vdm.destroyDisplayLocked()
+		vdm.resetLocked()
 	}
-	vdm.mu.Unlock
+	vdm.mu.Unlock()
 	if !needsRepair {
 		return nil
 	}
-	return vdm.Ensure
+	return vdm.Ensure()
 }
 
-func (vdm *VirtualDisplayManager) refreshBoundsLocked error {
+func (vdm *VirtualDisplayManager) refreshBoundsLocked() error {
 	var cx, cy, cw, ch C.int
 	if rc := C.dw_vd_bounds(C.uint32_t(vdm.displayID), &cx, &cy, &cw, &ch); rc != 0 || cw <= 0 || ch <= 0 {
 		return fmt.Errorf("virtual_display: displayID %d bounds unavailable rc=%d size=%dx%d", vdm.displayID, int(rc), int(cw), int(ch))
@@ -268,7 +268,7 @@ func (vdm *VirtualDisplayManager) refreshBoundsLocked error {
 	return nil
 }
 
-func (vdm *VirtualDisplayManager) displayBoundsLocked error {
+func (vdm *VirtualDisplayManager) displayBoundsLocked() error {
 	var cx, cy, cw, ch C.int
 	if rc := C.dw_vd_bounds(C.uint32_t(vdm.displayID), &cx, &cy, &cw, &ch); rc != 0 || cw <= 0 || ch <= 0 {
 		return fmt.Errorf("displayID %d unavailable rc=%d size=%dx%d", vdm.displayID, int(rc), int(cw), int(ch))
@@ -276,14 +276,14 @@ func (vdm *VirtualDisplayManager) displayBoundsLocked error {
 	return nil
 }
 
-func (vdm *VirtualDisplayManager) resetLocked {
+func (vdm *VirtualDisplayManager) resetLocked() {
 	vdm.display = nil
 	vdm.displayID = 0
 	vdm.x, vdm.y = 0, 0
 	vdm.w, vdm.h = 0, 0
 }
 
-func (vdm *VirtualDisplayManager) destroyDisplayLocked {
+func (vdm *VirtualDisplayManager) destroyDisplayLocked() {
 	if vdm.display != nil && uintptr(vdm.display) != virtualDisplayOrphanedSentinel {
 		C.dw_vd_destroy(vdm.display)
 	}
@@ -295,13 +295,13 @@ func (vdm *VirtualDisplayManager) destroyDisplayLocked {
 // Each call auto-increments an internal counter by 50 px so that multiple
 // concurrent Chrome instances are staggered and don't perfectly overlap inside
 // the virtual display. The offset wraps when it would exceed the display width.
-func (vdm *VirtualDisplayManager) WindowPosition (x, y int) {
+func (vdm *VirtualDisplayManager) WindowPosition() (x, y int) {
 	n := int(atomic.AddInt64(&vdm.instanceCount, 1) - 1)
 	const step = 50
 
-	vdm.mu.Lock
+	vdm.mu.Lock()
 	vx, vy, vw, vh := vdm.x, vdm.y, vdm.w, vdm.h
-	vdm.mu.Unlock
+	vdm.mu.Unlock()
 
 	offset := n * step
 	if vw > 0 && offset+step > vw {
@@ -316,25 +316,25 @@ func (vdm *VirtualDisplayManager) WindowPosition (x, y int) {
 // WindowPosition returns (offset, offset) — exported helper for tests that
 // need a deterministic position without consuming an instance slot.
 //
-// Deprecated: prefer WindowPosition for production use.
+// Deprecated: prefer WindowPosition() for production use.
 func (vdm *VirtualDisplayManager) WindowPositionAt(offset int) (x, y int) {
-	vdm.mu.Lock
-	defer vdm.mu.Unlock
+	vdm.mu.Lock()
+	defer vdm.mu.Unlock()
 	return vdm.x + offset, vdm.y + offset
 }
 
 // DisplayID returns the CGDirectDisplayID of the virtual display.
-// Returns 0 if the display has not yet been created via Ensure.
-func (vdm *VirtualDisplayManager) DisplayID uint32 {
-	vdm.mu.Lock
-	defer vdm.mu.Unlock
+// Returns 0 if the display has not yet been created via Ensure().
+func (vdm *VirtualDisplayManager) DisplayID() uint32 {
+	vdm.mu.Lock()
+	defer vdm.mu.Unlock()
 	return vdm.displayID
 }
 
 func (vdm *VirtualDisplayManager) CountWindowsOutsideDisplay(pid int) int {
-	vdm.mu.Lock
+	vdm.mu.Lock()
 	displayID := vdm.displayID
-	vdm.mu.Unlock
+	vdm.mu.Unlock()
 	if pid <= 0 || displayID == 0 {
 		return 0
 	}
@@ -342,9 +342,9 @@ func (vdm *VirtualDisplayManager) CountWindowsOutsideDisplay(pid int) int {
 }
 
 func (vdm *VirtualDisplayManager) inspectWindowsForPID(pid int) (total int, outside int, err error) {
-	vdm.mu.Lock
+	vdm.mu.Lock()
 	displayID := vdm.displayID
-	vdm.mu.Unlock
+	vdm.mu.Unlock()
 	if pid <= 0 {
 		return 0, 0, fmt.Errorf("virtual_display: invalid Chrome pid %d", pid)
 	}
@@ -359,13 +359,13 @@ func (vdm *VirtualDisplayManager) inspectWindowsForPID(pid int) (total int, outs
 }
 
 func (vdm *VirtualDisplayManager) VerifyChromeContained(pid int, timeout time.Duration) error {
-	startedAt := time.Now
+	startedAt := time.Now()
 	if timeout <= 0 {
 		timeout = BrowserMuxHostWindowContainmentTimeout
 	}
-	vdm.mu.Lock
+	vdm.mu.Lock()
 	displayID := vdm.displayID
-	vdm.mu.Unlock
+	vdm.mu.Unlock()
 	if pid <= 0 {
 		return fmt.Errorf("virtual_display: invalid Chrome pid %d", pid)
 	}
@@ -377,7 +377,7 @@ func (vdm *VirtualDisplayManager) VerifyChromeContained(pid int, timeout time.Du
 		return fmt.Errorf("virtual_display: displayID %d is not present in active display list", displayID)
 	}
 
-	deadline := time.Now.Add(timeout)
+	deadline := time.Now().Add(timeout)
 	polls := 0
 	lastTotal := 0
 	lastOutside := 0
@@ -392,22 +392,22 @@ func (vdm *VirtualDisplayManager) VerifyChromeContained(pid int, timeout time.Du
 		if total > 0 && outside == 0 {
 			stable++
 			if stable >= virtualDisplayContainmentStablePolls {
-				log.Printf("[VIRTUAL-DISPLAY] verified Chrome windows contained pid=%d windows=%d outside=%d polls=%d stable_polls=%d elapsed_ms=%d"
-					pid, total, outside, polls, stable, time.Since(startedAt).Milliseconds)
+				log.Printf("[VIRTUAL-DISPLAY] verified Chrome windows contained pid=%d windows=%d outside=%d polls=%d stable_polls=%d elapsed_ms=%d",
+					pid, total, outside, polls, stable, time.Since(startedAt).Milliseconds())
 				return nil
 			}
 		} else {
 			stable = 0
 		}
-		if time.Now.After(deadline) {
+		if time.Now().After(deadline) {
 			if lastOutside > 0 {
 				return fmt.Errorf("virtual_display: Chrome pid %d has %d/%d window(s) outside CGVirtualDisplay after %d polls", pid, lastOutside, lastTotal, polls)
 			}
 			if lastTotal == 0 {
 				return fmt.Errorf("virtual_display: Chrome pid %d has no normal on-screen window after %d polls", pid, polls)
 			}
-			log.Printf("[VIRTUAL-DISPLAY] verified Chrome windows contained pid=%d windows=%d outside=%d polls=%d stable_polls=%d elapsed_ms=%d"
-				pid, lastTotal, lastOutside, polls, stable, time.Since(startedAt).Milliseconds)
+			log.Printf("[VIRTUAL-DISPLAY] verified Chrome windows contained pid=%d windows=%d outside=%d polls=%d stable_polls=%d elapsed_ms=%d",
+				pid, lastTotal, lastOutside, polls, stable, time.Since(startedAt).Milliseconds())
 			return nil
 		}
 		time.Sleep(VirtualDisplayContainmentPollInterval)
@@ -417,9 +417,9 @@ func (vdm *VirtualDisplayManager) VerifyChromeContained(pid int, timeout time.Du
 // Close releases the CGVirtualDisplay. WindowServer automatically removes the
 // virtual display from the active display list once the last reference is
 // dropped. Safe to call multiple times.
-func (vdm *VirtualDisplayManager) Close error {
-	vdm.mu.Lock
-	defer vdm.mu.Unlock
+func (vdm *VirtualDisplayManager) Close() error {
+	vdm.mu.Lock()
+	defer vdm.mu.Unlock()
 
 	if vdm.display == nil {
 		return nil
@@ -429,8 +429,8 @@ func (vdm *VirtualDisplayManager) Close error {
 		log.Printf("[VIRTUAL-DISPLAY] releasing reused display handle displayID=%d", vdm.displayID)
 	} else {
 		log.Printf("[VIRTUAL-DISPLAY] destroying displayID=%d", vdm.displayID)
-		vdm.destroyDisplayLocked
+		vdm.destroyDisplayLocked()
 	}
-	vdm.resetLocked
+	vdm.resetLocked()
 	return nil
 }

@@ -16,8 +16,8 @@ type WebDriverSnapshotBuilder struct{}
 // sessionMode=true 时使用 @rN ref 格式，否则使用 eN 格式。
 func (b *WebDriverSnapshotBuilder) Build(ctx context.Context, wdc *WebDriverClient, sessionMode bool) (*browser.Snapshot, error) {
 	// 1. 查找交互元素
-	var elements Element
-	var infos ElementInfo
+	var elements []Element
+	var infos []ElementInfo
 	var err error
 
 	for attempt := 0; attempt < 3; attempt++ {
@@ -31,7 +31,7 @@ func (b *WebDriverSnapshotBuilder) Build(ctx context.Context, wdc *WebDriverClie
 		if err == nil {
 			break
 		}
-		if !strings.Contains(strings.ToLower(err.Error), "stale element reference") {
+		if !strings.Contains(strings.ToLower(err.Error()), "stale element reference") {
 			return nil, fmt.Errorf("snapshot_webdriver: batch get element info: %w", err)
 		}
 		time.Sleep(time.Duration(attempt+1) * 250 * time.Millisecond)
@@ -41,7 +41,7 @@ func (b *WebDriverSnapshotBuilder) Build(ctx context.Context, wdc *WebDriverClie
 	}
 
 	// 3. 过滤 + 构建 ElementRef 列表
-	refs := make(browser.ElementRef, 0, len(infos))
+	refs := make([]browser.ElementRef, 0, len(infos))
 	counter := 0
 	for _, info := range infos {
 		if !info.Visible || !info.Enabled {
@@ -61,21 +61,21 @@ func (b *WebDriverSnapshotBuilder) Build(ctx context.Context, wdc *WebDriverClie
 		stableKey := wdStableKey(role, name, info.TestID, info.Placeholder)
 
 		refs = append(refs, browser.ElementRef{
-			Ref: refStr
+			Ref: refStr,
 			Locator: browser.NodeLocator{
-				Engine: browser.EngineSafari
-				AXPath: "", // WebDriver 无 AX path
-				StableKey: stableKey
+				Engine:    browser.EngineSafari,
+				AXPath:    "", // WebDriver 无 AX path
+				StableKey: stableKey,
 				// 使用 Ordinal 存储序号以便定位回溯
-				Ordinal: counter
-			}
-			Role: role
-			Name: name
-			NameFull: name
-			NameShort: nameShort
-			Placeholder: info.Placeholder
-			TestID: info.TestID
-			Interactable: true
+				Ordinal: counter,
+			},
+			Role:         role,
+			Name:         name,
+			NameFull:     name,
+			NameShort:    nameShort,
+			Placeholder:  info.Placeholder,
+			TestID:       info.TestID,
+			Interactable: true,
 		})
 	}
 
@@ -100,13 +100,13 @@ func (b *WebDriverSnapshotBuilder) Build(ctx context.Context, wdc *WebDriverClie
 	}
 
 	return &browser.Snapshot{
-		PageTitle: pageTitle
-		URL: pageURL
-		Text: text
-		Refs: refs
-		SnapshotType: snapshotType
-		TokenEst: len(text) / 4
-		LoadState: loadState
+		PageTitle:    pageTitle,
+		URL:          pageURL,
+		Text:         text,
+		Refs:         refs,
+		SnapshotType: snapshotType,
+		TokenEst:     len(text) / 4,
+		LoadState:    loadState,
 	}, nil
 }
 

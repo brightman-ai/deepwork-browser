@@ -3,18 +3,18 @@ package browser
 // record_buffer_test.go — RecordBuffer 单元测试 + InputGateway tap 集成测试
 //
 // TC 覆盖:
-// TC-RB-01: Start/Stop 生命周期
-// TC-RB-02: 未录制时 Append 不 panic
-// TC-RB-03: mousePressed → "click" step
-// TC-RB-04: 连续可打印字符合并为 "type"
-// TC-RB-05: 特殊键 → "keypress"
-// TC-RB-06: 混合事件 → 正确 seq
-// TC-RB-07: ExportJSON 可反序列化
-// TC-RB-08: SetSnapshotFn 填充 SnapshotBefore
-// TC-RB-09: 连续两次 Start 重置状态
-// TC-RB-10: Stop 未录制时不 panic，返回空 trace
-// TC-RB-11: 并发 Append 不 race
-// TC-IG-01: InputGateway.HandleInput → RecordBuffer tap 集成
+//   TC-RB-01: Start/Stop 生命周期
+//   TC-RB-02: 未录制时 Append 不 panic
+//   TC-RB-03: mousePressed → "click" step
+//   TC-RB-04: 连续可打印字符合并为 "type"
+//   TC-RB-05: 特殊键 → "keypress"
+//   TC-RB-06: 混合事件 → 正确 seq
+//   TC-RB-07: ExportJSON 可反序列化
+//   TC-RB-08: SetSnapshotFn 填充 SnapshotBefore
+//   TC-RB-09: 连续两次 Start 重置状态
+//   TC-RB-10: Stop 未录制时不 panic，返回空 trace
+//   TC-RB-11: 并发 Append 不 race
+//   TC-IG-01: InputGateway.HandleInput → RecordBuffer tap 集成
 
 import (
 	"context"
@@ -29,22 +29,22 @@ import (
 // ============================================================
 
 func Test_TC_RB_01_StartStop(t *testing.T) {
-	rb := NewRecordBuffer
+	rb := NewRecordBuffer()
 
-	if rb.IsRecording {
-		t.Fatal("IsRecording = true before Start, want false")
+	if rb.IsRecording() {
+		t.Fatal("IsRecording() = true before Start, want false")
 	}
 
 	rb.Start("example.com", "https://example.com/page")
 
-	if !rb.IsRecording {
-		t.Fatal("IsRecording = false after Start, want true")
+	if !rb.IsRecording() {
+		t.Fatal("IsRecording() = false after Start, want true")
 	}
 
-	trace := rb.Stop
+	trace := rb.Stop()
 
-	if rb.IsRecording {
-		t.Fatal("IsRecording = true after Stop, want false")
+	if rb.IsRecording() {
+		t.Fatal("IsRecording() = true after Stop, want false")
 	}
 	if trace.Domain != "example.com" {
 		t.Errorf("trace.Domain = %q, want %q", trace.Domain, "example.com")
@@ -55,7 +55,7 @@ func Test_TC_RB_01_StartStop(t *testing.T) {
 	if trace.DurationMs < 0 {
 		t.Errorf("trace.DurationMs = %d, want >= 0", trace.DurationMs)
 	}
-	if trace.StartTime.IsZero {
+	if trace.StartTime.IsZero() {
 		t.Error("trace.StartTime is zero, want non-zero")
 	}
 }
@@ -65,23 +65,23 @@ func Test_TC_RB_01_StartStop(t *testing.T) {
 // ============================================================
 
 func Test_TC_RB_02_NotRecording_NoPanic(t *testing.T) {
-	rb := NewRecordBuffer
+	rb := NewRecordBuffer()
 
 	// 未 Start 时调用不应 panic
 	rb.AppendMouseEvent(&InputEvent{
-		Type: "mouse"
-		Event: "mousePressed"
-		X: 100
-		Y: 200
+		Type:  "mouse",
+		Event: "mousePressed",
+		X:     100,
+		Y:     200,
 	})
 	rb.AppendKeyEvent(&InputEvent{
-		Type: "keyboard"
-		Event: "keyDown"
-		Key: "a"
+		Type:  "keyboard",
+		Event: "keyDown",
+		Key:   "a",
 	})
 
-	if rb.StepCount != 0 {
-		t.Errorf("StepCount = %d, want 0 (not recording)", rb.StepCount)
+	if rb.StepCount() != 0 {
+		t.Errorf("StepCount() = %d, want 0 (not recording)", rb.StepCount())
 	}
 }
 
@@ -90,18 +90,18 @@ func Test_TC_RB_02_NotRecording_NoPanic(t *testing.T) {
 // ============================================================
 
 func Test_TC_RB_03_AppendMouseClick(t *testing.T) {
-	rb := NewRecordBuffer
+	rb := NewRecordBuffer()
 	rb.Start("test.com", "https://test.com")
 
 	rb.AppendMouseEvent(&InputEvent{
-		Type: "mouse"
-		Event: "mousePressed"
-		X: 150.0
-		Y: 300.0
-		Button: "left"
+		Type:   "mouse",
+		Event:  "mousePressed",
+		X:      150.0,
+		Y:      300.0,
+		Button: "left",
 	})
 
-	trace := rb.Stop
+	trace := rb.Stop()
 
 	if len(trace.Steps) != 1 {
 		t.Fatalf("len(trace.Steps) = %d, want 1", len(trace.Steps))
@@ -117,7 +117,7 @@ func Test_TC_RB_03_AppendMouseClick(t *testing.T) {
 		t.Fatal("step.Coordinates is nil, want non-nil")
 	}
 	if step.Coordinates.X != 150.0 || step.Coordinates.Y != 300.0 {
-		t.Errorf("step.Coordinates = {%.1f, %.1f}, want {150.0, 300.0}"
+		t.Errorf("step.Coordinates = {%.1f, %.1f}, want {150.0, 300.0}",
 			step.Coordinates.X, step.Coordinates.Y)
 	}
 	if step.TimestampMs <= 0 {
@@ -130,19 +130,19 @@ func Test_TC_RB_03_AppendMouseClick(t *testing.T) {
 // ============================================================
 
 func Test_TC_RB_04_AppendKeyType(t *testing.T) {
-	rb := NewRecordBuffer
+	rb := NewRecordBuffer()
 	rb.Start("test.com", "https://test.com")
 
-	keys := string{"H", "e", "l", "l", "o"}
+	keys := []string{"H", "e", "l", "l", "o"}
 	for _, k := range keys {
 		rb.AppendKeyEvent(&InputEvent{
-			Type: "keyboard"
-			Event: "keyDown"
-			Key: k
+			Type:  "keyboard",
+			Event: "keyDown",
+			Key:   k,
 		})
 	}
 
-	trace := rb.Stop
+	trace := rb.Stop()
 
 	if len(trace.Steps) != 1 {
 		t.Fatalf("len(trace.Steps) = %d, want 1 (merged type step)", len(trace.Steps))
@@ -164,16 +164,16 @@ func Test_TC_RB_04_AppendKeyType(t *testing.T) {
 // ============================================================
 
 func Test_TC_RB_05_AppendKeySpecial(t *testing.T) {
-	rb := NewRecordBuffer
+	rb := NewRecordBuffer()
 	rb.Start("test.com", "https://test.com")
 
 	rb.AppendKeyEvent(&InputEvent{
-		Type: "keyboard"
-		Event: "keyDown"
-		Key: "Enter"
+		Type:  "keyboard",
+		Event: "keyDown",
+		Key:   "Enter",
 	})
 
-	trace := rb.Stop
+	trace := rb.Stop()
 
 	if len(trace.Steps) != 1 {
 		t.Fatalf("len(trace.Steps) = %d, want 1", len(trace.Steps))
@@ -195,7 +195,7 @@ func Test_TC_RB_05_AppendKeySpecial(t *testing.T) {
 // ============================================================
 
 func Test_TC_RB_06_MixedEvents(t *testing.T) {
-	rb := NewRecordBuffer
+	rb := NewRecordBuffer()
 	rb.Start("test.com", "https://test.com")
 
 	// click
@@ -206,20 +206,20 @@ func Test_TC_RB_06_MixedEvents(t *testing.T) {
 	// Enter
 	rb.AppendKeyEvent(&InputEvent{Type: "keyboard", Event: "keyDown", Key: "Enter"})
 
-	trace := rb.Stop
+	trace := rb.Stop()
 
 	if len(trace.Steps) != 3 {
 		t.Fatalf("len(trace.Steps) = %d, want 3 (click + type + keypress)", len(trace.Steps))
 	}
 
 	// 验证 seq 和 action
-	expectations := struct {
+	expectations := []struct {
 		action string
-		seq int
+		seq    int
 	}{
-		{"click", 1}
-		{"type", 2}
-		{"keypress", 3}
+		{"click", 1},
+		{"type", 2},
+		{"keypress", 3},
 	}
 	for i, exp := range expectations {
 		s := trace.Steps[i]
@@ -242,21 +242,21 @@ func Test_TC_RB_06_MixedEvents(t *testing.T) {
 // ============================================================
 
 func Test_TC_RB_07_ExportJSON(t *testing.T) {
-	rb := NewRecordBuffer
+	rb := NewRecordBuffer()
 	rb.Start("example.com", "https://example.com")
 	rb.AppendMouseEvent(&InputEvent{Type: "mouse", Event: "mousePressed", X: 5, Y: 10})
 
-	data, err := rb.ExportJSON
+	data, err := rb.ExportJSON()
 	if err != nil {
-		t.Fatalf("ExportJSON error = %v", err)
+		t.Fatalf("ExportJSON() error = %v", err)
 	}
 	if len(data) == 0 {
-		t.Fatal("ExportJSON returned empty bytes")
+		t.Fatal("ExportJSON() returned empty bytes")
 	}
 
 	var parsed RecordTrace
 	if err := json.Unmarshal(data, &parsed); err != nil {
-		t.Fatalf("json.Unmarshal(ExportJSON) error = %v\nJSON: %s", err, data)
+		t.Fatalf("json.Unmarshal(ExportJSON()) error = %v\nJSON: %s", err, data)
 	}
 	if parsed.Domain != "example.com" {
 		t.Errorf("parsed.Domain = %q, want %q", parsed.Domain, "example.com")
@@ -271,7 +271,7 @@ func Test_TC_RB_07_ExportJSON(t *testing.T) {
 // ============================================================
 
 func Test_TC_RB_08_SnapshotFn(t *testing.T) {
-	rb := NewRecordBuffer
+	rb := NewRecordBuffer()
 
 	called := false
 	rb.SetSnapshotFn(func(x, y float64) string {
@@ -281,7 +281,7 @@ func Test_TC_RB_08_SnapshotFn(t *testing.T) {
 
 	rb.Start("test.com", "https://test.com")
 	rb.AppendMouseEvent(&InputEvent{Type: "mouse", Event: "mousePressed", X: 50, Y: 60})
-	trace := rb.Stop
+	trace := rb.Stop()
 
 	if !called {
 		t.Error("snapshotFn was not called during mousePressed")
@@ -299,7 +299,7 @@ func Test_TC_RB_08_SnapshotFn(t *testing.T) {
 // ============================================================
 
 func Test_TC_RB_09_DoubleStart(t *testing.T) {
-	rb := NewRecordBuffer
+	rb := NewRecordBuffer()
 
 	rb.Start("first.com", "https://first.com")
 	rb.AppendMouseEvent(&InputEvent{Type: "mouse", Event: "mousePressed", X: 1, Y: 1})
@@ -307,11 +307,11 @@ func Test_TC_RB_09_DoubleStart(t *testing.T) {
 	// 第二次 Start 应重置
 	rb.Start("second.com", "https://second.com")
 
-	if rb.StepCount != 0 {
-		t.Errorf("StepCount = %d after second Start, want 0", rb.StepCount)
+	if rb.StepCount() != 0 {
+		t.Errorf("StepCount() = %d after second Start, want 0", rb.StepCount())
 	}
 
-	trace := rb.Stop
+	trace := rb.Stop()
 	if trace.Domain != "second.com" {
 		t.Errorf("trace.Domain = %q, want %q", trace.Domain, "second.com")
 	}
@@ -325,13 +325,13 @@ func Test_TC_RB_09_DoubleStart(t *testing.T) {
 // ============================================================
 
 func Test_TC_RB_10_StopWhenNotRecording(t *testing.T) {
-	rb := NewRecordBuffer
+	rb := NewRecordBuffer()
 
 	// 未 Start，直接 Stop — 不应 panic
-	trace := rb.Stop
+	trace := rb.Stop()
 
 	if trace.Domain != "" || trace.StartURL != "" {
-		t.Errorf("Stop on non-recording returned non-empty trace: %+v", trace)
+		t.Errorf("Stop() on non-recording returned non-empty trace: %+v", trace)
 	}
 }
 
@@ -340,7 +340,7 @@ func Test_TC_RB_10_StopWhenNotRecording(t *testing.T) {
 // ============================================================
 
 func Test_TC_RB_11_Concurrent(t *testing.T) {
-	rb := NewRecordBuffer
+	rb := NewRecordBuffer()
 	rb.Start("concurrent.com", "https://concurrent.com")
 
 	const goroutines = 20
@@ -351,28 +351,28 @@ func Test_TC_RB_11_Concurrent(t *testing.T) {
 
 	for i := 0; i < goroutines; i++ {
 		go func(id int) {
-			defer wg.Done
+			defer wg.Done()
 			for j := 0; j < eventsPerGoroutine; j++ {
 				if j%2 == 0 {
 					rb.AppendMouseEvent(&InputEvent{
-						Type: "mouse"
-						Event: "mousePressed"
-						X: float64(id)
-						Y: float64(j)
+						Type:  "mouse",
+						Event: "mousePressed",
+						X:     float64(id),
+						Y:     float64(j),
 					})
 				} else {
 					rb.AppendKeyEvent(&InputEvent{
-						Type: "keyboard"
-						Event: "keyDown"
-						Key: "a"
+						Type:  "keyboard",
+						Event: "keyDown",
+						Key:   "a",
 					})
 				}
 			}
 		}(i)
 	}
 
-	wg.Wait
-	trace := rb.Stop
+	wg.Wait()
+	trace := rb.Stop()
 
 	// 总 step 数 > 0 即可（合并逻辑使精确数不确定）
 	if len(trace.Steps) == 0 {
@@ -381,7 +381,7 @@ func Test_TC_RB_11_Concurrent(t *testing.T) {
 	// 验证 seq 单调递增
 	for i := 1; i < len(trace.Steps); i++ {
 		if trace.Steps[i].Seq <= trace.Steps[i-1].Seq {
-			t.Errorf("Steps[%d].Seq=%d not > Steps[%d].Seq=%d — seq not monotonic"
+			t.Errorf("Steps[%d].Seq=%d not > Steps[%d].Seq=%d — seq not monotonic",
 				i, trace.Steps[i].Seq, i-1, trace.Steps[i-1].Seq)
 			break
 		}
@@ -394,7 +394,7 @@ func Test_TC_RB_11_Concurrent(t *testing.T) {
 
 func Test_TC_IG_01_InputGateway_RecordTap(t *testing.T) {
 	// 构造 InputGateway — 使用 test hook 避免真实 Chrome
-	gw := NewInputGateway(context.Background, nil)
+	gw := NewInputGateway(context.Background(), nil)
 
 	dispatchMouseCalls := 0
 	dispatchKeyCalls := 0
@@ -408,30 +408,30 @@ func Test_TC_IG_01_InputGateway_RecordTap(t *testing.T) {
 	}
 
 	// 设置 Takeover 模式（模拟已抢锁状态）
-	gw.mu.Lock
+	gw.mu.Lock()
 	gw.mode = TakeoverModeTakeover
 	gw.owner = "conn-test"
 	gw.leaseToken = "lease-abc"
-	gw.leaseExpiry = time.Now.Add(time.Minute)
-	gw.mu.Unlock
+	gw.leaseExpiry = time.Now().Add(time.Minute)
+	gw.mu.Unlock()
 
 	// 注入 RecordBuffer
-	rb := NewRecordBuffer
+	rb := NewRecordBuffer()
 	rb.Start("gateway.test", "https://gateway.test")
 	gw.SetRecordBuffer(rb)
 
 	// 发送 mouse 事件
 	ack := gw.HandleInput("conn-test", &InputMessage{
-		Type: "input"
-		Seq: 1
-		Lease: "lease-abc"
+		Type:  "input",
+		Seq:   1,
+		Lease: "lease-abc",
 		Event: InputEvent{
-			Type: "mouse"
-			Event: "mousePressed"
-			Button: "left"
-			X: 100
-			Y: 200
-		}
+			Type:   "mouse",
+			Event:  "mousePressed",
+			Button: "left",
+			X:      100,
+			Y:      200,
+		},
 	})
 	if ack.Status != "accepted" {
 		t.Fatalf("HandleInput mouse: ack.Status = %q, want %q", ack.Status, "accepted")
@@ -439,14 +439,14 @@ func Test_TC_IG_01_InputGateway_RecordTap(t *testing.T) {
 
 	// 发送 keyboard 事件
 	ack = gw.HandleInput("conn-test", &InputMessage{
-		Type: "input"
-		Seq: 2
-		Lease: "lease-abc"
+		Type:  "input",
+		Seq:   2,
+		Lease: "lease-abc",
 		Event: InputEvent{
-			Type: "keyboard"
-			Event: "keyDown"
-			Key: "Enter"
-		}
+			Type:  "keyboard",
+			Event: "keyDown",
+			Key:   "Enter",
+		},
 	})
 	if ack.Status != "accepted" {
 		t.Fatalf("HandleInput keyboard: ack.Status = %q, want %q", ack.Status, "accepted")
@@ -461,7 +461,7 @@ func Test_TC_IG_01_InputGateway_RecordTap(t *testing.T) {
 	}
 
 	// 验证 RecordBuffer 收到事件
-	trace := rb.Stop
+	trace := rb.Stop()
 	if len(trace.Steps) != 2 {
 		t.Fatalf("len(trace.Steps) = %d, want 2 (click + keypress)", len(trace.Steps))
 	}
@@ -485,10 +485,10 @@ func Test_TC_IG_01_InputGateway_RecordTap(t *testing.T) {
 	// 负向断言: 无 RecordBuffer 时不崩溃
 	gw.SetRecordBuffer(nil)
 	ack = gw.HandleInput("conn-test", &InputMessage{
-		Type: "input"
-		Seq: 3
-		Lease: "lease-abc"
-		Event: InputEvent{Type: "mouse", Event: "mousePressed", X: 1, Y: 1}
+		Type:  "input",
+		Seq:   3,
+		Lease: "lease-abc",
+		Event: InputEvent{Type: "mouse", Event: "mousePressed", X: 1, Y: 1},
 	})
 	if ack.Status != "accepted" {
 		t.Errorf("HandleInput with nil RecordBuffer: ack.Status = %q, want accepted", ack.Status)
@@ -500,14 +500,14 @@ func Test_TC_IG_01_InputGateway_RecordTap(t *testing.T) {
 // ============================================================
 
 func Test_TC_RB_MouseRelease_Ignored(t *testing.T) {
-	rb := NewRecordBuffer
+	rb := NewRecordBuffer()
 	rb.Start("test.com", "https://test.com")
 
 	rb.AppendMouseEvent(&InputEvent{Type: "mouse", Event: "mouseReleased", X: 10, Y: 20})
 	rb.AppendMouseEvent(&InputEvent{Type: "mouse", Event: "mouseMoved", X: 30, Y: 40})
 
-	if rb.StepCount != 0 {
-		t.Errorf("StepCount = %d, want 0 (mouseReleased and mouseMoved should be ignored)", rb.StepCount)
+	if rb.StepCount() != 0 {
+		t.Errorf("StepCount() = %d, want 0 (mouseReleased and mouseMoved should be ignored)", rb.StepCount())
 	}
 }
 
@@ -516,13 +516,13 @@ func Test_TC_RB_MouseRelease_Ignored(t *testing.T) {
 // ============================================================
 
 func Test_TC_RB_KeyUp_Ignored(t *testing.T) {
-	rb := NewRecordBuffer
+	rb := NewRecordBuffer()
 	rb.Start("test.com", "https://test.com")
 
 	rb.AppendKeyEvent(&InputEvent{Type: "keyboard", Event: "keyUp", Key: "a"})
 	rb.AppendKeyEvent(&InputEvent{Type: "keyboard", Event: "char", Key: "a"})
 
-	if rb.StepCount != 0 {
-		t.Errorf("StepCount = %d, want 0 (keyUp and char should be ignored)", rb.StepCount)
+	if rb.StepCount() != 0 {
+		t.Errorf("StepCount() = %d, want 0 (keyUp and char should be ignored)", rb.StepCount())
 	}
 }
