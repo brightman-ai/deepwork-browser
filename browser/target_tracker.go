@@ -75,9 +75,10 @@ type TargetTracker struct {
 	onDialog        func(JavaScriptDialogEvent)              // JS dialog bridge → WebUI modal
 	foregroundGuard func(target.ID, string) error            // fail-closed guard before Target.activateTarget/Page.bringToFront
 	closeTarget     func(target.ID) error                    // Target close strategy; BrowserMuxHost uses DevTools HTTP close
-	gestureClaims   []gestureClaim                           // 本地 takeover 输入成功 dispatch 后的弱证据兜底
-	windowHints     []windowOpenHint                         // CDP Page.windowOpen(userGesture=true) 强证据
-	pageListeners   map[string]bool                          // 每个 target 只绑定一次 Page.windowOpen listener
+	gestureClaims          []gestureClaim                           // 本地 takeover 输入成功 dispatch 后的弱证据兜底
+	windowHints            []windowOpenHint                         // CDP Page.windowOpen(userGesture=true) 强证据
+	pageListeners          map[string]bool                          // 每个 target 只绑定一次 Page.windowOpen listener
+	followProgrammaticNav  bool                                     // [FIX-CUJ16-LIVEVIEW] 当 activeID==primaryID(blank) 且其他 tab 有真实 URL 时自动跟随
 }
 
 func (tt *TargetTracker) totalTabCountLocked() int {
@@ -238,6 +239,18 @@ func (tt *TargetTracker) SetOnJavaScriptDialog(fn func(JavaScriptDialogEvent)) {
 	tt.mu.Lock()
 	defer tt.mu.Unlock()
 	tt.onDialog = fn
+}
+
+// SetFollowProgrammaticNav 启用"liveview 跟随程序化导航"策略。
+// 当 activeID == primaryID 且 primaryID 的 URL 是空白页时，任何其他 tab 拿到真实 URL
+// 就自动切换 liveview，使 Human Portal 跟随 AI 的研究导航而非停留在 about:blank。
+//
+// 只对 primaryID=blank 的情况生效，不影响用户手动多标签管理或 popup 处理路径。
+// [FIX-CUJ16-LIVEVIEW, 2026-05-25]
+func (tt *TargetTracker) SetFollowProgrammaticNav(enabled bool) {
+	tt.mu.Lock()
+	defer tt.mu.Unlock()
+	tt.followProgrammaticNav = enabled
 }
 
 // SetForegroundGuard registers a fail-closed safety check before a target is
@@ -1183,6 +1196,26 @@ func (tt *TargetTracker) HandleTargetInfoChanged(info *target.Info) {
 	isPending := tt.pendingSwitch[info.TargetID] || claimedByOpener || claimedByWindowOpen || claimedByGesture
 	shouldSwitchNow := !isActive && isPending && ok &&
 		!IsBlankTargetURL(info.URL)
+
+	// [FIX-CUJ16-LIVEVIEW] 程序化导航跟随: 当 followProgrammaticNav=true 且:
+	//   - activeID == primaryID (liveview 停在 bootstrap blank tab)
+	//   - activeID 对应 URL 是空白页
+	//   - 此 target 不是 active 且拿到了真实 URL
+	// 则自动切换 liveview 跟随该 tab，使 Human Portal 看到 AI 研究的真实内容。
+	// 不影响 pendingSwitch/gesture/opener 路径；仅在 shouldSwitchNow 为 false 时补充触发。
+	if !shouldSwitchNow && tt.followProgrammaticNav && !isActive && ok && !IsBlankTargetURL(info.URL) {
+		activeIsBlankPrimary := tt.activeID == tt.primaryID || tt.activeID == ""
+		if activeIsBlankPrimary {
+			if activePrimary := tt.targets[tt.primaryID]; activePrimary != nil && IsBlankTargetURL(activePrimary.URL) {
+				shouldSwitchNow = true
+				logger.Info(targetLogContext(), "programmatic nav follow triggered",
+					"target_id", info.TargetID,
+					"url", info.URL,
+					"primary_id", tt.primaryID,
+					"active_id", tt.activeID)
+			}
+		}
+	}
 
 	var oldActiveCtx context.Context
 	var newCtx context.Context

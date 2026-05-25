@@ -12,6 +12,10 @@ type Observation struct {
 	Visual     *VisualState     `json:"visual,omitempty"`
 	Behavior   *BehaviorState   `json:"behavior,omitempty"`
 	Telemetry  *TelemetryState  `json:"telemetry,omitempty"`
+
+	// ext holds optional SUT-side artifact state (transcript, workspace dir).
+	// Not serialised to JSON — internal use only.
+	ext *obsExtension `json:"-"`
 }
 
 // PageState — 页面基本信息

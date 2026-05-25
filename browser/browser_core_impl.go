@@ -780,7 +780,7 @@ func (impl *browserCoreImpl) Navigate(ctx context.Context, url string) (*Snapsho
 			"elapsed_ms", time.Since(domSettleStart).Milliseconds())
 	}
 
-	// 终局语义: 地址栏导航应始终作用于“当前活跃 target”。
+	// 终局语义: 地址栏导航应始终作用于"当前活跃 target"。
 	// 之前无条件回切 root target，会让新 tab / auth target 的 URL 输入回车误导航 root tab，
 	// 直接破坏多 tab 基本语义，也会让 ChatGPT/Apple 登录流程回错标签。
 	snapshotStart := time.Now()

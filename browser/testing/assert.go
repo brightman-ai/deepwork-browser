@@ -15,20 +15,57 @@ type primitive func(obs *Observation, args string) (bool, string)
 
 // primitives 是所有已注册断言原语的查找表。
 var primitives = map[string]primitive{
-	"exists":                  evalExists,
-	"count":                   evalCount,
-	"text_contains":           evalTextContains,
-	"url_matches":             evalURLMatches,
-	"tab_count":               evalTabCount,
-	"active_tab_url_contains":   evalActiveTabURLContains,
-	"active_tab_matches_url":    evalActiveTabURLContains,
-	"console_errors_count":    evalConsoleErrorsCount,
-	"network_failures_count":  evalNetworkFailuresCount,
-	"latency_lt":              evalLatencyLt,
-	"visible":                 evalVisible,
-	"gone":                    evalGone,
-	"region_non_empty":        evalRegionNonEmpty,
-	"region_not_overlapped":   evalRegionNotOverlapped,
+	"exists":                      evalExists,
+	"count":                       evalCount,
+	"text_contains":               evalTextContains,
+	"url_matches":                 evalURLMatches,
+	"tab_count":                   evalTabCount,
+	"active_tab_url_contains":     evalActiveTabURLContains,
+	"active_tab_matches_url":      evalActiveTabURLContains,
+	"console_errors_count":        evalConsoleErrorsCount,
+	"network_failures_count":      evalNetworkFailuresCount,
+	"latency_lt":                  evalLatencyLt,
+	"visible":                     evalVisible,
+	"gone":                        evalGone,
+	"region_non_empty":            evalRegionNonEmpty,
+	"region_not_overlapped":       evalRegionNotOverlapped,
+	// SUT-side transcript + file oracles
+	"transcript_tool_count":       evalTranscriptToolCountStub,
+	"transcript_has":              evalTranscriptHasDone,
+	"transcript_error_count":      evalTranscriptErrorCountStub,
+	"transcript_done_count":       evalTranscriptDoneCountStub,
+	"transcript_text_contains":    evalTranscriptTextContains,
+	"transcript_format_v1":        evalTranscriptFormatV1,
+	"file_glob_count":             evalFileGlobCountStub,
+}
+
+// transcriptCountFuncs lists the primitives that require a comparison suffix
+// (analogous to count/tab_count). Registered here so Evaluate can route them.
+var transcriptCountFuncs = map[string]bool{
+	"transcript_tool_count":  true,
+	"transcript_error_count": true,
+	"transcript_done_count":  true,
+	"file_glob_count":        true,
+}
+
+// evalTranscriptToolCountStub is a placeholder called without comparison — blocked.
+func evalTranscriptToolCountStub(obs *Observation, args string) (bool, string) {
+	return false, "BLOCKED: transcript_tool_count requires comparison operator (e.g. >= 3)"
+}
+
+// evalTranscriptErrorCountStub is a placeholder called without comparison — blocked.
+func evalTranscriptErrorCountStub(obs *Observation, args string) (bool, string) {
+	return false, "BLOCKED: transcript_error_count requires comparison operator (e.g. == 0)"
+}
+
+// evalTranscriptDoneCountStub is a placeholder called without comparison — blocked.
+func evalTranscriptDoneCountStub(obs *Observation, args string) (bool, string) {
+	return false, "BLOCKED: transcript_done_count requires comparison operator (e.g. >= 1)"
+}
+
+// evalFileGlobCountStub is a placeholder called without comparison — blocked.
+func evalFileGlobCountStub(obs *Observation, args string) (bool, string) {
+	return false, "BLOCKED: file_glob_count requires comparison operator (e.g. >= 3)"
 }
 
 // exprPattern 匹配 "funcName(args) [op value]" 形式的表达式。
@@ -84,6 +121,25 @@ func (e *AssertionEngine) EvaluateWithUsing(obs *Observation, expr string, using
 			result.Using = inferUsing(funcName)
 			result.Status = boolToStatus(passed)
 			result.Reason = reason
+		} else if transcriptCountFuncs[funcName] {
+			// transcript/file count primitives that require a comparison operator
+			var passed bool
+			var reason string
+			switch funcName {
+			case "transcript_tool_count":
+				passed, reason = evalTranscriptToolCountWithComparison(obs, funcArgs, comparison)
+			case "transcript_error_count":
+				passed, reason = evalTranscriptErrorCountWithComparison(obs, funcArgs, comparison)
+			case "transcript_done_count":
+				passed, reason = evalTranscriptDoneCountWithComparison(obs, comparison)
+			case "file_glob_count":
+				passed, reason = evalFileGlobCountWithComparison(obs, funcArgs, comparison)
+			default:
+				passed, reason = false, fmt.Sprintf("BLOCKED: unhandled count primitive %q", funcName)
+			}
+			result.Using = inferUsing(funcName)
+			result.Status = boolToStatus(passed)
+			result.Reason = reason
 		} else {
 			passed, reason := fn(obs, funcArgs)
 			result.Using = inferUsing(funcName)
@@ -117,6 +173,13 @@ func (e *AssertionEngine) EvaluateWithUsing(obs *Observation, expr string, using
 	// 覆盖 using（若调用方显式传入）
 	if len(using) > 0 {
 		result.Using = using
+	}
+
+	// Primitives that return (false, "BLOCKED: ...") signal missing infrastructure,
+	// not a real assertion failure. Promote StatusFail → StatusBlocked so the step
+	// runner can distinguish "infra not wired" from "check ran and failed".
+	if result.Status == StatusFail && strings.HasPrefix(result.Reason, "BLOCKED:") {
+		result.Status = StatusBlocked
 	}
 
 	// Visual oracle overlay：若 using 含 "visual" 且 Vision 已配置
@@ -497,6 +560,11 @@ func inferUsing(funcName string) []string {
 		return []string{"telemetry"}
 	case "region_non_empty", "region_not_overlapped":
 		return []string{"layout"}
+	case "transcript_tool_count", "transcript_has", "transcript_error_count",
+		"transcript_done_count", "transcript_text_contains", "transcript_format_v1":
+		return []string{"transcript"}
+	case "file_glob_count":
+		return []string{"file"}
 	default:
 		return nil
 	}

@@ -721,7 +721,15 @@ func runJourney(args []string) {
 
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 		defer cancel()
+
+		// TASK C: Chrome-leak fix — wrap ephemeral cleanup in a panic-recovering defer.
+		// Without the recover, a panic inside the journey runner would unwind past the
+		// deferred cleanup without executing it, leaving a detached Chrome process behind
+		// and eventually exhausting available CDP ports.
 		defer func() {
+			if r := recover(); r != nil {
+				fmt.Fprintf(os.Stderr, "dw-browser journey: recovered panic, cleaning up Chrome: %v\n", r)
+			}
 			bc.Close(ctx)
 			cleanupEphemeral(profileID)
 		}()
@@ -759,7 +767,10 @@ func runJourney(args []string) {
 		runner.SetVision(btest.NewVisionOracle())
 	}
 
-	ctx2, cancel2 := context.WithTimeout(context.Background(), 10*time.Minute)
+	// Use a generous timeout (70 min) to accommodate long AI research turns
+	// that can each take 10+ minutes. Individual step timeouts are governed by
+	// spec wait.timeout_ms; this outer deadline is a last-resort safety net.
+	ctx2, cancel2 := context.WithTimeout(context.Background(), 70*time.Minute)
 	defer cancel2()
 
 	result, err := runner.Run(ctx2, spec)
@@ -889,6 +900,19 @@ func (e *oneshotActionExecutor) Wait(ctx context.Context, condition string, time
 	waitCtx, cancel := context.WithDeadline(ctx, deadline)
 	defer cancel()
 	return runWaitCondition(waitCtx, e.impl, condition)
+}
+
+// ResizeViewport implements btest.MutationExecutor so the journey runner uses
+// a clean viewport resize path instead of falling back to the JS-based path
+// (which fails because ParseAction lowercases the entire action string,
+// corrupting "javascript:window.resizeTo(…)" → unknown operation). [FIX-J3b]
+func (e *oneshotActionExecutor) ResizeViewport(ctx context.Context, width, height int) error {
+	// Prefer SetLiveViewport when the impl supports it (concrete browserCoreImpl does).
+	if lvs, ok := e.impl.(browser.LiveViewportSyncer); ok {
+		return lvs.SetLiveViewport(width, height, 1.0, false)
+	}
+	// Fallback: use EvalJS with the JS snippet case preserved.
+	return e.impl.EvalJS(ctx, fmt.Sprintf("window.resizeTo(%d,%d)", width, height), nil)
 }
 
 func (e *oneshotActionExecutor) Snapshot(ctx context.Context) (*browser.Snapshot, error) {

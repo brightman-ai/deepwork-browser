@@ -55,10 +55,11 @@ type JourneySpec struct {
 type EnvironmentSpec struct {
 	BaseURL      string `yaml:"base_url" json:"base_url"`
 	EntryURL     string `yaml:"entry_url,omitempty" json:"entry_url,omitempty"`
-	Mode         string `yaml:"mode" json:"mode"`                             // "headless" | "headed"
-	Viewport     string `yaml:"viewport,omitempty" json:"viewport,omitempty"` // "1440x900"
-	Client       string `yaml:"client,omitempty" json:"client,omitempty"`     // "chrome" | "safari"
+	Mode         string `yaml:"mode" json:"mode"`                                         // "headless" | "headed"
+	Viewport     string `yaml:"viewport,omitempty" json:"viewport,omitempty"`             // "1440x900"
+	Client       string `yaml:"client,omitempty" json:"client,omitempty"`                 // "chrome" | "safari"
 	CleanSession bool   `yaml:"clean_session,omitempty" json:"clean_session,omitempty"`
+	WorkspaceDir string `yaml:"workspace_dir,omitempty" json:"workspace_dir,omitempty"`   // base dir for file_glob assertions (default: cwd)
 }
 
 // BaselineRef — 基线引用（快照文件 + 不变量断言）
