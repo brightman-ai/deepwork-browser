@@ -726,6 +726,40 @@ func (tt *TargetTracker) registerKnownTarget(targetID target.ID, url string) (*t
 	return tracked, nil
 }
 
+// activateBrowserTargetNoFront activates the tab in Chrome's process (so the
+// tab renders for screencasting) but skips Page.bringToFront, which would
+// trigger [NSWindow makeKeyAndOrderFront:] on macOS and cause a Chrome window
+// sitting on CGVirtualDisplay to escape to the main Space.
+// Use for programmatic-nav liveview switches where we want the screencast to
+// follow the AI navigation without disrupting the user's desktop.
+func (tt *TargetTracker) activateBrowserTargetNoFront(targetID target.ID, reason string) error {
+	if targetID == "" {
+		return nil
+	}
+	if tt.browserCtx == nil {
+		return nil
+	}
+	cdpCtx := chromedp.FromContext(tt.browserCtx)
+	if cdpCtx == nil || cdpCtx.Browser == nil {
+		return nil
+	}
+	start := time.Now()
+	activateErr := targetGraphActivate(tt.browserCtx, targetID, TargetActivateTimeout)
+	if activateErr != nil {
+		logger.Warn(targetLogContext(), "browser target activate (no-front) failed",
+			"target_id", targetID,
+			"reason", reason,
+			"elapsed_ms", time.Since(start).Milliseconds(),
+			"error", activateErr)
+		return activateErr
+	}
+	logger.Info(targetLogContext(), "browser target activated (no window front)",
+		"target_id", targetID,
+		"reason", reason,
+		"elapsed_ms", time.Since(start).Milliseconds())
+	return nil
+}
+
 func (tt *TargetTracker) activateBrowserTarget(targetID target.ID, reason string) error {
 	if targetID == "" {
 		return nil
@@ -1203,11 +1237,13 @@ func (tt *TargetTracker) HandleTargetInfoChanged(info *target.Info) {
 	//   - 此 target 不是 active 且拿到了真实 URL
 	// 则自动切换 liveview 跟随该 tab，使 Human Portal 看到 AI 研究的真实内容。
 	// 不影响 pendingSwitch/gesture/opener 路径；仅在 shouldSwitchNow 为 false 时补充触发。
+	noFront := false
 	if !shouldSwitchNow && tt.followProgrammaticNav && !isActive && ok && !IsBlankTargetURL(info.URL) {
 		activeIsBlankPrimary := tt.activeID == tt.primaryID || tt.activeID == ""
 		if activeIsBlankPrimary {
 			if activePrimary := tt.targets[tt.primaryID]; activePrimary != nil && IsBlankTargetURL(activePrimary.URL) {
 				shouldSwitchNow = true
+				noFront = true
 				logger.Info(targetLogContext(), "programmatic nav follow triggered",
 					"target_id", info.TargetID,
 					"url", info.URL,
@@ -1257,11 +1293,21 @@ func (tt *TargetTracker) HandleTargetInfoChanged(info *target.Info) {
 
 	if shouldSwitchNow {
 		// 在独立 goroutine 执行阻塞操作，避免阻塞 ListenBrowser 事件分发 goroutine
+		capturedNoFront := noFront
 		go func() {
 			logger.Info(targetLogContext(), "pending switch resolved",
 				"target_id", info.TargetID,
-				"url", info.URL)
-			if err := tt.activateBrowserTarget(info.TargetID, "pending_switch_resolved"); err != nil {
+				"url", info.URL,
+				"no_front", capturedNoFront)
+			if capturedNoFront {
+				// Programmatic-nav path: activate tab in Chrome for rendering but skip
+				// Page.bringToFront to prevent Chrome escaping CGVirtualDisplay to main Space.
+				if err := tt.activateBrowserTargetNoFront(info.TargetID, "programmatic_nav_follow"); err != nil {
+					logger.Warn(targetLogContext(), "programmatic nav activation failed",
+						"target_id", info.TargetID,
+						"error", err)
+				}
+			} else if err := tt.activateBrowserTarget(info.TargetID, "pending_switch_resolved"); err != nil {
 				logger.Warn(targetLogContext(), "pending switch activation failed",
 					"target_id", info.TargetID,
 					"error", err)
