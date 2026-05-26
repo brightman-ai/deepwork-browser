@@ -1833,7 +1833,8 @@ func runSnapSession(flags commonFlags, selector string, compact bool, maxDepth i
 // on what the agent can interact with.
 //
 // Usage: dw-browser state --session <id>
-// Output: {"url":..., "state":"[@r1 button 'Nav'] [@r2 input ...]", "refs":[...], "refs_count":N}
+// Output: {"url":..., "state":"[@r1 button 'Nav'] [@r2 input ...]", "refs_count":N}
+// refs are persisted to session state file for subsequent `act "click @r1"` — NOT echoed to stdout.
 func runState(args []string) {
 	_, flags := parseCommonFlags(args, "state")
 	if flags.sessionID == "" {
@@ -1882,12 +1883,13 @@ func runState(args []string) {
 		fmt.Fprintf(os.Stderr, "dw-browser state: save session: %v\n", err)
 	}
 
+	// refs saved to session state above — omit from stdout to maximize token efficiency.
+	// Agents use @rN refs via stored session state; no need to echo the full array.
 	output := map[string]interface{}{
 		"url":        snap.URL,
 		"title":      snap.PageTitle,
 		"state":      snap.Text,
 		"refs_count": len(snap.Refs),
-		"refs":       buildRefsOutput(snap.Refs),
 	}
 	if hint := formatSkillHint(snap.URL); hint != "" {
 		output["skill_hint"] = hint
