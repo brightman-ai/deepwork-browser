@@ -1284,12 +1284,17 @@ func (p *BrowserPool) materializeManagedTabLocked(entry *chromePoolEntry, tabCtx
 			}
 			return nil
 		})
+		// Headed Chrome on CGVirtualDisplay must never receive Page.bringToFront.
+		// BringToFront triggers [NSWindow makeKeyAndOrderFront:] which causes Chrome
+		// to escape the virtual display and appear on the user's main Space.
+		tracker.SetNoFrontMode(true)
 	} else if mode == ModeHeaded && runtime.GOOS == "darwin" && p.virtualDisplay != nil && entry.chromeHandle != nil {
 		virtualDisplay := p.virtualDisplay
 		chromePID := entry.chromeHandle.PID()
 		tracker.SetForegroundGuard(func(_ target.ID, _ string) error {
 			return virtualDisplay.VerifyChromeContained(chromePID, BrowserMuxHostForegroundContainmentCheck)
 		})
+		tracker.SetNoFrontMode(true)
 	}
 	// 终局约束: main tab 仍以当前 workspace tab (tabCtx) 为语义锚点，
 	// 但 Target discovery / auto-attach / browser-level target events 必须绑定 entry.browserCtx。

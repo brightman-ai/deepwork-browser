@@ -437,6 +437,7 @@ func NewBrowserCore(ctx context.Context, profileID string, optFns ...BrowserOpti
 		tracker.SetForegroundGuard(func(_ target.ID, _ string) error {
 			return virtualDisplay.VerifyChromeContained(chromePID, BrowserMuxHostForegroundContainmentCheck)
 		})
+		tracker.SetNoFrontMode(true)
 	}
 	tracker.SetupListeners(browserCtx)
 

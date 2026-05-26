@@ -79,6 +79,7 @@ type TargetTracker struct {
 	windowHints            []windowOpenHint                         // CDP Page.windowOpen(userGesture=true) 强证据
 	pageListeners          map[string]bool                          // 每个 target 只绑定一次 Page.windowOpen listener
 	followProgrammaticNav  bool                                     // [FIX-CUJ16-LIVEVIEW] 当 activeID==primaryID(blank) 且其他 tab 有真实 URL 时自动跟随
+	noFrontMode           bool                                     // headed/CGVirtualDisplay: skip Page.bringToFront on ALL activations
 }
 
 func (tt *TargetTracker) totalTabCountLocked() int {
@@ -266,6 +267,16 @@ func (tt *TargetTracker) SetTargetCloser(fn func(target.ID) error) {
 	tt.mu.Lock()
 	defer tt.mu.Unlock()
 	tt.closeTarget = fn
+}
+
+// SetNoFrontMode tells the tracker to skip Page.bringToFront on ALL target
+// activations. Required for headed Chrome running on CGVirtualDisplay: any
+// BringToFront call triggers [NSWindow makeKeyAndOrderFront:] which causes
+// Chrome to escape the virtual display and appear on the user's main Space.
+func (tt *TargetTracker) SetNoFrontMode(enabled bool) {
+	tt.mu.Lock()
+	defer tt.mu.Unlock()
+	tt.noFrontMode = enabled
 }
 
 // ActiveTargetID 返回当前活跃 Target ID。
@@ -769,7 +780,14 @@ func (tt *TargetTracker) activateBrowserTarget(targetID target.ID, reason string
 	}
 	tt.mu.RLock()
 	foregroundGuard := tt.foregroundGuard
+	noFront := tt.noFrontMode
 	tt.mu.RUnlock()
+	// noFrontMode: headed Chrome on CGVirtualDisplay must NEVER receive BringToFront.
+	// Any [NSWindow makeKeyAndOrderFront:] from BringToFront causes Chrome to escape
+	// the virtual display and appear on the user's main Space.
+	if noFront {
+		return tt.activateBrowserTargetNoFront(targetID, reason)
+	}
 	if foregroundGuard != nil {
 		if err := foregroundGuard(targetID, reason); err != nil {
 			logger.Warn(targetLogContext(), "browser target foreground guard failed",
