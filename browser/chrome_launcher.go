@@ -210,6 +210,14 @@ func BuildDetachedChromeArgs(opts DetachedChromeLaunchOptions) []string {
 		args = append(args, "--touch-events=enabled")
 	}
 
+	// Auto-detect proxy from environment — Chrome does NOT inherit HTTP_PROXY/HTTPS_PROXY
+	// automatically; pass it explicitly so external sites work in proxy environments.
+	if proxy := os.Getenv("HTTPS_PROXY"); proxy != "" {
+		args = append(args, "--proxy-server="+proxy)
+	} else if proxy := os.Getenv("HTTP_PROXY"); proxy != "" {
+		args = append(args, "--proxy-server="+proxy)
+	}
+
 	return append(args, ChromeInitialPageURL)
 }
 
