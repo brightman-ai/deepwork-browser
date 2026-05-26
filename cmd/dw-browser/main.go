@@ -590,6 +590,8 @@ func main() {
 		runDiff(os.Args[2:])
 	case "check":
 		runCheck(os.Args[2:])
+	case "state":
+		runState(os.Args[2:])
 	case "journey":
 		runJourney(os.Args[2:])
 	case "do":
@@ -1816,6 +1818,76 @@ func runSnapSession(flags commonFlags, selector string, compact bool, maxDepth i
 	injectSnapshotState(output, snap)
 	if selector != "" {
 		output["scope"] = selector
+	}
+	if hint := formatSkillHint(snap.URL); hint != "" {
+		output["skill_hint"] = hint
+	}
+	enc, _ := json.MarshalIndent(output, "", "  ")
+	fmt.Println(string(enc))
+	exitSessionCore(impl, exitOK)
+}
+
+// runState outputs only the compact indexed interactive elements for the current
+// session page — the agent-friendly equivalent of BrowserAct's `state` command.
+// Unlike `snap`, it omits the full page text and saves tokens by focusing purely
+// on what the agent can interact with.
+//
+// Usage: dw-browser state --session <id>
+// Output: {"url":..., "state":"[@r1 button 'Nav'] [@r2 input ...]", "refs":[...], "refs_count":N}
+func runState(args []string) {
+	_, flags := parseCommonFlags(args, "state")
+	if flags.sessionID == "" {
+		fmt.Fprintln(os.Stderr, "dw-browser state: requires --session <id>")
+		os.Exit(exitRunErr)
+	}
+
+	sessionInfo, err := browser.LoadSession(flags.sessionID)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "dw-browser state: %v\n", err)
+		os.Exit(exitRunErr)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	impl := connectSession(ctx, sessionInfo, "state", flags)
+
+	sessionInfo.SnapEpoch++
+
+	opts := browser.SnapOptions{
+		Compact:     true,
+		SessionMode: true,
+		SnapEpoch:   sessionInfo.SnapEpoch,
+	}
+	snap, err := impl.SnapWithOptions(ctx, opts)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "dw-browser state: %v\n", err)
+		exitSessionCore(impl, exitRunErr)
+	}
+
+	sessionRefs := make([]browser.SessionRef, 0, len(snap.Refs))
+	for _, ref := range snap.Refs {
+		sessionRefs = append(sessionRefs, browser.SessionRef{
+			Ref:           ref.Ref,
+			BackendNodeID: ref.BackendNodeID,
+			Role:          ref.Role,
+			Name:          ref.NameFull,
+			TestID:        ref.TestID,
+			Placeholder:   ref.Placeholder,
+		})
+	}
+	sessionInfo.Refs = sessionRefs
+	sessionInfo.PageURL = snap.URL
+	if err := browser.SaveSession(sessionInfo); err != nil {
+		fmt.Fprintf(os.Stderr, "dw-browser state: save session: %v\n", err)
+	}
+
+	output := map[string]interface{}{
+		"url":        snap.URL,
+		"title":      snap.PageTitle,
+		"state":      snap.Text,
+		"refs_count": len(snap.Refs),
+		"refs":       buildRefsOutput(snap.Refs),
 	}
 	if hint := formatSkillHint(snap.URL); hint != "" {
 		output["skill_hint"] = hint
