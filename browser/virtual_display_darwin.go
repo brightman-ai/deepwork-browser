@@ -53,6 +53,12 @@ const virtualDisplayOrphanedSentinel = uintptr(1)
 const virtualDisplayRescueRecordLimit = 96
 const virtualDisplayContainmentStablePolls = 2
 
+// virtualDisplayBoundsRetryAttempts / virtualDisplayBoundsRetryDelay: macOS
+// updates CGDirectDisplay bounds asynchronously after dw_vd_quarantine. Three
+// retries at 300 ms cover the observed 200-400 ms lag on M1/M2 hardware.
+const virtualDisplayBoundsRetryAttempts = 3
+const virtualDisplayBoundsRetryDelay = 300 * time.Millisecond
+
 func RescueForeignWindowsFromVirtualDisplay() (*VirtualDisplayWindowRescueResult, error) {
 	records := make([]C.dw_vd_rescue_record, virtualDisplayRescueRecordLimit)
 	protectedPIDs := activeHeadedBrowserRuntimePIDs()
@@ -173,10 +179,18 @@ func (vdm *VirtualDisplayManager) Ensure() error {
 	defer vdm.mu.Unlock()
 
 	fastPathStartedAt := time.Now()
-	if vdm.display != nil && vdm.displayID != 0 && vdm.displayBoundsLocked() == nil {
-		log.Printf("[VIRTUAL-DISPLAY] ensure fast-path displayID=%d elapsed_ms=%d bounds_check_ms=%d",
-			vdm.displayID, time.Since(startedAt).Milliseconds(), time.Since(fastPathStartedAt).Milliseconds())
-		return nil // already created — idempotent fast path
+	if vdm.display != nil && vdm.displayID != 0 {
+		// refreshBoundsLocked updates vdm.x/y/w/h — not just a presence check.
+		// Using displayBoundsLocked (query-only) here would leave stale (0,0)
+		// coords if the first Ensure() failed to read bounds.
+		if err := vdm.refreshBoundsLocked(); err == nil {
+			log.Printf("[VIRTUAL-DISPLAY] ensure fast-path displayID=%d x=%d y=%d w=%d h=%d elapsed_ms=%d bounds_ms=%d",
+				vdm.displayID, vdm.x, vdm.y, vdm.w, vdm.h,
+				time.Since(startedAt).Milliseconds(), time.Since(fastPathStartedAt).Milliseconds())
+			return nil
+		}
+		// Bounds unavailable — display may have been dropped by macOS; fall through to recreate.
+		log.Printf("[VIRTUAL-DISPLAY] fast-path bounds failed for displayID=%d, recreating", vdm.displayID)
 	}
 	vdm.destroyDisplayLocked()
 	vdm.resetLocked()
@@ -228,12 +242,32 @@ func (vdm *VirtualDisplayManager) Ensure() error {
 	}
 
 	boundsStartedAt := time.Now()
-	if err := vdm.refreshBoundsLocked(); err != nil {
-		log.Printf("[VIRTUAL-DISPLAY] WARNING: %v", err)
+	var boundsErr error
+	for attempt := 0; attempt < virtualDisplayBoundsRetryAttempts; attempt++ {
+		if attempt > 0 {
+			// Release lock while sleeping so other goroutines don't stall.
+			vdm.mu.Unlock()
+			time.Sleep(virtualDisplayBoundsRetryDelay)
+			vdm.mu.Lock()
+		}
+		boundsErr = vdm.refreshBoundsLocked()
+		if boundsErr == nil {
+			break
+		}
+		log.Printf("[VIRTUAL-DISPLAY] bounds attempt %d/%d failed displayID=%d: %v",
+			attempt+1, virtualDisplayBoundsRetryAttempts, vdm.displayID, boundsErr)
 	}
 	log.Printf("[VIRTUAL-DISPLAY] ensure completed displayID=%d total_elapsed_ms=%d bounds_elapsed_ms=%d",
 		vdm.displayID, time.Since(startedAt).Milliseconds(), time.Since(boundsStartedAt).Milliseconds())
-
+	if boundsErr != nil {
+		// Fail-closed: (0,0) would place Chrome on the main screen. Surface the
+		// error so the caller can abort rather than silently leaking a Chrome
+		// window onto the user's workspace.
+		vdm.destroyDisplayLocked()
+		vdm.resetLocked()
+		return fmt.Errorf("virtual_display: bounds unavailable after %d attempts (displayID %d): %w",
+			virtualDisplayBoundsRetryAttempts, vdm.displayID, boundsErr)
+	}
 	return nil
 }
 
