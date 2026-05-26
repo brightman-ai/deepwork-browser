@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"sort"
 	"strconv"
@@ -106,6 +107,7 @@ type commonFlags struct {
 	device            string // 设备预设名
 	userAgent         string
 	diag              bool // --diag 启用每步 observation log
+	stealth           bool // --stealth 只在 headless 下生效：反检测 UA + 额外 flags
 	// Safari 引擎
 	engine       string // --engine: "chrome" (default) | "safari"
 	safariDevice string // --safari-device: Safari Simulator 设备名/UDID
@@ -275,6 +277,9 @@ func parseCommonFlags(args []string, cmd string) (positional []string, flags com
 			i++
 		case arg == "--diag":
 			flags.diag = true
+			i++
+		case arg == "--stealth":
+			flags.stealth = true
 			i++
 		case arg == "--engine" && i+1 < len(args):
 			flags.engine = strings.ToLower(strings.TrimSpace(args[i+1]))
@@ -494,6 +499,9 @@ func browserOptionsFromFlags(flags commonFlags) []browser.BrowserOption {
 		opts = append(opts, browser.WithTouchEmulation(preset.Touch))
 	}
 	opts = append(opts, browser.WithMode(browser.NormalizeBrowserMode(flags.mode, browser.ModeVisible)))
+	if flags.stealth {
+		opts = append(opts, browser.WithStealth(true))
+	}
 	return opts
 }
 
@@ -578,6 +586,8 @@ func main() {
 		runEval(os.Args[2:])
 	case "cookie-import":
 		runCookieImport(os.Args[2:])
+	case "profile":
+		runProfile(os.Args[2:])
 	case "skills":
 		runSkills(os.Args[2:])
 	case "record":
@@ -674,7 +684,7 @@ func runView(args []string) {
 	case "action":
 		runSnap(args[1:])
 	case "reading":
-		runGet(append([]string{"text"}, args[1:]...))
+		runViewReading(args[1:])
 	case "state":
 		runViewState(args[1:])
 	case "evidence":
@@ -683,6 +693,111 @@ func runView(args []string) {
 		fmt.Fprintf(os.Stderr, "dw-browser view: unknown subcommand %q (use action|reading|state|evidence)\n", args[0])
 		os.Exit(exitRunErr)
 	}
+}
+
+// runViewReading handles `view reading [--format plain|list|table] [--wait <ms>]`.
+// plain (default) → delegates to runGet "text" (existing path)
+// list            → extract <li> items via JS
+// table           → extract all <table> rows via JS
+func runViewReading(args []string) {
+	format := "plain"
+	waitMs := 0
+	clean := make([]string, 0, len(args))
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		switch {
+		case arg == "--format" && i+1 < len(args):
+			format = strings.ToLower(strings.TrimSpace(args[i+1]))
+			i++
+		case strings.HasPrefix(arg, "--format="):
+			format = strings.ToLower(strings.TrimSpace(arg[len("--format="):]))
+		case arg == "--wait" && i+1 < len(args):
+			if n, err := strconv.Atoi(args[i+1]); err == nil {
+				waitMs = n
+			}
+			i++
+		case strings.HasPrefix(arg, "--wait="):
+			if n, err := strconv.Atoi(arg[len("--wait="):]); err == nil {
+				waitMs = n
+			}
+		default:
+			clean = append(clean, arg)
+		}
+	}
+
+	if format == "plain" {
+		// delegate to existing path; --wait not handled there (SPA heuristic only needed for structured formats)
+		runGet(append([]string{"text"}, clean...))
+		return
+	}
+
+	if format != "list" && format != "table" {
+		fmt.Fprintf(os.Stderr, "dw-browser view reading: unknown --format %q (use plain|list|table)\n", format)
+		os.Exit(exitRunErr)
+	}
+
+	_, flags := parseCommonFlags(clean, "view reading")
+	if flags.sessionID == "" {
+		fmt.Fprintln(os.Stderr, "dw-browser view reading: requires --session <id> for --format list|table")
+		os.Exit(exitRunErr)
+	}
+
+	sessionInfo, err := browser.LoadSession(flags.sessionID)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "dw-browser view reading: %v\n", err)
+		os.Exit(exitRunErr)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	impl := connectSession(ctx, sessionInfo, "view reading", flags)
+
+	if waitMs > 0 {
+		time.Sleep(time.Duration(waitMs) * time.Millisecond)
+	}
+
+	var currentURL, title string
+	impl.EvalJS(ctx, "window.location.href", &currentURL)
+	impl.EvalJS(ctx, "document.title", &title)
+
+	switch format {
+	case "list":
+		var items []string
+		jsExpr := `Array.from(document.querySelectorAll('li')).map(li=>li.innerText.trim()).filter(Boolean)`
+		if err := impl.EvalJS(ctx, jsExpr, &items); err != nil {
+			fmt.Fprintf(os.Stderr, "dw-browser view reading list: %v\n", err)
+			exitSessionCore(impl, exitRunErr)
+		}
+		output := map[string]interface{}{
+			"view":   "reading",
+			"format": "list",
+			"url":    currentURL,
+			"title":  title,
+			"items":  items,
+		}
+		enc, _ := json.MarshalIndent(output, "", "  ")
+		fmt.Println(string(enc))
+
+	case "table":
+		var tables [][][]string
+		jsExpr := `Array.from(document.querySelectorAll('table')).map(tbl=>Array.from(tbl.querySelectorAll('tr')).map(tr=>Array.from(tr.querySelectorAll('th,td')).map(td=>td.innerText.trim())))`
+		if err := impl.EvalJS(ctx, jsExpr, &tables); err != nil {
+			fmt.Fprintf(os.Stderr, "dw-browser view reading table: %v\n", err)
+			exitSessionCore(impl, exitRunErr)
+		}
+		output := map[string]interface{}{
+			"view":   "reading",
+			"format": "table",
+			"url":    currentURL,
+			"title":  title,
+			"tables": tables,
+		}
+		enc, _ := json.MarshalIndent(output, "", "  ")
+		fmt.Println(string(enc))
+	}
+
+	exitSessionCore(impl, exitOK)
 }
 
 func runSessionStatus(args []string) {
@@ -722,6 +837,115 @@ func runSessionList(args []string) {
 	enc, _ := json.MarshalIndent(output, "", "  ")
 	fmt.Println(string(enc))
 	os.Exit(exitOK)
+}
+
+// runProfile handles `dw-browser profile list|import`.
+// profile list   → lists profiles under ~/.deepwork/browser-data/profiles/
+// profile import <src> [--name <name>] → copies src dir into profiles dir
+func runProfile(args []string) {
+	if len(args) < 1 {
+		fmt.Fprintln(os.Stderr, "dw-browser profile: requires subcommand (list|import)")
+		os.Exit(exitRunErr)
+	}
+	switch args[0] {
+	case "list":
+		homeDir, err := os.UserHomeDir()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "dw-browser profile list: %v\n", err)
+			os.Exit(exitRunErr)
+		}
+		profilesDir := filepath.Join(homeDir, ".deepwork", "browser-data", "profiles")
+		entries, err := os.ReadDir(profilesDir)
+		if err != nil && !os.IsNotExist(err) {
+			fmt.Fprintf(os.Stderr, "dw-browser profile list: %v\n", err)
+			os.Exit(exitRunErr)
+		}
+		type profileEntry struct {
+			Name   string `json:"name"`
+			Path   string `json:"path"`
+			SizeMB float64 `json:"size_mb"`
+		}
+		profiles := []profileEntry{}
+		for _, e := range entries {
+			if !e.IsDir() {
+				continue
+			}
+			p := filepath.Join(profilesDir, e.Name())
+			var sizeBytes int64
+			_ = filepath.WalkDir(p, func(_ string, d os.DirEntry, err error) error {
+				if err != nil {
+					return nil
+				}
+				if !d.IsDir() {
+					if info, infoErr := d.Info(); infoErr == nil {
+						sizeBytes += info.Size()
+					}
+				}
+				return nil
+			})
+			profiles = append(profiles, profileEntry{
+				Name:   e.Name(),
+				Path:   p,
+				SizeMB: float64(sizeBytes) / (1024 * 1024),
+			})
+		}
+		output := map[string]interface{}{"profiles": profiles}
+		enc, _ := json.MarshalIndent(output, "", "  ")
+		fmt.Println(string(enc))
+		os.Exit(exitOK)
+
+	case "import":
+		if len(args) < 2 {
+			fmt.Fprintln(os.Stderr, "dw-browser profile import: requires <source-path>")
+			os.Exit(exitRunErr)
+		}
+		srcPath := args[1]
+		importName := filepath.Base(srcPath)
+		rest := args[2:]
+		for i := 0; i < len(rest); i++ {
+			switch {
+			case rest[i] == "--name" && i+1 < len(rest):
+				importName = rest[i+1]
+				i++
+			case strings.HasPrefix(rest[i], "--name="):
+				importName = rest[i][len("--name="):]
+			}
+		}
+		importName = sanitizeProfileToken(importName)
+		if importName == "" || importName == "default" {
+			// avoid overwriting default accidentally
+			importName = "imported-" + fmt.Sprintf("%d", time.Now().Unix())
+		}
+
+		homeDir, err := os.UserHomeDir()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "dw-browser profile import: %v\n", err)
+			os.Exit(exitRunErr)
+		}
+		destDir := filepath.Join(homeDir, ".deepwork", "browser-data", "profiles", importName)
+		if _, statErr := os.Stat(destDir); statErr == nil {
+			fmt.Fprintf(os.Stderr, "dw-browser profile import: profile %q already exists at %s\n", importName, destDir)
+			os.Exit(exitRunErr)
+		}
+
+		cmd := exec.Command("cp", "-r", srcPath, destDir)
+		if out, cpErr := cmd.CombinedOutput(); cpErr != nil {
+			fmt.Fprintf(os.Stderr, "dw-browser profile import: cp -r failed: %v\n%s\n", cpErr, out)
+			os.Exit(exitRunErr)
+		}
+
+		enc, _ := json.MarshalIndent(map[string]interface{}{
+			"imported": true,
+			"name":     importName,
+			"path":     destDir,
+		}, "", "  ")
+		fmt.Println(string(enc))
+		os.Exit(exitOK)
+
+	default:
+		fmt.Fprintf(os.Stderr, "dw-browser profile: unknown subcommand %q (use list|import)\n", args[0])
+		os.Exit(exitRunErr)
+	}
 }
 
 func runViewState(args []string) {
@@ -765,6 +989,8 @@ func runOnce(args []string) {
 	url := ""
 	action := ""
 	outFile := "screenshot.png"
+	readingFormat := "plain"
+	readingWaitMs := 0
 	clean := make([]string, 0, len(args))
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
@@ -789,6 +1015,20 @@ func runOnce(args []string) {
 			i++
 		case strings.HasPrefix(arg, "--out="):
 			outFile = arg[len("--out="):]
+		case arg == "--format" && i+1 < len(args):
+			readingFormat = strings.ToLower(strings.TrimSpace(args[i+1]))
+			i++
+		case strings.HasPrefix(arg, "--format="):
+			readingFormat = strings.ToLower(strings.TrimSpace(arg[len("--format="):]))
+		case arg == "--wait" && i+1 < len(args):
+			if n, err := strconv.Atoi(args[i+1]); err == nil {
+				readingWaitMs = n
+			}
+			i++
+		case strings.HasPrefix(arg, "--wait="):
+			if n, err := strconv.Atoi(arg[len("--wait="):]); err == nil {
+				readingWaitMs = n
+			}
 		default:
 			clean = append(clean, arg)
 		}
@@ -845,19 +1085,68 @@ func runOnce(args []string) {
 		enc, _ := json.MarshalIndent(output, "", "  ")
 		fmt.Println(string(enc))
 	case "reading":
-		text, err := bc.Text(ctx, nil)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "dw-browser once reading: %v\n", err)
+		if readingWaitMs > 0 {
+			time.Sleep(time.Duration(readingWaitMs) * time.Millisecond)
+		}
+		switch readingFormat {
+		case "plain", "":
+			text, err := bc.Text(ctx, nil)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "dw-browser once reading: %v\n", err)
+				os.Exit(exitRunErr)
+			}
+			// P2: SPA content retry — if text is very short, wait and retry once
+			if len(text) < 200 {
+				fmt.Fprintln(os.Stderr, "[dw-browser] reading: sparse content, retrying after 2s (SPA render lag)")
+				time.Sleep(2 * time.Second)
+				if retried, retryErr := bc.Text(ctx, nil); retryErr == nil && len(retried) > len(text) {
+					text = retried
+				}
+			}
+			output := map[string]interface{}{
+				"view":  "reading",
+				"url":   snap.URL,
+				"title": snap.PageTitle,
+				"text":  text,
+			}
+			enc, _ := json.MarshalIndent(output, "", "  ")
+			fmt.Println(string(enc))
+		case "list":
+			var items []string
+			jsExpr := `Array.from(document.querySelectorAll('li')).map(li=>li.innerText.trim()).filter(Boolean)`
+			if err := bc.EvalJS(ctx, jsExpr, &items); err != nil {
+				fmt.Fprintf(os.Stderr, "dw-browser once reading list: %v\n", err)
+				os.Exit(exitRunErr)
+			}
+			output := map[string]interface{}{
+				"view":   "reading",
+				"format": "list",
+				"url":    snap.URL,
+				"title":  snap.PageTitle,
+				"items":  items,
+			}
+			enc, _ := json.MarshalIndent(output, "", "  ")
+			fmt.Println(string(enc))
+		case "table":
+			var tables [][][]string
+			jsExpr := `Array.from(document.querySelectorAll('table')).map(tbl=>Array.from(tbl.querySelectorAll('tr')).map(tr=>Array.from(tr.querySelectorAll('th,td')).map(td=>td.innerText.trim())))`
+			if err := bc.EvalJS(ctx, jsExpr, &tables); err != nil {
+				fmt.Fprintf(os.Stderr, "dw-browser once reading table: %v\n", err)
+				os.Exit(exitRunErr)
+			}
+			output := map[string]interface{}{
+				"view":   "reading",
+				"format": "table",
+				"url":    snap.URL,
+				"title":  snap.PageTitle,
+				"tables": tables,
+			}
+			enc, _ := json.MarshalIndent(output, "", "  ")
+			fmt.Println(string(enc))
+		default:
+			fmt.Fprintf(os.Stderr, "dw-browser once reading: unknown --format %q (use plain|list|table)\n", readingFormat)
 			os.Exit(exitRunErr)
 		}
-		output := map[string]interface{}{
-			"view":  "reading",
-			"url":   snap.URL,
-			"title": snap.PageTitle,
-			"text":  text,
-		}
-		enc, _ := json.MarshalIndent(output, "", "  ")
-		fmt.Println(string(enc))
 	case "evidence":
 		data, err := screenshotWithRetry(ctx, bc, false)
 		if err != nil {
@@ -2564,6 +2853,7 @@ func runOpen(args []string) {
 		UserAgent:  flags.userAgent,
 		Touch:      flags.hasDevice && devicePresets[flags.device].Touch,
 		Mode:       mode,
+		Stealth:    flags.stealth,
 	})
 
 	// Mode-conditional Chrome launch (DDC-I-21, BRR-12, BRR-MODE-1):
@@ -2947,6 +3237,14 @@ func runGet(args []string) {
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "dw-browser get text: %v\n", err)
 			exitSessionCore(impl, exitRunErr)
+		}
+		// P2: SPA content retry — if text is very short, wait and retry once
+		if len(text) < 200 {
+			fmt.Fprintln(os.Stderr, "[dw-browser] get text: sparse content, retrying after 2s (SPA render lag)")
+			time.Sleep(2 * time.Second)
+			if retried, retryErr := impl.Text(ctx, focus); retryErr == nil && len(retried) > len(text) {
+				text = retried
+			}
 		}
 		enc, _ := json.MarshalIndent(map[string]interface{}{
 			"session_id":         flags.sessionID,

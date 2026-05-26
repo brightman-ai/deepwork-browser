@@ -115,6 +115,9 @@ type DetachedChromeLaunchOptions struct {
 	UserAgent  string
 	Touch      bool
 	Mode       BrowserMode
+	// Stealth 只在 ModeHeadless 下生效：注入额外的反检测参数和真实 UA。
+	// headed/visible Chrome 使用 CGVirtualDisplay + 真实指纹，不需要此选项。
+	Stealth bool
 }
 
 // BuildDetachedChromeArgs 生成 detached Chrome 的启动参数。
@@ -135,14 +138,19 @@ func BuildDetachedChromeArgs(opts DetachedChromeLaunchOptions) []string {
 
 	effectiveUA := opts.UserAgent
 	if effectiveUA == "" && mode == ModeHeadless {
-		preset := ResolveRuntimeFingerprintPreset(opts.PresetID, "")
-		if preset == nil {
-			preset = BuiltinPresets[NormalizePresetID(opts.PresetID)]
-		}
-		if preset != nil {
-			// headless 的 /json/version 与网络层 UA 会暴露 HeadlessChrome。
-			// 只在 headless 显式覆写；headed/visible 走本机 Chrome 原生 UA。
-			effectiveUA = preset.UserAgent
+		if opts.Stealth {
+			// Stealth mode: use a realistic desktop Chrome UA without "HeadlessChrome".
+			effectiveUA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+		} else {
+			preset := ResolveRuntimeFingerprintPreset(opts.PresetID, "")
+			if preset == nil {
+				preset = BuiltinPresets[NormalizePresetID(opts.PresetID)]
+			}
+			if preset != nil {
+				// headless 的 /json/version 与网络层 UA 会暴露 HeadlessChrome。
+				// 只在 headless 显式覆写；headed/visible 走本机 Chrome 原生 UA。
+				effectiveUA = preset.UserAgent
+			}
 		}
 	}
 
@@ -180,6 +188,9 @@ func BuildDetachedChromeArgs(opts DetachedChromeLaunchOptions) []string {
 			"--password-store=basic",
 			"--use-mock-keychain",
 		)
+		if opts.Stealth {
+			args = append(args, "--disable-infobars")
+		}
 	} else {
 		if mode == ModeHeaded {
 			args = append(args,

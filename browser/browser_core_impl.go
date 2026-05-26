@@ -41,6 +41,7 @@ type browserOptions struct {
 	presetID    string
 	touch       bool
 	mode        BrowserMode // "human" / "headless"
+	stealth     bool
 	hasViewport bool
 	hasUA       bool
 	hasMode     bool
@@ -86,6 +87,14 @@ func WithMode(mode BrowserMode) BrowserOption {
 	return func(o *browserOptions) {
 		o.mode = mode
 		o.hasMode = true
+	}
+}
+
+// WithStealth 启用反检测模式（只在 headless 下生效）。
+// headed/visible Chrome 使用 CGVirtualDisplay + 真实指纹，不需要此选项。
+func WithStealth(enabled bool) BrowserOption {
+	return func(o *browserOptions) {
+		o.stealth = enabled
 	}
 }
 
@@ -392,6 +401,7 @@ func NewBrowserCore(ctx context.Context, profileID string, optFns ...BrowserOpti
 		userAgent:    bopts.userAgent,
 		hasUserAgent: bopts.hasUA,
 		touch:        bopts.touch,
+		stealth:      bopts.stealth,
 	})
 	if err != nil {
 		return nil, err
@@ -494,6 +504,7 @@ type controlledBrowserCoreLaunchOptions struct {
 	userAgent    string
 	hasUserAgent bool
 	touch        bool
+	stealth      bool
 }
 
 type controlledBrowserCoreLaunchResult struct {
@@ -574,6 +585,7 @@ func launchControlledBrowserCoreChrome(ctx context.Context, opts controlledBrows
 		UserAgent:  userAgent,
 		Touch:      opts.touch,
 		Mode:       mode,
+		Stealth:    opts.stealth,
 	})
 	for _, arg := range extraArgs {
 		launchArgs = appendChromeArgBeforeURL(launchArgs, arg)
