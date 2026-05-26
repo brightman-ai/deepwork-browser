@@ -576,8 +576,18 @@ int dw_vd_rescue_foreign_windows(uint32_t displayID, const int *protectedPIDs, i
     if (virtualID == 0) return 1;
     if (outDisplayID) *outDisplayID = (int)virtualID;
 
-    CGRect vBounds = CGDisplayBounds(virtualID);
-    if (vBounds.size.width <= 0 || vBounds.size.height <= 0) return 2;
+    // CGDisplayBounds(virtualID) always returns main-screen rect for CGVirtualDisplay
+    // (macOS bug). Recompute the actual quarantine bounds from the physical display union.
+    int hasPhysical = 0;
+    CGRect physUnion = dw_vd_physical_union_from_current(virtualID, &hasPhysical);
+    if (!hasPhysical) physUnion = CGDisplayBounds(CGMainDisplayID());
+    CGFloat vW = (CGFloat)MAX(1, (int)CGDisplayPixelsWide(virtualID));
+    CGFloat vH = (CGFloat)MAX(1, (int)CGDisplayPixelsHigh(virtualID));
+    if (vW <= 0 || vH <= 0) return 2;
+    CGRect vBounds = CGRectMake(
+        CGRectGetMinX(physUnion),
+        CGRectGetMaxY(physUnion) + (CGFloat)DW_VD_QUARANTINE_GAP,
+        vW, vH);
     CGRect mainBounds = CGDisplayBounds(CGMainDisplayID());
     if (mainBounds.size.width <= 0 || mainBounds.size.height <= 0) return 3;
 
@@ -695,6 +705,127 @@ int dw_vd_rescue_foreign_windows(uint32_t displayID, const int *protectedPIDs, i
     if (outMatched) *outMatched = matched;
     if (outMoved) *outMoved = moved;
     if (outSkipped) *outSkipped = skipped;
+    return 0;
+}
+
+// ─── dw_vd_is_online ──────────────────────────────────────────────────────
+// Returns 1 if displayID appears in CGGetOnlineDisplayList, 0 otherwise.
+// CGGetOnlineDisplayList (not Active) is intentional: macOS reports all
+// displays inactive when physical displays sleep, while the virtual display
+// is still present.
+int dw_vd_is_online(uint32_t displayID) {
+    if (displayID == 0) return 0;
+    CGDirectDisplayID displays[DW_VD_MAX_DISPLAY_PROBE];
+    uint32_t count = 0;
+    CGGetOnlineDisplayList(DW_VD_MAX_DISPLAY_PROBE, displays, &count);
+    for (uint32_t i = 0; i < count; i++) {
+        if (displays[i] == (CGDirectDisplayID)displayID) return 1;
+    }
+    return 0;
+}
+
+// ─── dw_vd_is_mirror ──────────────────────────────────────────────────────
+// Returns 1 if displayID is in a mirror set (System Settings > Displays →
+// "Mirror Displays"), 0 otherwise. Mirror mode causes CGDisplayBounds to
+// return the same rect as the main display, making quarantine impossible.
+int dw_vd_is_mirror(uint32_t displayID) {
+    if (displayID == 0) return 0;
+    return CGDisplayIsInMirrorSet((CGDirectDisplayID)displayID) ? 1 : 0;
+}
+
+// ─── dw_vd_exit_mirror ─────────────────────────────────────────────────────
+// Exits mirror mode for displayID by calling CGConfigureDisplayMirrorOfDisplay
+// with kCGNullDirectDisplay as the mirror target (= extended mode).
+// Return codes: 0=ok, 1=null displayID, 2=BeginConfig failed, 3=Mirror config
+// failed, 4=CompleteConfig failed.
+int dw_vd_exit_mirror(uint32_t displayID) {
+    if (displayID == 0) return 1;
+    CGDisplayConfigRef config = NULL;
+    if (CGBeginDisplayConfiguration(&config) != kCGErrorSuccess || config == NULL) return 2;
+    CGError err = CGConfigureDisplayMirrorOfDisplay(config, (CGDirectDisplayID)displayID, kCGNullDirectDisplay);
+    if (err != kCGErrorSuccess) {
+        CGCancelDisplayConfiguration(config);
+        return 3;
+    }
+    CGError complete = CGCompleteDisplayConfiguration(config, kCGConfigureForSession);
+    if (complete != kCGErrorSuccess) return 4;
+    return 0;
+}
+
+// ─── dw_vd_compute_quarantine_origin ───────────────────────────────────────
+// Computes the quarantine origin for virtualID WITHOUT relying on
+// CGDisplayBounds(virtualID) — which always returns (0,0,W,H) for
+// CGVirtualDisplay due to a macOS bug. Uses the same physical-union logic as
+// dw_configure_quarantine to determine where the virtual display should be
+// placed (below the union of all physical displays + DW_VD_QUARANTINE_GAP).
+int dw_vd_compute_quarantine_origin(uint32_t virtualID, int *outX, int *outY) {
+    if (virtualID == 0 || !outX || !outY) return 1;
+    int hasPhysical = 0;
+    CGRect unionBounds = dw_vd_physical_union_from_current((CGDirectDisplayID)virtualID, &hasPhysical);
+    if (!hasPhysical) {
+        unionBounds = CGDisplayBounds(CGMainDisplayID());
+    }
+    *outX = (int)CGRectGetMinX(unionBounds);
+    *outY = (int)CGRectGetMaxY(unionBounds) + DW_VD_QUARANTINE_GAP;
+    return 0;
+}
+
+// ─── dw_vd_inspect_windows_for_pid_bounds ──────────────────────────────────
+// Same logic as dw_vd_inspect_windows_for_pid but uses EXPLICIT bounds
+// (boundsX, boundsY, boundsW, boundsH) instead of CGDisplayBounds(displayID).
+// This is correct for CGVirtualDisplay because CGDisplayBounds always returns
+// the main display's rect regardless of the configured origin.
+int dw_vd_inspect_windows_for_pid_bounds(int pid, int boundsX, int boundsY, int boundsW, int boundsH, int *outTotal, int *outOutside) {
+    if (outTotal) *outTotal = 0;
+    if (outOutside) *outOutside = 0;
+    if (pid <= 0 || boundsW <= 0 || boundsH <= 0) return 1;
+    CGRect vBounds = CGRectMake((CGFloat)boundsX, (CGFloat)boundsY, (CGFloat)boundsW, (CGFloat)boundsH);
+    // Asymmetric tolerance: allow the window FRAME (title bar ~38-52px) to extend
+    // above virtual display top. --window-position sets the content area, not the
+    // frame, so the frame top lands ~50px above vBounds.origin.y.
+    // Bottom/left/right get the standard 8px tolerance.
+    CGRect allowed = CGRectMake(
+        vBounds.origin.x - 8.0,
+        vBounds.origin.y - 60.0,
+        vBounds.size.width + 16.0,
+        vBounds.size.height + 68.0);
+
+    CFArrayRef windows = CGWindowListCopyWindowInfo(
+        kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements,
+        kCGNullWindowID);
+    if (!windows) return 2;
+
+    int total = 0;
+    int outside = 0;
+    CFIndex n = CFArrayGetCount(windows);
+    for (CFIndex i = 0; i < n; i++) {
+        CFDictionaryRef w = (CFDictionaryRef)CFArrayGetValueAtIndex(windows, i);
+
+        CFNumberRef ownerRef = (CFNumberRef)CFDictionaryGetValue(w, kCGWindowOwnerPID);
+        if (!ownerRef) continue;
+        int owner = 0;
+        CFNumberGetValue(ownerRef, kCFNumberIntType, &owner);
+        if (owner != pid) continue;
+
+        CFNumberRef layerRef = (CFNumberRef)CFDictionaryGetValue(w, kCGWindowLayer);
+        int layer = 1;
+        if (layerRef) CFNumberGetValue(layerRef, kCFNumberIntType, &layer);
+        if (layer != 0) continue;
+
+        CFDictionaryRef boundsDict = (CFDictionaryRef)CFDictionaryGetValue(w, kCGWindowBounds);
+        if (!boundsDict) continue;
+        CGRect r;
+        if (!CGRectMakeWithDictionaryRepresentation(boundsDict, &r)) continue;
+        if (r.size.width < 200 || r.size.height < 200) continue;
+
+        total++;
+        if (!CGRectContainsRect(allowed, r)) {
+            outside++;
+        }
+    }
+    CFRelease(windows);
+    if (outTotal) *outTotal = total;
+    if (outOutside) *outOutside = outside;
     return 0;
 }
 

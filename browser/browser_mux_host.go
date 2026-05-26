@@ -1547,6 +1547,15 @@ func (s *browserMuxHostServer) wait(ctx context.Context) error {
 	ticker := time.NewTicker(BrowserMuxHostIdleCheckInterval)
 	defer ticker.Stop()
 
+	// Rescue ticker is darwin-only; on other platforms rescueCh is nil and
+	// never fires. A select on a nil channel blocks forever — zero overhead.
+	var rescueCh <-chan time.Time
+	if runtime.GOOS == "darwin" {
+		rescueTicker := time.NewTicker(VirtualDisplayForeignWindowRescueInterval)
+		defer rescueTicker.Stop()
+		rescueCh = rescueTicker.C
+	}
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -1562,6 +1571,33 @@ func (s *browserMuxHostServer) wait(ctx context.Context) error {
 					s.hostID, s.ownerPID, int64(s.idleTTL/time.Millisecond))
 				return nil
 			}
+		case <-rescueCh:
+			s.runForeignWindowRescue()
+		}
+	}
+}
+
+func (s *browserMuxHostServer) runForeignWindowRescue() {
+	s.displayMu.Lock()
+	hasVD := s.virtualDisp != nil
+	s.displayMu.Unlock()
+	if !hasVD {
+		return
+	}
+	result, err := RescueForeignWindowsFromVirtualDisplay()
+	if err != nil {
+		log.Printf("[BROWSER-MUX-HOST] rescue_foreign_windows err=%v", err)
+		return
+	}
+	if result.UnavailableReason != "" || result.Moved == 0 {
+		return
+	}
+	log.Printf("[BROWSER-MUX-HOST] AUDIT: rescue_foreign_windows display_id=%d scanned=%d matched=%d moved=%d skipped=%d",
+		result.DisplayID, result.Scanned, result.Matched, result.Moved, result.Skipped)
+	for _, w := range result.Windows {
+		if w.Moved {
+			log.Printf("[BROWSER-MUX-HOST] rescued window_id=%d pid=%d owner=%q from=(%d,%d) to=(%d,%d)",
+				w.WindowID, w.PID, w.Owner, w.X, w.Y, w.TargetX, w.TargetY)
 		}
 	}
 }

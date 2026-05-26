@@ -49,6 +49,7 @@ const (
 	BrowserMuxHostSnapshotContainmentCheck   = 200 * time.Millisecond
 	VirtualDisplayRegistrationDelay          = 1 * time.Second
 	VirtualDisplayContainmentPollInterval    = 75 * time.Millisecond
+	VirtualDisplayForeignWindowRescueInterval = 30 * time.Second
 )
 
 const (

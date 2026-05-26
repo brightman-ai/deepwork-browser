@@ -35,6 +35,11 @@ func (vdm *VirtualDisplayManager) DisplayID() uint32 {
 	return 0
 }
 
+// EnsurePresent is a no-op on non-Darwin platforms. Always returns nil.
+func (vdm *VirtualDisplayManager) EnsurePresent() error {
+	return nil
+}
+
 func (vdm *VirtualDisplayManager) CountWindowsOutsideDisplay(pid int) int {
 	return 0
 }
