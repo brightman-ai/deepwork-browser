@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -96,6 +97,65 @@ func visionEnabled(usingRaw string) bool {
 		}
 	}
 	return false
+}
+
+// autoLoadLLMEnv sources ~/.deepwork/testing-llm.env into the process environment
+// when DW_BROWSER_LLM_URL is not already set. Enables LLM planner and vision oracle
+// for journey specs without requiring the caller to manually source the file.
+// Existing env vars are never overridden (explicit beats file).
+func autoLoadLLMEnv() {
+	if os.Getenv("DW_BROWSER_LLM_URL") != "" {
+		return
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return
+	}
+	data, err := os.ReadFile(filepath.Join(home, ".deepwork", "testing-llm.env"))
+	if err != nil {
+		return
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		if kv, ok := strings.CutPrefix(line, "export "); ok {
+			line = kv
+		}
+		k, v, found := strings.Cut(line, "=")
+		if !found {
+			continue
+		}
+		k = strings.TrimSpace(k)
+		v = strings.TrimSpace(v)
+		if k != "" && os.Getenv(k) == "" {
+			os.Setenv(k, v)
+		}
+	}
+}
+
+// isNLGoal returns true when action is a free-form natural-language goal
+// rather than a deterministic browser command. NL goals are routed through
+// the LLM Planner; structural commands go directly to ActWithSessionMode.
+//
+// Structural prefixes: click, fill, press, scroll, select, navigate, wait, type, hover, back, forward.
+// Anything else (e.g. "在浏览器中搜索 arxiv") is treated as an NL goal.
+func isNLGoal(action string) bool {
+	lower := strings.ToLower(strings.TrimSpace(action))
+	for _, p := range []string{
+		"click ", "fill ", "press ", "scroll ", "select ",
+		"navigate ", "wait ", "type ", "hover ",
+	} {
+		if strings.HasPrefix(lower, p) {
+			return false
+		}
+	}
+	// Bare "back" and "forward" are valid structural commands.
+	if lower == "back" || lower == "forward" {
+		return false
+	}
+	return len(lower) > 0
 }
 
 // containsHelp returns true if args contains --help or -h.
@@ -620,6 +680,9 @@ func loadAssertionSpecs(path string) ([]btest.AssertionSpec, error) {
 // runJourney 执行 BDD 旅程测试。
 // dw-browser journey --file tests/bdd/bs15-smoke.yaml --evidence tests/evidence/run-001 [--fail-fast]
 func runJourney(args []string) {
+	// Auto-source ~/.deepwork/testing-llm.env before flag parsing so vision oracle
+	// and NL planner are available without requiring the caller to source the file.
+	autoLoadLLMEnv()
 	_, args = parseLLMFlags(args)
 	var specFile string
 	var evidenceDir string
@@ -691,6 +754,12 @@ func runJourney(args []string) {
 	}
 
 	// 决定 session：spec 需要 session（通过 --id 提供）或新建 ephemeral session
+	// Build planner once — shared across executor calls. nil when LLM not configured.
+	var journeyPlanner *btest.Planner
+	if os.Getenv("DW_BROWSER_LLM_URL") != "" {
+		journeyPlanner = btest.NewPlanner()
+	}
+
 	var executor btest.ActionExecutor
 	if flags.sessionID != "" {
 		// 连接已有 session
@@ -710,6 +779,7 @@ func runJourney(args []string) {
 			sessionInfo: sessionInfo,
 			impl:        impl,
 			ctx:         ctx,
+			planner:     journeyPlanner,
 		}
 		defer closeSessionCore(impl)
 	} else if spec.Environment.BaseURL != "" || spec.Environment.EntryURL != "" {
@@ -752,7 +822,7 @@ func runJourney(args []string) {
 			os.Exit(exitRunErr)
 		}
 
-		executor = &oneshotActionExecutor{impl: bc, ctx: ctx, telemetry: journeyTelemetry}
+		executor = &oneshotActionExecutor{impl: bc, ctx: ctx, telemetry: journeyTelemetry, planner: journeyPlanner}
 	} else {
 		fmt.Fprintln(os.Stderr, "dw-browser journey: requires --id <session-id> or spec.environment.base_url")
 		os.Exit(exitRunErr)
@@ -802,14 +872,13 @@ type cliActionExecutor struct {
 	sessionInfo *browser.SessionInfo
 	impl        browser.SessionCore
 	ctx         context.Context
+	planner     *btest.Planner // nil when LLM not configured; NL goals fail gracefully
 }
 
 func (e *cliActionExecutor) Execute(ctx context.Context, action string) error {
-	// 将 step.Do 直接作为 act 命令执行
-	// 支持 dw-browser act 语法: "click @r5", "fill #input 'text'", "navigate http://..."
-	// FIX-J3a: only treat as navigation when the target looks like a URL.
-	// Natural-language goals like "navigate to X" fall through to ActWithSessionMode.
 	trimmed := strings.TrimSpace(action)
+
+	// Direct URL navigation — deterministic fast path.
 	if rest, ok := strings.CutPrefix(strings.ToLower(trimmed), "navigate "); ok {
 		target := strings.TrimSpace(trimmed[len(trimmed)-len(rest):]) // preserve original case
 		if strings.HasPrefix(target, "http://") || strings.HasPrefix(target, "https://") || strings.HasPrefix(target, "/") {
@@ -818,11 +887,46 @@ func (e *cliActionExecutor) Execute(ctx context.Context, action string) error {
 			}
 			return nil
 		}
-		// NL goal like "navigate to X" — fall through to ActWithSessionMode.
-		// TODO(planner): route free-form NL goals through the `do` command's LLM planner (hybrid strategy, deferred)
 	}
+
+	// NL goal — route through LLM planner when configured.
+	if isNLGoal(trimmed) && e.planner != nil {
+		return e.executeNLGoal(ctx, trimmed)
+	}
+
 	_, err := e.impl.ActWithSessionMode(ctx, action, false)
 	return err
+}
+
+// executeNLGoal decomposes a natural-language goal into browser steps via the
+// LLM Planner (skill-first, planner fallback — same strategy as `dw-browser do`).
+func (e *cliActionExecutor) executeNLGoal(ctx context.Context, goal string) error {
+	snap, _ := e.impl.SnapWithSessionMode(ctx, e.sessionInfo.SnapEpoch)
+	var structural *btest.StructuralState
+	if snap != nil {
+		structural = doStructuralFromSnap(snap)
+	}
+
+	var plan *btest.PlanResult
+	if steps := lookupSkillRecipe(e.sessionInfo.PageURL, goal); steps != nil {
+		plan = &btest.PlanResult{Goal: goal, Steps: steps}
+	} else {
+		var err error
+		plan, err = e.planner.Plan(ctx, goal, structural)
+		if err != nil {
+			return fmt.Errorf("nl-plan %q: %w", goal, err)
+		}
+	}
+
+	for _, step := range plan.Steps {
+		if _, err := e.impl.ActWithSessionMode(ctx, step.Action, false); err != nil {
+			return fmt.Errorf("nl-exec %q → step %q: %w", goal, step.Description, err)
+		}
+		if step.Wait != "" {
+			_ = e.Wait(ctx, step.Wait, 10000)
+		}
+	}
+	return nil
 }
 
 func (e *cliActionExecutor) Wait(ctx context.Context, condition string, timeoutMs int) error {
@@ -871,12 +975,13 @@ type oneshotActionExecutor struct {
 	impl      browser.BrowserCore
 	ctx       context.Context
 	telemetry *browser.TelemetryCollector
+	planner   *btest.Planner // nil when LLM not configured
 }
 
 func (e *oneshotActionExecutor) Execute(ctx context.Context, action string) error {
-	// FIX-J3a: only treat as navigation when the target looks like a URL.
-	// Natural-language goals like "navigate to X" fall through to Act.
 	trimmed := strings.TrimSpace(action)
+
+	// Direct URL navigation — deterministic fast path.
 	if rest, ok := strings.CutPrefix(strings.ToLower(trimmed), "navigate "); ok {
 		target := strings.TrimSpace(trimmed[len(trimmed)-len(rest):]) // preserve original case
 		if strings.HasPrefix(target, "http://") || strings.HasPrefix(target, "https://") || strings.HasPrefix(target, "/") {
@@ -885,11 +990,39 @@ func (e *oneshotActionExecutor) Execute(ctx context.Context, action string) erro
 			}
 			return nil
 		}
-		// NL goal like "navigate to X" — fall through to Act.
-		// TODO(planner): route free-form NL goals through the `do` command's LLM planner (hybrid strategy, deferred)
 	}
+
+	// NL goal — route through LLM planner when configured.
+	if isNLGoal(trimmed) && e.planner != nil {
+		return e.executeNLGoal(ctx, trimmed)
+	}
+
 	_, err := e.impl.Act(ctx, action, false)
 	return err
+}
+
+// executeNLGoal decomposes a natural-language goal into browser steps via the Planner.
+func (e *oneshotActionExecutor) executeNLGoal(ctx context.Context, goal string) error {
+	snap, _ := e.impl.Snap(ctx)
+	var structural *btest.StructuralState
+	if snap != nil {
+		structural = doStructuralFromSnap(snap)
+	}
+
+	plan, err := e.planner.Plan(ctx, goal, structural)
+	if err != nil {
+		return fmt.Errorf("nl-plan %q: %w", goal, err)
+	}
+
+	for _, step := range plan.Steps {
+		if _, err := e.impl.Act(ctx, step.Action, false); err != nil {
+			return fmt.Errorf("nl-exec %q → step %q: %w", goal, step.Description, err)
+		}
+		if step.Wait != "" {
+			_ = e.Wait(ctx, step.Wait, 10000)
+		}
+	}
+	return nil
 }
 
 func (e *oneshotActionExecutor) Wait(ctx context.Context, condition string, timeoutMs int) error {
@@ -1074,6 +1207,7 @@ func runDo(args []string) {
 		printTestingHelp()
 		os.Exit(exitOK)
 	}
+	autoLoadLLMEnv()
 	_, args = parseLLMFlags(args)
 	positional, flags := parseCommonFlags(args, "do")
 

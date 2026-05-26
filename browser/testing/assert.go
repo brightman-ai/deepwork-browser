@@ -167,7 +167,8 @@ func (e *AssertionEngine) EvaluateWithUsing(obs *Observation, expr string, using
 	} else {
 		result.Status = StatusBlocked
 		result.Reason = fmt.Sprintf("cannot parse assertion expression: %q", expr)
-		return result
+		// Don't return: if caller passes using:[visual], fall through to the visual oracle
+		// overlay below so free-form natural-language assertions can be evaluated by VLM.
 	}
 
 	// 覆盖 using（若调用方显式传入）
@@ -398,13 +399,19 @@ func evalActiveTabURLContains(obs *Observation, args string) (bool, string) {
 	return false, fmt.Sprintf("active tab url %q does not contain %q", obs.Behavior.URL, target)
 }
 
-// evalConsoleErrorsCount 检查控制台错误数量并与阈值比较。
-// args 形如 "== 0"（来自简单表达式路由）或空（来自括号形式直接调用时不支持）。
+// evalConsoleErrorsCount 检查控制台 ERROR 级别消息数量。
+// 仅计 level=="error" — warnings 是操作性日志，不代表用户可感知错误。
+// args 形如 "== 0"（来自简单表达式路由）。
 func evalConsoleErrorsCount(obs *Observation, args string) (bool, string) {
 	if obs.Telemetry == nil {
 		return false, "BLOCKED: telemetry layer missing"
 	}
-	count := int64(len(obs.Telemetry.ConsoleErrors))
+	var count int64
+	for _, e := range obs.Telemetry.ConsoleErrors {
+		if e.Level == "error" {
+			count++
+		}
+	}
 	return compareInt(count, args, "console_errors_count")
 }
 
