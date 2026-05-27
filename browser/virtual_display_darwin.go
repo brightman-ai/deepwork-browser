@@ -220,11 +220,13 @@ func (vdm *VirtualDisplayManager) Ensure() error {
 
 	if !orphaned {
 		log.Printf("[VIRTUAL-DISPLAY] created displayID=%d, sleeping 1s for WindowServer registration", vdm.displayID)
-		// Release the lock while sleeping so other goroutines don't stall.
+		// Hold vdm.mu through the sleep. display/displayID are published but
+		// w==0 until bounds are set below; releasing the lock here would let a
+		// concurrent Ensure (fast-path miss on w==0) or EnsurePresent
+		// (needsRepair on w==0) destroy this partially-initialized display.
+		// Display setup is a one-time ~1.5s op; full serialization is correct.
 		sleepStartedAt := time.Now()
-		vdm.mu.Unlock()
 		time.Sleep(VirtualDisplayRegistrationDelay)
-		vdm.mu.Lock()
 		log.Printf("[VIRTUAL-DISPLAY] registration delay completed displayID=%d elapsed_ms=%d",
 			vdm.displayID, time.Since(sleepStartedAt).Milliseconds())
 	}
@@ -239,9 +241,8 @@ func (vdm *VirtualDisplayManager) Ensure() error {
 			return fmt.Errorf("virtual_display: displayID %d is in mirror mode and auto-exit failed rc=%d — go to System Settings > Displays and set to Extended", vdm.displayID, int(rc))
 		}
 		log.Printf("[VIRTUAL-DISPLAY] mirror mode exited for displayID=%d, sleeping 500ms for display reconfiguration", vdm.displayID)
-		vdm.mu.Unlock()
+		// Hold vdm.mu through the sleep — same race rationale as the registration delay above.
 		time.Sleep(500 * time.Millisecond)
-		vdm.mu.Lock()
 	}
 
 	quarantineStartedAt := time.Now()

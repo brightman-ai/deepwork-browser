@@ -840,8 +840,12 @@ func runSessionList(args []string) {
 }
 
 // runProfile handles `dw-browser profile list|import`.
-// profile list   → lists profiles under ~/.deepwork/browser-data/profiles/
-// profile import <src> [--name <name>] → copies src dir into profiles dir
+// profile list   → lists profiles under ~/.deepwork/browser-cli/
+// profile import <src> [--name <name>] → copies src dir into the profile dir
+//
+// Both use ~/.deepwork/browser-cli/ — the same dir that --profile <name>
+// resolves to (see resolveProfileID → browser-cli/{profileID}). Imported
+// profiles must live here or --profile would never find them.
 func runProfile(args []string) {
 	if len(args) < 1 {
 		fmt.Fprintln(os.Stderr, "dw-browser profile: requires subcommand (list|import)")
@@ -854,7 +858,7 @@ func runProfile(args []string) {
 			fmt.Fprintf(os.Stderr, "dw-browser profile list: %v\n", err)
 			os.Exit(exitRunErr)
 		}
-		profilesDir := filepath.Join(homeDir, ".deepwork", "browser-data", "profiles")
+		profilesDir := filepath.Join(homeDir, ".deepwork", "browser-cli")
 		entries, err := os.ReadDir(profilesDir)
 		if err != nil && !os.IsNotExist(err) {
 			fmt.Fprintf(os.Stderr, "dw-browser profile list: %v\n", err)
@@ -922,7 +926,12 @@ func runProfile(args []string) {
 			fmt.Fprintf(os.Stderr, "dw-browser profile import: %v\n", err)
 			os.Exit(exitRunErr)
 		}
-		destDir := filepath.Join(homeDir, ".deepwork", "browser-data", "profiles", importName)
+		profilesDir := filepath.Join(homeDir, ".deepwork", "browser-cli")
+		if err := os.MkdirAll(profilesDir, 0755); err != nil {
+			fmt.Fprintf(os.Stderr, "dw-browser profile import: mkdir %s: %v\n", profilesDir, err)
+			os.Exit(exitRunErr)
+		}
+		destDir := filepath.Join(profilesDir, importName)
 		if _, statErr := os.Stat(destDir); statErr == nil {
 			fmt.Fprintf(os.Stderr, "dw-browser profile import: profile %q already exists at %s\n", importName, destDir)
 			os.Exit(exitRunErr)
