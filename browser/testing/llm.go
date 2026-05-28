@@ -21,6 +21,11 @@ const (
 	RoleVision Role = "VISION" // 视觉判定
 )
 
+const (
+	DefaultLLMEndpoint = "http://127.0.0.1:11434"
+	DefaultLLMModel    = "gemma4:26b-a4b"
+)
+
 // LLMClient 是统一的 LLM/VLM 调用客户端。
 // 拥有全部 provider 检测、HTTP、认证、JSON 提取机制。
 // vision.go 和 planner.go 都是它的薄包装。
@@ -44,13 +49,16 @@ func NewLLMClient(role Role, endpoint, model, apiKey string) *LLMClient {
 		endpoint = os.Getenv(prefix + "URL")
 	}
 	if endpoint == "" {
-		endpoint = "http://127.0.0.1:11434"
+		endpoint = DefaultLLMEndpoint
 	}
 	if model == "" {
 		model = os.Getenv(prefix + "MODEL")
 	}
+	if model == "" && role == RoleVision {
+		model = os.Getenv("DW_BROWSER_LLM_MODEL")
+	}
 	if model == "" {
-		model = "gemma4:26b-a4b"
+		model = DefaultLLMModel
 	}
 	if apiKey == "" {
 		apiKey = os.Getenv(prefix + "API_KEY")
@@ -72,18 +80,60 @@ func (c *LLMClient) Model() string { return c.model }
 
 // isOpenAI 判断是否使用 OpenAI-compatible 协议。
 func (c *LLMClient) isOpenAI() bool {
-	return strings.Contains(c.endpoint, "/v1") ||
-		os.Getenv("DW_BROWSER_"+string(c.role)+"_PROVIDER") == "openai"
+	provider := strings.ToLower(strings.TrimSpace(os.Getenv("DW_BROWSER_" + string(c.role) + "_PROVIDER")))
+	switch provider {
+	case "openai":
+		return true
+	case "ollama":
+		return false
+	default:
+		return strings.Contains(c.endpoint, "/v1")
+	}
 }
 
 // Complete 发送单轮 prompt，返回模型输出的原始文本。
 // images 可选：nil 表示纯文本；非空时作为多模态图片输入（OpenAI 协议和 Ollama 均支持）。
 // 调用方负责用 ExtractJSON + json.Unmarshal 解析领域结构。
 func (c *LLMClient) Complete(ctx context.Context, prompt string, images [][]byte) (string, error) {
-	if c.isOpenAI() {
-		return c.completeOpenAI(ctx, prompt, images)
+	var lastErr error
+	for attempt := 0; attempt < 2; attempt++ {
+		var out string
+		var err error
+		if c.isOpenAI() {
+			out, err = c.completeOpenAI(ctx, prompt, images)
+		} else {
+			out, err = c.completeOllama(ctx, prompt, images)
+		}
+		if err == nil {
+			return out, nil
+		}
+		lastErr = err
+		if !isTransientLLMError(err) || attempt == 1 {
+			break
+		}
+		time.Sleep(time.Duration(attempt+1) * 500 * time.Millisecond)
 	}
-	return c.completeOllama(ctx, prompt, images)
+	return "", lastErr
+}
+
+func isTransientLLMError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	for _, needle := range []string{
+		"eof",
+		"timeout",
+		"context deadline exceeded",
+		"connection reset",
+		"temporary failure",
+		"unexpected end",
+	} {
+		if strings.Contains(msg, needle) {
+			return true
+		}
+	}
+	return false
 }
 
 // --- internal request/response types ---

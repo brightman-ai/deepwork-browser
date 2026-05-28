@@ -1418,7 +1418,7 @@ func mapKeyName(key string) string {
 	parts := strings.Split(key, "+")
 	if len(parts) > 1 {
 		// Last part is the key
-		baseKey := parts[len(parts)-1]
+		baseKey := canonicalKeyName(parts[len(parts)-1])
 		modifiers := parts[:len(parts)-1]
 
 		// Build key with modifiers
@@ -1441,10 +1441,48 @@ func mapKeyName(key string) string {
 		return modStr + baseKey
 	}
 
+	key = canonicalKeyName(key)
 	if mapped, ok := keyMap[key]; ok {
 		return mapped
 	}
 	return key
+}
+
+func canonicalKeyName(key string) string {
+	switch strings.ToLower(strings.TrimSpace(key)) {
+	case "enter", "return":
+		return "Enter"
+	case "tab":
+		return "Tab"
+	case "escape", "esc":
+		return "Escape"
+	case "backspace":
+		return "Backspace"
+	case "delete", "del":
+		return "Delete"
+	case "arrowup", "up":
+		return "ArrowUp"
+	case "arrowdown", "down":
+		return "ArrowDown"
+	case "arrowleft", "left":
+		return "ArrowLeft"
+	case "arrowright", "right":
+		return "ArrowRight"
+	case "home":
+		return "Home"
+	case "end":
+		return "End"
+	case "pageup":
+		return "PageUp"
+	case "pagedown":
+		return "PageDown"
+	default:
+		upper := strings.ToUpper(strings.TrimSpace(key))
+		if len(upper) >= 2 && upper[0] == 'F' {
+			return upper
+		}
+		return strings.TrimSpace(key)
+	}
 }
 
 // executeBack 导航后退。

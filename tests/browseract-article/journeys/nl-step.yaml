@@ -1,0 +1,41 @@
+version: 1
+id: BROWSERACT-ARTICLE-NL-STEP-001
+name: BrowserAct 文章 fixture — NL step 路径
+app: deepwork-browser
+portal: local-fixture
+risk_tags: [nl-step, planner, chinese-content, interaction]
+
+environment:
+  base_url: http://127.0.0.1:18765
+  entry_url: /
+  mode: headless
+  viewport: "1440x1000"
+  client: chrome
+  clean_session: true
+
+journey:
+  - id: nl-filter-remote-assist
+    do: "在关键词筛选框输入 remote-assist，并确认页面只显示相关能力项"
+    wait:
+      until: "text 当前显示 1 个能力项"
+      timeout_ms: 20000
+    check:
+      - assert: "text_contains('remote-assist')"
+        using: [structural]
+        required: true
+      - assert: "text_contains('当前显示 1 个能力项')"
+        using: [structural]
+        required: true
+
+  - id: nl-generate-summary
+    do: "点击生成测试摘要按钮"
+    wait:
+      until: "text 测试摘要"
+      timeout_ms: 20000
+    check:
+      - assert: "text_contains('测试摘要')"
+        using: [structural]
+        required: true
+
+evidence:
+  save: [trace, observations, screenshots, diffs, report]

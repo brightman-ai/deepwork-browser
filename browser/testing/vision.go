@@ -14,7 +14,7 @@ type VisionOracle struct {
 
 // NewVisionOracle 从环境变量创建 VisionOracle（向后兼容）。
 // DW_BROWSER_VISION_URL (default: http://127.0.0.1:11434)
-// DW_BROWSER_VISION_MODEL (default: gemma4:26b-a4b)
+// DW_BROWSER_VISION_MODEL (default: DW_BROWSER_LLM_MODEL, then gemma4:26b-a4b)
 func NewVisionOracle() *VisionOracle {
 	return &VisionOracle{client: NewLLMClient(RoleVision, "", "", "")}
 }
@@ -37,7 +37,7 @@ type VisionContext struct {
 type VisionResult struct {
 	Pass         bool     `json:"pass"`
 	Confidence   float64  `json:"confidence"`
-	Category     string   `json:"category,omitempty"`     // "visual_mismatch", "layout_ok", etc.
+	Category     string   `json:"category,omitempty"` // "visual_mismatch", "layout_ok", etc.
 	Observations []string `json:"observations,omitempty"`
 }
 

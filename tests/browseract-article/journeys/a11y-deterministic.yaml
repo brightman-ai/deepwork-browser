@@ -1,0 +1,89 @@
+version: 1
+id: BROWSERACT-ARTICLE-A11Y-001
+name: BrowserAct 文章 fixture — A11y 确定性路径
+app: deepwork-browser
+portal: local-fixture
+risk_tags: [a11y, deterministic, chinese-content, interaction]
+
+environment:
+  base_url: http://127.0.0.1:18765
+  entry_url: /
+  mode: headless
+  viewport: "1440x1000"
+  client: chrome
+  clean_session: true
+
+journey:
+  - id: open-and-verify-article
+    do: "wait"
+    wait:
+      until: "text BrowserAct"
+      timeout_ms: 10000
+    check:
+      - assert: "exists(testid='article-title')"
+        using: [structural]
+        required: true
+      - assert: "exists(testid='search-box')"
+        using: [structural]
+        required: true
+      - assert: "text_contains('stealth-extract')"
+        using: [structural]
+        required: true
+      - assert: "exists(testid='copy-summary')"
+        using: [structural]
+        required: true
+      - assert: "console_errors_count == 0"
+        using: [telemetry]
+        required: true
+
+  - id: filter-dynamic-proxy
+    do: "fill #search-box '动态代理'"
+    wait:
+      until: "visible [data-testid=\"card-proxy\"]"
+      timeout_ms: 10000
+    check:
+      - assert: "exists(testid='card-proxy')"
+        using: [structural]
+        required: true
+      - assert: "exists(testid='filter-status')"
+        using: [structural]
+        required: true
+
+  - id: clear-keyword-filter
+    do: "fill #search-box ''"
+    wait:
+      until: "visible [data-testid=\"card-stealth\"]"
+      timeout_ms: 10000
+    check:
+      - assert: "exists(testid='card-stealth')"
+        using: [structural]
+        required: true
+
+  - id: switch-human-layer
+    do: "click #btn-layer-human"
+    wait:
+      until: "visible [data-testid=\"card-remote-assist\"]"
+      timeout_ms: 10000
+    check:
+      - assert: "exists(testid='card-remote-assist')"
+        using: [structural]
+        required: true
+      - assert: "exists(testid='card-skill-forge')"
+        using: [structural]
+        required: true
+
+  - id: generate-summary
+    do: "click #copy-summary"
+    wait:
+      until: "text 测试摘要"
+      timeout_ms: 10000
+    check:
+      - assert: "text_contains('测试摘要')"
+        using: [structural]
+        required: true
+      - assert: "exists(testid='summary-output')"
+        using: [structural]
+        required: true
+
+evidence:
+  save: [trace, observations, screenshots, diffs, report]

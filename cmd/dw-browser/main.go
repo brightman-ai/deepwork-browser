@@ -604,6 +604,8 @@ func main() {
 		runState(os.Args[2:])
 	case "journey":
 		runJourney(os.Args[2:])
+	case "plan":
+		runPlan(os.Args[2:])
 	case "do":
 		runDo(os.Args[2:])
 	case "test-help":
@@ -865,8 +867,8 @@ func runProfile(args []string) {
 			os.Exit(exitRunErr)
 		}
 		type profileEntry struct {
-			Name   string `json:"name"`
-			Path   string `json:"path"`
+			Name   string  `json:"name"`
+			Path   string  `json:"path"`
 			SizeMB float64 `json:"size_mb"`
 		}
 		profiles := []profileEntry{}
@@ -1211,6 +1213,15 @@ func printUsage() {
 	fmt.Println("单次命令:")
 	fmt.Println("  dw-browser once --url <url> --view action|reading|evidence [--action '<action>']")
 	fmt.Println()
+	fmt.Println("AI-native 测试命令:")
+	fmt.Println("  dw-browser observe --id <id> [--layers structural,behavior,telemetry,layout]")
+	fmt.Println("  dw-browser diff before.json after.json")
+	fmt.Println("  dw-browser check --id <id> --assert \"console_errors_count == 0\"")
+	fmt.Println("  dw-browser journey --file spec.yaml [--evidence dir]")
+	fmt.Println("  dw-browser plan --id <id> \"natural language goal\"")
+	fmt.Println("  dw-browser do --id <id> \"natural language goal\"")
+	fmt.Println("  dw-browser get --id <id> \"active tab url\"")
+	fmt.Println()
 	fmt.Println("核心参数:")
 	fmt.Println("  --id <id>              BrowserSession 本地句柄；--session 仅作为隐藏兼容别名")
 	fmt.Println("  --kind <kind>          task/interactive/service/debug/test；不使用 portal/webchat 作为公开 kind")
@@ -1258,6 +1269,14 @@ func printUsage() {
 	fmt.Println("  dw-browser layout <url> [flags]                   布局验证 (L2)")
 	fmt.Println("  dw-browser explore <url> [flags]                  AI 探索 (见下方详细说明)")
 	fmt.Println("  dw-browser version                                打印版本")
+	fmt.Println()
+	fmt.Println("用法 (AI-native 测试 — 观察 / 断言 / 规划 / 执行):")
+	fmt.Println("  dw-browser observe --id s1 --out before.json")
+	fmt.Println("  dw-browser check --id s1 --assert \"exists(role='button')\"")
+	fmt.Println("  dw-browser plan --id s1 \"Open settings and inspect provider status\"")
+	fmt.Println("  dw-browser do --id s1 \"Open settings and inspect provider status\"")
+	fmt.Println("  dw-browser journey --file tests/bdd/portal.yaml --evidence evidence/run-001")
+	fmt.Println("  dw-browser test-help                              打印完整测试命令说明")
 	fmt.Println()
 	fmt.Println("═══ explore — 为 Claude Code / AI Agent 设计的浏览器状态查询器 ═══")
 	fmt.Println()
@@ -1418,6 +1437,8 @@ func printCommandUsage(command string) {
 		fmt.Println()
 		fmt.Println("常用操作:")
 		fmt.Println("  click/fill/type/press/scroll/hover/select/back/forward/focus/scrollinto/check/uncheck")
+	case "observe", "diff", "check", "journey", "plan", "do", "test-help":
+		printTestingHelp()
 	case "batch":
 		fmt.Println("dw-browser batch — 在同一连接里顺序执行多步操作")
 		fmt.Println()
@@ -3352,7 +3373,7 @@ func runWaitCondition(ctx context.Context, impl browser.BrowserCore, condition s
 		deadline := time.Now().Add(15 * time.Second)
 		for time.Now().Before(deadline) {
 			var count int64
-			if err := impl.EvalJS(ctx, fmt.Sprintf(`document.querySelectorAll(%q).length`, sel), &count); err == nil && count > 0 {
+			if err := impl.EvalJS(ctx, waitSelectorCountJS(sel), &count); err == nil && count > 0 {
 				return nil
 			}
 			time.Sleep(200 * time.Millisecond)
@@ -3366,7 +3387,7 @@ func runWaitCondition(ctx context.Context, impl browser.BrowserCore, condition s
 		deadline := time.Now().Add(15 * time.Second)
 		for time.Now().Before(deadline) {
 			var count int64
-			if err := impl.EvalJS(ctx, fmt.Sprintf(`document.querySelectorAll(%q).length`, sel), &count); err == nil && count == 0 {
+			if err := impl.EvalJS(ctx, waitSelectorCountJS(sel), &count); err == nil && count == 0 {
 				return nil
 			}
 			time.Sleep(200 * time.Millisecond)
@@ -3393,9 +3414,9 @@ func runWaitCondition(ctx context.Context, impl browser.BrowserCore, condition s
 		pattern := strings.TrimPrefix(condition, "url ")
 		deadline := time.Now().Add(15 * time.Second)
 		for time.Now().Before(deadline) {
-			var currentURL string
-			if err := impl.EvalJS(ctx, `window.location.href`, &currentURL); err == nil {
-				if strings.Contains(currentURL, strings.ReplaceAll(pattern, "**", "")) {
+			var urlSurfaces string
+			if err := impl.EvalJS(ctx, waitURLSurfacesJS(), &urlSurfaces); err == nil {
+				if urlSurfacesMatch(urlSurfaces, pattern) {
 					return nil
 				}
 			}
@@ -3405,6 +3426,67 @@ func runWaitCondition(ctx context.Context, impl browser.BrowserCore, condition s
 	}
 
 	return fmt.Errorf("unknown wait condition: %q (use: 2000, 'visible #sel', 'gone #sel', 'text ...')", condition)
+}
+
+func waitURLSurfacesJS() string {
+	return `(() => {
+		const values = [];
+		const push = (value) => {
+			const text = String(value || '').trim();
+			if (text) values.push(text);
+		};
+		push(window.location.href);
+		push(document.querySelector('[data-testid="rcb-chip-url"]')?.textContent);
+		push(document.querySelector('.browser-tab--active[data-testid^="browser-tab-"]')?.textContent);
+		push(document.querySelector('[role="tab"][aria-selected="true"]')?.textContent);
+		return values.join('\n');
+	})()`
+}
+
+func normalizeURLWaitText(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	value = strings.Trim(value, `"'`)
+	value = strings.ReplaceAll(value, "**", "")
+	value = strings.TrimPrefix(value, "当前页面:")
+	value = strings.TrimSpace(value)
+	value = strings.TrimPrefix(value, "http://")
+	value = strings.TrimPrefix(value, "https://")
+	value = strings.TrimPrefix(value, "www.")
+	value = strings.TrimRight(value, "/")
+	return value
+}
+
+func urlSurfacesMatch(surfaces string, pattern string) bool {
+	rawPattern := strings.ToLower(strings.TrimSpace(strings.ReplaceAll(pattern, "**", "")))
+	normalizedPattern := normalizeURLWaitText(pattern)
+	if rawPattern == "" && normalizedPattern == "" {
+		return true
+	}
+	for _, line := range strings.Split(surfaces, "\n") {
+		rawLine := strings.ToLower(strings.TrimSpace(line))
+		normalizedLine := normalizeURLWaitText(line)
+		if rawPattern != "" && strings.Contains(rawLine, rawPattern) {
+			return true
+		}
+		if normalizedPattern != "" && strings.Contains(normalizedLine, normalizedPattern) {
+			return true
+		}
+	}
+	return false
+}
+
+func waitSelectorCountJS(selector string) string {
+	return fmt.Sprintf(`(() => {
+		const selector = %q;
+		const seen = new Set();
+		const addAll = (nodes) => Array.from(nodes || []).forEach(node => seen.add(node));
+		try { addAll(document.querySelectorAll(selector)); } catch (_) {}
+		if (/^#[A-Za-z0-9_-]+$/.test(selector)) {
+			const testid = selector.slice(1);
+			try { addAll(document.querySelectorAll('[data-testid="' + CSS.escape(testid) + '"]')); } catch (_) {}
+		}
+		return seen.size;
+	})()`, selector)
 }
 
 // runScreenshot 执行 screenshot 子命令。

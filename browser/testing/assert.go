@@ -15,28 +15,28 @@ type primitive func(obs *Observation, args string) (bool, string)
 
 // primitives 是所有已注册断言原语的查找表。
 var primitives = map[string]primitive{
-	"exists":                      evalExists,
-	"count":                       evalCount,
-	"text_contains":               evalTextContains,
-	"url_matches":                 evalURLMatches,
-	"tab_count":                   evalTabCount,
-	"active_tab_url_contains":     evalActiveTabURLContains,
-	"active_tab_matches_url":      evalActiveTabURLContains,
-	"console_errors_count":        evalConsoleErrorsCount,
-	"network_failures_count":      evalNetworkFailuresCount,
-	"latency_lt":                  evalLatencyLt,
-	"visible":                     evalVisible,
-	"gone":                        evalGone,
-	"region_non_empty":            evalRegionNonEmpty,
-	"region_not_overlapped":       evalRegionNotOverlapped,
+	"exists":                  evalExists,
+	"count":                   evalCount,
+	"text_contains":           evalTextContains,
+	"url_matches":             evalURLMatches,
+	"tab_count":               evalTabCount,
+	"active_tab_url_contains": evalActiveTabURLContains,
+	"active_tab_matches_url":  evalActiveTabURLContains,
+	"console_errors_count":    evalConsoleErrorsCount,
+	"network_failures_count":  evalNetworkFailuresCount,
+	"latency_lt":              evalLatencyLt,
+	"visible":                 evalVisible,
+	"gone":                    evalGone,
+	"region_non_empty":        evalRegionNonEmpty,
+	"region_not_overlapped":   evalRegionNotOverlapped,
 	// SUT-side transcript + file oracles
-	"transcript_tool_count":       evalTranscriptToolCountStub,
-	"transcript_has":              evalTranscriptHasDone,
-	"transcript_error_count":      evalTranscriptErrorCountStub,
-	"transcript_done_count":       evalTranscriptDoneCountStub,
-	"transcript_text_contains":    evalTranscriptTextContains,
-	"transcript_format_v1":        evalTranscriptFormatV1,
-	"file_glob_count":             evalFileGlobCountStub,
+	"transcript_tool_count":    evalTranscriptToolCountStub,
+	"transcript_has":           evalTranscriptHasDone,
+	"transcript_error_count":   evalTranscriptErrorCountStub,
+	"transcript_done_count":    evalTranscriptDoneCountStub,
+	"transcript_text_contains": evalTranscriptTextContains,
+	"transcript_format_v1":     evalTranscriptFormatV1,
+	"file_glob_count":          evalFileGlobCountStub,
 }
 
 // transcriptCountFuncs lists the primitives that require a comparison suffix
@@ -192,6 +192,29 @@ func (e *AssertionEngine) EvaluateWithUsing(obs *Observation, expr string, using
 	return result
 }
 
+// EvaluateVisualOnly evaluates a free-form assertion directly with the visual
+// oracle. It is used by CLI paths where --using=visual intentionally means
+// natural-language visual judgment rather than Assertion DSL parsing.
+func (e *AssertionEngine) EvaluateVisualOnly(obs *Observation, expr string, using []string) *AssertionResult {
+	expr = strings.TrimSpace(expr)
+	if len(using) == 0 {
+		using = []string{"visual"}
+	}
+	result := &AssertionResult{
+		Schema:     "dw.check.v1",
+		Assertion:  expr,
+		Using:      using,
+		Status:     StatusBlocked,
+		Confidence: 1.0,
+		Reason:     "visual oracle pending",
+	}
+	if e.Vision == nil {
+		result.Reason = "visual oracle: not configured"
+		return result
+	}
+	return e.applyVisualOracle(obs, result, AssertionSpec{Assert: expr, Using: using})
+}
+
 // EvaluateAll 执行一组来自 baseline YAML 的断言规格，返回结果列表。
 func (e *AssertionEngine) EvaluateAll(obs *Observation, specs []AssertionSpec) []AssertionResult {
 	results := make([]AssertionResult, 0, len(specs))
@@ -214,7 +237,7 @@ func (e *AssertionEngine) EvaluateAll(obs *Observation, specs []AssertionSpec) [
 // containsVisual 检查 using 列表中是否包含 "visual"。
 func containsVisual(using []string) bool {
 	for _, u := range using {
-		if u == "visual" {
+		if strings.EqualFold(strings.TrimSpace(u), "visual") {
 			return true
 		}
 	}
@@ -260,8 +283,14 @@ func (e *AssertionEngine) applyVisualOracle(obs *Observation, r *AssertionResult
 		r.Reason = fmt.Sprintf("visual oracle: %s (confidence=%.2f, observations=%v)",
 			vr.Category, vr.Confidence, vr.Observations)
 	} else {
-		// VLM 确认通过：保留原状态，补充 confidence
+		// VLM 确认通过：结构化原语已有明确结果时保留原状态；
+		// free-form visual-only 断言从 BLOCKED 提升为 PASS。
+		if r.Status == "" || r.Status == StatusBlocked {
+			r.Status = StatusPass
+		}
 		r.Confidence = vr.Confidence
+		r.Reason = fmt.Sprintf("visual oracle: %s (confidence=%.2f, observations=%v)",
+			vr.Category, vr.Confidence, vr.Observations)
 	}
 	return r
 }

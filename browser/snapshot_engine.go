@@ -361,7 +361,18 @@ func (e *snapshotEngine) GetText(ctx context.Context, focus *string) (string, er
 
 	// 全页面文本
 	var bodyText string
-	err := chromedp.Run(ctx, chromedp.Text("body", &bodyText, chromedp.ByQuery))
+	err := chromedp.Run(ctx, chromedp.Evaluate(`(() => {
+		const body = document.body;
+		if (!body) return "";
+		return body.innerText || body.textContent || "";
+	})()`, &bodyText))
+	if err == nil && strings.TrimSpace(bodyText) != "" {
+		return bodyText, nil
+	}
+	if ctx.Err() != nil {
+		return "", fmt.Errorf("browser: text extraction failed: %w", ctx.Err())
+	}
+	err = chromedp.Run(ctx, chromedp.Text("body", &bodyText, chromedp.ByQuery))
 	if err != nil {
 		return "", fmt.Errorf("browser: text extraction failed: %w", err)
 	}
@@ -709,21 +720,44 @@ func unquoteJSONString(s string) string {
 // Runtime.evaluate 是唯一安全的 DOM 属性获取路径。Playwright 同理用 JS 计算 accessible name。
 func enrichTestIDsViaJS(ctx context.Context, refs []ElementRef) {
 	type tidEntry struct {
-		TestID string `json:"testid"`
-		Text   string `json:"text"`
+		TestID string   `json:"testid"`
+		Text   string   `json:"text"`
+		Texts  []string `json:"texts"`
 	}
 	var entries []tidEntry
 	js := `(() => {
 		const r = [];
+		const clean = (value) => (value || '').replace(/\s+/g, ' ').trim();
+		const push = (arr, value) => {
+			value = clean(value);
+			if (value && !arr.includes(value)) arr.push(value.substring(0, 80));
+		};
+		const labelText = (el) => {
+			const out = [];
+			const id = el.getAttribute('id');
+			if (id) {
+				document.querySelectorAll(` + "`label[for=\"${CSS.escape(id)}\"]`" + `).forEach(label => push(out, label.textContent));
+			}
+			const wrapping = el.closest('label');
+			if (wrapping) push(out, wrapping.textContent);
+			const labelledBy = el.getAttribute('aria-labelledby');
+			if (labelledBy) {
+				labelledBy.split(/\s+/).forEach(part => {
+					const node = document.getElementById(part);
+					if (node) push(out, node.textContent);
+				});
+			}
+			return out;
+		};
 		document.querySelectorAll('[data-testid]').forEach(el => {
-			const text = (
-				(el.textContent||'').trim() ||
-				(el.getAttribute('aria-label')||'').trim() ||
-				(el.getAttribute('placeholder')||'').trim() ||
-				(el.getAttribute('title')||'').trim() ||
-				(el.getAttribute('name')||'').trim()
-			);
-			r.push({testid: el.getAttribute('data-testid'), text: text.substring(0,60)});
+			const texts = [];
+			push(texts, el.getAttribute('aria-label'));
+			labelText(el).forEach(text => push(texts, text));
+			push(texts, el.getAttribute('placeholder'));
+			push(texts, el.getAttribute('title'));
+			push(texts, el.getAttribute('name'));
+			push(texts, el.textContent);
+			r.push({testid: el.getAttribute('data-testid'), text: texts[0] || '', texts});
 		});
 		return r;
 	})()`
@@ -732,11 +766,22 @@ func enrichTestIDsViaJS(ctx context.Context, refs []ElementRef) {
 	if err := chromedp.Run(jsCtx, chromedp.Evaluate(js, &entries)); err != nil || len(entries) == 0 {
 		return
 	}
-	textToTID := make(map[string]string, len(entries))
+	textToTID := make(map[string]string, len(entries)*2)
 	for _, e := range entries {
-		if e.Text != "" && e.TestID != "" {
-			if _, exists := textToTID[e.Text]; !exists {
-				textToTID[e.Text] = e.TestID
+		if e.TestID == "" {
+			continue
+		}
+		candidates := append([]string{}, e.Texts...)
+		if e.Text != "" {
+			candidates = append(candidates, e.Text)
+		}
+		for _, text := range candidates {
+			text = normalizeVisibleText(text)
+			if text == "" {
+				continue
+			}
+			if _, exists := textToTID[text]; !exists {
+				textToTID[text] = e.TestID
 			}
 		}
 	}
@@ -810,7 +855,10 @@ func discoverClickableDOMViaJS(ctx context.Context, existingRefs []ElementRef) [
 			continue
 		}
 		existing[item.TestID] = true
-		name := item.TestID
+		name := normalizeVisibleText(item.Text)
+		if name == "" {
+			name = item.TestID
+		}
 		if len(name) > 40 {
 			name = name[:37] + "..."
 		}

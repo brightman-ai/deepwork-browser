@@ -74,8 +74,8 @@ func TestTranscriptToolCount_MissingTranscript(t *testing.T) {
 	engine := &AssertionEngine{}
 
 	result := engine.Evaluate(obs, "transcript_tool_count('browser_navigate') >= 1")
-	if result.Status != StatusFail {
-		t.Errorf("expected FAIL (BLOCKED) when transcript is missing, got %s", result.Status)
+	if result.Status != StatusBlocked {
+		t.Errorf("expected BLOCKED when transcript is missing, got %s", result.Status)
 	}
 	if result.Reason == "" {
 		t.Error("expected non-empty reason for BLOCKED assertion")
@@ -101,8 +101,8 @@ func TestTranscriptHasDone_MissingTranscript(t *testing.T) {
 	engine := &AssertionEngine{}
 
 	result := engine.Evaluate(obs, "transcript_has('done')")
-	if result.Status != StatusFail {
-		t.Errorf("expected FAIL when transcript missing, got %s", result.Status)
+	if result.Status != StatusBlocked {
+		t.Errorf("expected BLOCKED when transcript missing, got %s", result.Status)
 	}
 }
 

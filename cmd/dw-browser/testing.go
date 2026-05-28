@@ -21,14 +21,19 @@ import (
 
 // llmFlags 包含 LLM/VLM 相关的 CLI 参数。
 type llmFlags struct {
-	llmURL      string // --llm-url (Ollama/vLLM/OpenAI-compatible endpoint)
-	llmModel    string // --llm-model (model name, e.g. gemma4:26b-a4b)
-	visionURL   string // --vision-url (VLM endpoint, defaults to llm-url)
-	visionModel string // --vision-model (VLM model name)
+	llmURL         string // --llm-url (Ollama/vLLM/OpenAI-compatible endpoint)
+	llmProvider    string // --llm-provider (auto|ollama|openai)
+	llmModel       string // --llm-model (model name, e.g. google/gemma-4-26b-a4b-it)
+	llmAPIKey      string // --llm-api-key
+	visionURL      string // --vision-url / --vlm-url (defaults to llm-url)
+	visionProvider string // --vision-provider / --vlm-provider (defaults to llm-provider)
+	visionModel    string // --vision-model / --vlm-model (defaults to llm-model)
+	visionAPIKey   string // --vision-api-key / --vlm-api-key (defaults to llm-api-key)
 }
 
 // parseLLMFlags 从 args 中提取 LLM/VLM 参数，返回剩余 args。
-// CLI flags 优先级高于环境变量；--vision-url 默认 fallback 到 --llm-url。
+// CLI flags 优先级高于环境变量。VLM flags 接受 vision/vlm 两组别名；
+// 未显式配置 VLM 时继承 LLM 的 endpoint/provider/model/key，适配 Gemma 4 这类同模态模型。
 func parseLLMFlags(args []string) (llmFlags, []string) {
 	var lf llmFlags
 	remaining := make([]string, 0, len(args))
@@ -41,21 +46,51 @@ func parseLLMFlags(args []string) (llmFlags, []string) {
 			i++
 		case strings.HasPrefix(arg, "--llm-url="):
 			lf.llmURL = arg[len("--llm-url="):]
+		case strings.HasPrefix(arg, "--llm-endpoint="):
+			lf.llmURL = arg[len("--llm-endpoint="):]
+		case arg == "--llm-provider" && i+1 < len(args):
+			lf.llmProvider = args[i+1]
+			i++
+		case strings.HasPrefix(arg, "--llm-provider="):
+			lf.llmProvider = arg[len("--llm-provider="):]
 		case arg == "--llm-model" && i+1 < len(args):
 			lf.llmModel = args[i+1]
 			i++
 		case strings.HasPrefix(arg, "--llm-model="):
 			lf.llmModel = arg[len("--llm-model="):]
-		case arg == "--vision-url" && i+1 < len(args):
+		case arg == "--llm-api-key" && i+1 < len(args):
+			lf.llmAPIKey = args[i+1]
+			i++
+		case strings.HasPrefix(arg, "--llm-api-key="):
+			lf.llmAPIKey = arg[len("--llm-api-key="):]
+		case (arg == "--vision-url" || arg == "--vlm-url") && i+1 < len(args):
 			lf.visionURL = args[i+1]
 			i++
 		case strings.HasPrefix(arg, "--vision-url="):
 			lf.visionURL = arg[len("--vision-url="):]
-		case arg == "--vision-model" && i+1 < len(args):
+		case strings.HasPrefix(arg, "--vlm-url="):
+			lf.visionURL = arg[len("--vlm-url="):]
+		case (arg == "--vision-provider" || arg == "--vlm-provider") && i+1 < len(args):
+			lf.visionProvider = args[i+1]
+			i++
+		case strings.HasPrefix(arg, "--vision-provider="):
+			lf.visionProvider = arg[len("--vision-provider="):]
+		case strings.HasPrefix(arg, "--vlm-provider="):
+			lf.visionProvider = arg[len("--vlm-provider="):]
+		case (arg == "--vision-model" || arg == "--vlm-model") && i+1 < len(args):
 			lf.visionModel = args[i+1]
 			i++
 		case strings.HasPrefix(arg, "--vision-model="):
 			lf.visionModel = arg[len("--vision-model="):]
+		case strings.HasPrefix(arg, "--vlm-model="):
+			lf.visionModel = arg[len("--vlm-model="):]
+		case (arg == "--vision-api-key" || arg == "--vlm-api-key") && i+1 < len(args):
+			lf.visionAPIKey = args[i+1]
+			i++
+		case strings.HasPrefix(arg, "--vision-api-key="):
+			lf.visionAPIKey = arg[len("--vision-api-key="):]
+		case strings.HasPrefix(arg, "--vlm-api-key="):
+			lf.visionAPIKey = arg[len("--vlm-api-key="):]
 		default:
 			remaining = append(remaining, arg)
 		}
@@ -65,8 +100,14 @@ func parseLLMFlags(args []string) (llmFlags, []string) {
 	if lf.llmURL != "" {
 		os.Setenv("DW_BROWSER_LLM_URL", lf.llmURL)
 	}
+	if lf.llmProvider != "" {
+		os.Setenv("DW_BROWSER_LLM_PROVIDER", lf.llmProvider)
+	}
 	if lf.llmModel != "" {
 		os.Setenv("DW_BROWSER_LLM_MODEL", lf.llmModel)
+	}
+	if lf.llmAPIKey != "" {
+		os.Setenv("DW_BROWSER_LLM_API_KEY", lf.llmAPIKey)
 	}
 	if lf.visionURL != "" {
 		os.Setenv("DW_BROWSER_VISION_URL", lf.visionURL)
@@ -74,8 +115,20 @@ func parseLLMFlags(args []string) (llmFlags, []string) {
 		// vision defaults to llm endpoint if not specified separately
 		os.Setenv("DW_BROWSER_VISION_URL", lf.llmURL)
 	}
+	if lf.visionProvider != "" {
+		os.Setenv("DW_BROWSER_VISION_PROVIDER", lf.visionProvider)
+	} else if lf.llmProvider != "" {
+		os.Setenv("DW_BROWSER_VISION_PROVIDER", lf.llmProvider)
+	}
 	if lf.visionModel != "" {
 		os.Setenv("DW_BROWSER_VISION_MODEL", lf.visionModel)
+	} else if lf.llmModel != "" {
+		os.Setenv("DW_BROWSER_VISION_MODEL", lf.llmModel)
+	}
+	if lf.visionAPIKey != "" {
+		os.Setenv("DW_BROWSER_VISION_API_KEY", lf.visionAPIKey)
+	} else if lf.llmAPIKey != "" {
+		os.Setenv("DW_BROWSER_VISION_API_KEY", lf.llmAPIKey)
 	}
 
 	return lf, remaining
@@ -99,14 +152,11 @@ func visionEnabled(usingRaw string) bool {
 	return false
 }
 
-// autoLoadLLMEnv sources ~/.deepwork/testing-llm.env into the process environment
-// when DW_BROWSER_LLM_URL is not already set. Enables LLM planner and vision oracle
-// for journey specs without requiring the caller to manually source the file.
+// autoLoadLLMEnv sources ~/.deepwork/testing-llm.env into the process environment.
+// It fills only missing keys so explicit environment/CLI values still win, while
+// allowing VLM keys to be backfilled even when only DW_BROWSER_LLM_URL is preset.
 // Existing env vars are never overridden (explicit beats file).
 func autoLoadLLMEnv() {
-	if os.Getenv("DW_BROWSER_LLM_URL") != "" {
-		return
-	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return
@@ -176,6 +226,7 @@ func printTestingHelp() {
   diff      Compare two observations (before/after state diff)
   check     Run assertion against page or observation file
   journey   Execute BDD YAML test scenario with evidence collection
+  plan      Plan natural language goal without executing browser actions
   do        Execute natural language goal via LLM planner + Skills KB
   get       Extract typed data from current page state
 
@@ -199,8 +250,14 @@ Usage examples:
   # Execute BDD journey with evidence
   dw-browser journey --file tests/bdd/bs15-sidebar-research.yaml --evidence ./evidence/
 
+  # Plan a natural language goal without side effects
+  dw-browser plan --id session1 "Open browser sidebar and search for AI testing"
+
   # Execute natural language goal
   dw-browser do --id session1 "Open browser sidebar and search for AI testing"
+
+  # Execute a previously reviewed/generated plan
+  dw-browser do --id session1 --plan-file plan.json
 
   # Extract data
   dw-browser get --id session1 "active tab url"
@@ -210,19 +267,39 @@ Usage examples:
 
 LLM/VLM configuration (for do, check --using visual, journey with visual checks):
 
-  --llm-url <url>        LLM endpoint (Ollama/vLLM/OpenAI-compatible)
+  --llm-url <url>        Planner LLM endpoint (Ollama/vLLM/OpenAI-compatible)
                          Default: http://127.0.0.1:11434
                          Env: DW_BROWSER_LLM_URL
 
+  --llm-provider <name>  Planner provider: auto|ollama|openai
+                         Env: DW_BROWSER_LLM_PROVIDER
+
   --llm-model <name>     LLM model name
-                         Default: gemma4:26b-a4b
+                         Example: google/gemma-4-26b-a4b-it
                          Env: DW_BROWSER_LLM_MODEL
 
+  --llm-api-key <key>    Planner API key (OpenAI-compatible providers)
+                         Env: DW_BROWSER_LLM_API_KEY
+
   --vision-url <url>     VLM endpoint (defaults to --llm-url if not set)
+  --vlm-url <url>        Alias for --vision-url
                          Env: DW_BROWSER_VISION_URL
 
+  --vision-provider <n>  VLM provider (defaults to --llm-provider if set)
+  --vlm-provider <n>     Alias for --vision-provider
+                         Env: DW_BROWSER_VISION_PROVIDER
+
   --vision-model <name>  VLM model name (defaults to --llm-model if not set)
+  --vlm-model <name>     Alias for --vision-model
                          Env: DW_BROWSER_VISION_MODEL
+
+  --vision-api-key <key> VLM API key (defaults to --llm-api-key if set)
+  --vlm-api-key <key>    Alias for --vision-api-key
+                         Env: DW_BROWSER_VISION_API_KEY
+
+  Gemma 4 OpenRouter example:
+    --llm-provider openai --llm-url https://openrouter.ai/api/v1 \
+    --llm-model google/gemma-4-26b-a4b-it --llm-api-key $OPENROUTER_API_KEY
 
 Assertion DSL primitives:
 
@@ -507,6 +584,7 @@ func runCheck(args []string) {
 		printTestingHelp()
 		os.Exit(exitOK)
 	}
+	autoLoadLLMEnv()
 	_, args = parseLLMFlags(args)
 	var assertExpr string
 	var specFile string
@@ -568,7 +646,7 @@ func runCheck(args []string) {
 	}
 
 	engine := btest.AssertionEngine{}
-	if visionEnabled(usingRaw) {
+	if visionEnabled(usingRaw) || strings.Contains(strings.ToLower(usingRaw), "visual") {
 		engine.Vision = btest.NewVisionOracle()
 	}
 	hasFail := false
@@ -599,7 +677,15 @@ func runCheck(args []string) {
 				usingSlice = append(usingSlice, strings.TrimSpace(p))
 			}
 		}
+		if engine.Vision == nil && cliUsingContainsVisual(usingSlice) {
+			engine.Vision = btest.NewVisionOracle()
+		}
 		result := engine.EvaluateWithUsing(obs, assertExpr, usingSlice)
+		if result.Status == btest.StatusBlocked &&
+			strings.HasPrefix(result.Reason, "cannot parse assertion expression") &&
+			cliUsingContainsVisual(usingSlice) {
+			result = engine.EvaluateVisualOnly(obs, assertExpr, usingSlice)
+		}
 		if result.Status == btest.StatusFail {
 			hasFail = true
 		}
@@ -888,6 +974,10 @@ func (e *cliActionExecutor) Execute(ctx context.Context, action string) error {
 			return nil
 		}
 	}
+	switch strings.ToLower(trimmed) {
+	case "wait", "noop", "none":
+		return nil
+	}
 
 	// NL goal — route through LLM planner when configured.
 	if isNLGoal(trimmed) && e.planner != nil {
@@ -903,12 +993,16 @@ func (e *cliActionExecutor) Execute(ctx context.Context, action string) error {
 func (e *cliActionExecutor) executeNLGoal(ctx context.Context, goal string) error {
 	snap, _ := e.impl.SnapWithSessionMode(ctx, e.sessionInfo.SnapEpoch)
 	var structural *btest.StructuralState
+	pageURL := e.sessionInfo.PageURL
 	if snap != nil {
 		structural = doStructuralFromSnap(snap)
+		if strings.TrimSpace(snap.URL) != "" {
+			pageURL = snap.URL
+		}
 	}
 
 	var plan *btest.PlanResult
-	if steps := lookupSkillRecipe(e.sessionInfo.PageURL, goal); steps != nil {
+	if steps := lookupSkillRecipe(pageURL, goal); steps != nil {
 		plan = &btest.PlanResult{Goal: goal, Steps: steps}
 	} else {
 		var err error
@@ -919,11 +1013,18 @@ func (e *cliActionExecutor) executeNLGoal(ctx context.Context, goal string) erro
 	}
 
 	for _, step := range plan.Steps {
-		if _, err := e.impl.ActWithSessionMode(ctx, step.Action, false); err != nil {
-			return fmt.Errorf("nl-exec %q → step %q: %w", goal, step.Description, err)
+		switch strings.ToLower(strings.TrimSpace(step.Action)) {
+		case "wait", "noop", "none":
+			// The real synchronization is represented by step.Wait.
+		default:
+			if _, err := e.impl.ActWithSessionMode(ctx, step.Action, false); err != nil {
+				return fmt.Errorf("nl-exec %q → step %q: %w", goal, step.Description, err)
+			}
 		}
 		if step.Wait != "" {
-			_ = e.Wait(ctx, step.Wait, 10000)
+			if err := e.Wait(ctx, step.Wait, 10000); err != nil {
+				return fmt.Errorf("nl-exec %q → wait %q: %w", goal, step.Wait, err)
+			}
 		}
 	}
 	return nil
@@ -991,6 +1092,10 @@ func (e *oneshotActionExecutor) Execute(ctx context.Context, action string) erro
 			return nil
 		}
 	}
+	switch strings.ToLower(trimmed) {
+	case "wait", "noop", "none":
+		return nil
+	}
 
 	// NL goal — route through LLM planner when configured.
 	if isNLGoal(trimmed) && e.planner != nil {
@@ -1015,11 +1120,18 @@ func (e *oneshotActionExecutor) executeNLGoal(ctx context.Context, goal string) 
 	}
 
 	for _, step := range plan.Steps {
-		if _, err := e.impl.Act(ctx, step.Action, false); err != nil {
-			return fmt.Errorf("nl-exec %q → step %q: %w", goal, step.Description, err)
+		switch strings.ToLower(strings.TrimSpace(step.Action)) {
+		case "wait", "noop", "none":
+			// The real synchronization is represented by step.Wait.
+		default:
+			if _, err := e.impl.Act(ctx, step.Action, false); err != nil {
+				return fmt.Errorf("nl-exec %q → step %q: %w", goal, step.Description, err)
+			}
 		}
 		if step.Wait != "" {
-			_ = e.Wait(ctx, step.Wait, 10000)
+			if err := e.Wait(ctx, step.Wait, 10000); err != nil {
+				return fmt.Errorf("nl-exec %q → wait %q: %w", goal, step.Wait, err)
+			}
 		}
 	}
 	return nil
@@ -1197,6 +1309,195 @@ func joinURL(base, entry string) string {
 }
 
 // ============================================================
+// § plan 命令 — NL planning boundary, no browser actions
+// ============================================================
+
+type nlPlanOutput struct {
+	SessionID string            `json:"session_id"`
+	PageURL   string            `json:"page_url,omitempty"`
+	Source    string            `json:"source"`
+	Plan      *btest.PlanResult `json:"plan"`
+}
+
+type nlPlanBuildResult struct {
+	Plan    *btest.PlanResult
+	Source  string
+	PageURL string
+}
+
+// runPlan 只生成计划，不执行浏览器动作。
+// dw-browser plan --id <session-id> "Open browser sidebar"
+func runPlan(args []string) {
+	if containsHelp(args) {
+		printTestingHelp()
+		os.Exit(exitOK)
+	}
+	autoLoadLLMEnv()
+	_, args = parseLLMFlags(args)
+	var outFile string
+	clean := make([]string, 0, len(args))
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		switch {
+		case arg == "--out" && i+1 < len(args):
+			outFile = args[i+1]
+			i++
+		case strings.HasPrefix(arg, "--out="):
+			outFile = arg[len("--out="):]
+		default:
+			clean = append(clean, arg)
+		}
+	}
+
+	positional, flags := parseCommonFlags(clean, "plan")
+	if flags.sessionID == "" {
+		fmt.Fprintln(os.Stderr, "dw-browser plan: requires --id <session-id>")
+		os.Exit(exitRunErr)
+	}
+	if len(positional) < 1 {
+		fmt.Fprintln(os.Stderr, "dw-browser plan: requires <goal>")
+		os.Exit(exitRunErr)
+	}
+	goal := strings.Join(positional, " ")
+
+	sessionInfo, err := browser.LoadSession(flags.sessionID)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "dw-browser plan: %v\n", err)
+		os.Exit(exitRunErr)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+
+	impl := connectSession(ctx, sessionInfo, "plan", flags)
+	defer closeSessionCore(impl)
+	impl.RestoreRefsFromSession(sessionInfo.Refs)
+
+	planResult, err := buildSessionNLPlan(ctx, impl, sessionInfo, goal)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "dw-browser plan: %v\n", err)
+		os.Exit(exitRunErr)
+	}
+
+	writeJSONOrStdout(nlPlanOutput{
+		SessionID: flags.sessionID,
+		PageURL:   planResult.PageURL,
+		Source:    planResult.Source,
+		Plan:      planResult.Plan,
+	}, outFile, "plan")
+	os.Exit(exitOK)
+}
+
+// buildSessionNLPlan is the single planning boundary shared by `plan` and `do`.
+// It captures a fresh snapshot, stabilizes generated @rN selectors to #testid
+// where possible, and persists refs so reviewed plan files remain executable.
+func buildSessionNLPlan(ctx context.Context, impl browser.SessionCore, sessionInfo *browser.SessionInfo, goal string) (*nlPlanBuildResult, error) {
+	snap, err := impl.SnapWithSessionMode(ctx, sessionInfo.SnapEpoch)
+	if err != nil {
+		return nil, fmt.Errorf("snap failed: %w", err)
+	}
+	persistPlanSnapshotRefs(sessionInfo, snap)
+	var structural *btest.StructuralState
+	pageURL := sessionInfo.PageURL
+	if snap != nil {
+		structural = doStructuralFromSnap(snap)
+		if strings.TrimSpace(snap.URL) != "" {
+			pageURL = snap.URL
+		}
+	}
+
+	if recipeSteps := lookupSkillRecipe(pageURL, goal); recipeSteps != nil {
+		return &nlPlanBuildResult{
+			Plan:    &btest.PlanResult{Goal: goal, Steps: recipeSteps},
+			Source:  "skill",
+			PageURL: pageURL,
+		}, nil
+	}
+
+	planner := btest.NewPlanner()
+	plan, err := planner.Plan(ctx, goal, structural)
+	if err != nil {
+		return nil, fmt.Errorf("planner: %w", err)
+	}
+	stabilizePlanSelectors(plan, snap)
+	if err := btest.ValidatePlan(plan); err != nil {
+		return nil, fmt.Errorf("planner stabilized invalid plan: %w", err)
+	}
+	return &nlPlanBuildResult{Plan: plan, Source: "llm", PageURL: pageURL}, nil
+}
+
+func persistPlanSnapshotRefs(sessionInfo *browser.SessionInfo, snap *browser.Snapshot) {
+	if sessionInfo == nil || snap == nil {
+		return
+	}
+	refs := make([]browser.SessionRef, 0, len(snap.Refs))
+	for _, ref := range snap.Refs {
+		refs = append(refs, browser.SessionRef{
+			Ref:           ref.Ref,
+			BackendNodeID: ref.BackendNodeID,
+			Role:          ref.Role,
+			Name:          ref.NameFull,
+			TestID:        ref.TestID,
+			Placeholder:   ref.Placeholder,
+		})
+	}
+	sessionInfo.Refs = refs
+	sessionInfo.PageURL = snap.URL
+	_ = browser.SaveSession(sessionInfo)
+}
+
+func stabilizePlanSelectors(plan *btest.PlanResult, snap *browser.Snapshot) {
+	if plan == nil || snap == nil {
+		return
+	}
+	refToTestID := make(map[string]string, len(snap.Refs))
+	for _, ref := range snap.Refs {
+		if ref.Ref != "" && ref.TestID != "" {
+			refToTestID[ref.Ref] = "#" + ref.TestID
+		}
+	}
+	for i := range plan.Steps {
+		plan.Steps[i].Action = stabilizeActionSelector(plan.Steps[i].Action, refToTestID)
+		plan.Steps[i].Wait = stabilizeWaitSelector(plan.Steps[i].Wait, refToTestID)
+	}
+	btest.NormalizePlan(plan)
+}
+
+func stabilizeActionSelector(action string, refToTestID map[string]string) string {
+	fields := strings.Fields(action)
+	if len(fields) < 2 {
+		return action
+	}
+	switch strings.ToLower(fields[0]) {
+	case "click", "fill", "type", "select", "hover", "focus", "press":
+	default:
+		return action
+	}
+	replacement, ok := refToTestID[fields[1]]
+	if !ok {
+		return action
+	}
+	return strings.Replace(action, fields[1], replacement, 1)
+}
+
+func stabilizeWaitSelector(wait string, refToTestID map[string]string) string {
+	fields := strings.Fields(wait)
+	if len(fields) < 2 {
+		return wait
+	}
+	switch strings.ToLower(fields[0]) {
+	case "visible", "gone":
+	default:
+		return wait
+	}
+	replacement, ok := refToTestID[fields[1]]
+	if !ok {
+		return wait
+	}
+	return strings.Replace(wait, fields[1], replacement, 1)
+}
+
+// ============================================================
 // § do 命令 — NL Facade: skill-first, planner fallback
 // ============================================================
 
@@ -1209,17 +1510,31 @@ func runDo(args []string) {
 	}
 	autoLoadLLMEnv()
 	_, args = parseLLMFlags(args)
-	positional, flags := parseCommonFlags(args, "do")
+	var planFile string
+	clean := make([]string, 0, len(args))
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		switch {
+		case arg == "--plan-file" && i+1 < len(args):
+			planFile = args[i+1]
+			i++
+		case strings.HasPrefix(arg, "--plan-file="):
+			planFile = arg[len("--plan-file="):]
+		default:
+			clean = append(clean, arg)
+		}
+	}
+	positional, flags := parseCommonFlags(clean, "do")
 
 	if flags.sessionID == "" {
 		fmt.Fprintln(os.Stderr, "dw-browser do: requires --id <session-id>")
 		os.Exit(exitRunErr)
 	}
-	if len(positional) < 1 {
+	if len(positional) < 1 && planFile == "" {
 		fmt.Fprintln(os.Stderr, "dw-browser do: requires <goal>")
 		os.Exit(exitRunErr)
 	}
-	goal := positional[0]
+	goal := strings.Join(positional, " ")
 
 	sessionInfo, err := browser.LoadSession(flags.sessionID)
 	if err != nil {
@@ -1234,35 +1549,25 @@ func runDo(args []string) {
 	defer closeSessionCore(impl)
 	impl.RestoreRefsFromSession(sessionInfo.Refs)
 
-	// Step 1: snap 获取当前 structural state
-	snap, err := impl.SnapWithSessionMode(ctx, sessionInfo.SnapEpoch)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "dw-browser do: snap failed: %v\n", err)
-		os.Exit(exitRunErr)
-	}
-
-	var structural *btest.StructuralState
-	if snap != nil {
-		structural = doStructuralFromSnap(snap)
-	}
-
-	// Step 2: 检查 Skills KB 是否有匹配
-	var plan *btest.PlanResult
-	recipeSteps := lookupSkillRecipe(sessionInfo.PageURL, goal)
-	if recipeSteps != nil {
-		// 有匹配 skill — 直接用 recipe 步骤
-		plan = &btest.PlanResult{Goal: goal, Steps: recipeSteps}
-	} else {
-		// 无 skill — 调用 Planner
-		planner := btest.NewPlanner()
-		plan, err = planner.Plan(ctx, goal, structural)
+	var planResult *nlPlanBuildResult
+	if planFile != "" {
+		plan, err := loadNLPlanFile(planFile)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "dw-browser do: planner: %v\n", err)
+			fmt.Fprintf(os.Stderr, "dw-browser do: load plan: %v\n", err)
+			os.Exit(exitRunErr)
+		}
+		planResult = &nlPlanBuildResult{Plan: plan, Source: "file", PageURL: sessionInfo.PageURL}
+	} else {
+		var err error
+		planResult, err = buildSessionNLPlan(ctx, impl, sessionInfo, goal)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "dw-browser do: %v\n", err)
 			os.Exit(exitRunErr)
 		}
 	}
+	plan := planResult.Plan
 
-	// Step 3: 逐步执行
+	// Step 2: 逐步执行
 	executor := &cliActionExecutor{
 		sessionID:   flags.sessionID,
 		sessionInfo: sessionInfo,
@@ -1284,15 +1589,16 @@ func runDo(args []string) {
 		}
 	}
 
-	// Step 4: observe final state
+	// Step 3: observe final state
 	finalObs := observeSession(flags, "do")
 
 	type doOutput struct {
-		Plan        *btest.PlanResult   `json:"plan"`
-		Observation *btest.Observation  `json:"observation"`
-		Errors      []string            `json:"errors,omitempty"`
+		Plan        *btest.PlanResult  `json:"plan"`
+		PlanSource  string             `json:"plan_source"`
+		Observation *btest.Observation `json:"observation"`
+		Errors      []string           `json:"errors,omitempty"`
 	}
-	out := doOutput{Plan: plan, Observation: finalObs}
+	out := doOutput{Plan: plan, PlanSource: planResult.Source, Observation: finalObs}
 	if len(stepErrors) > 0 {
 		out.Errors = stepErrors
 	}
@@ -1304,6 +1610,39 @@ func runDo(args []string) {
 		os.Exit(exitFail)
 	}
 	os.Exit(exitOK)
+}
+
+func cliUsingContainsVisual(using []string) bool {
+	for _, u := range using {
+		if strings.EqualFold(strings.TrimSpace(u), "visual") {
+			return true
+		}
+	}
+	return false
+}
+
+func loadNLPlanFile(path string) (*btest.PlanResult, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var wrapped nlPlanOutput
+	if err := json.Unmarshal(data, &wrapped); err == nil && wrapped.Plan != nil {
+		btest.NormalizePlan(wrapped.Plan)
+		if err := btest.ValidatePlan(wrapped.Plan); err != nil {
+			return nil, err
+		}
+		return wrapped.Plan, nil
+	}
+	var raw btest.PlanResult
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return nil, err
+	}
+	btest.NormalizePlan(&raw)
+	if err := btest.ValidatePlan(&raw); err != nil {
+		return nil, err
+	}
+	return &raw, nil
 }
 
 // lookupSkillRecipe 检查当前页面 domain 的 skill 中是否有匹配 goal 的 recipe。

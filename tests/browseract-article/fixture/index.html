@@ -1,0 +1,336 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>BrowserAct 文章测试 Fixture</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #172033;
+      --muted: #5d6878;
+      --line: #d8dee8;
+      --panel: #ffffff;
+      --soft: #f4f7fb;
+      --accent: #0f766e;
+      --accent-2: #375a7f;
+      --warn: #9a3412;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      color: var(--ink);
+      background: #edf1f6;
+      line-height: 1.55;
+    }
+    header {
+      padding: 28px 32px 18px;
+      background: #ffffff;
+      border-bottom: 1px solid var(--line);
+    }
+    h1 {
+      margin: 0 0 10px;
+      font-size: 30px;
+      letter-spacing: 0;
+    }
+    .lede {
+      max-width: 920px;
+      color: var(--muted);
+      margin: 0;
+      font-size: 16px;
+    }
+    main {
+      max-width: 1180px;
+      margin: 0 auto;
+      padding: 24px;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 320px;
+      gap: 18px;
+    }
+    section, aside {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 18px;
+    }
+    h2 { margin: 0 0 12px; font-size: 20px; }
+    h3 { margin: 0 0 8px; font-size: 16px; }
+    button, input {
+      font: inherit;
+      border-radius: 6px;
+      border: 1px solid var(--line);
+    }
+    button {
+      min-height: 34px;
+      padding: 0 12px;
+      background: #ffffff;
+      color: var(--ink);
+      cursor: pointer;
+    }
+    button[aria-pressed="true"] {
+      background: var(--accent);
+      color: #ffffff;
+      border-color: var(--accent);
+    }
+    input {
+      width: 100%;
+      min-height: 38px;
+      padding: 0 12px;
+      background: #ffffff;
+    }
+    .toolbar {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin: 12px 0;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 12px;
+    }
+    .card {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 14px;
+      background: var(--soft);
+      min-height: 146px;
+    }
+    .card strong { display: block; margin-bottom: 6px; }
+    .tag {
+      display: inline-flex;
+      align-items: center;
+      min-height: 22px;
+      padding: 0 8px;
+      border-radius: 999px;
+      background: #e4f2f0;
+      color: #075e57;
+      font-size: 12px;
+      margin-top: 8px;
+    }
+    .video-box {
+      border: 1px solid #b6c2d2;
+      background: #1d2737;
+      color: #ffffff;
+      border-radius: 8px;
+      padding: 18px;
+      display: grid;
+      gap: 8px;
+      margin-bottom: 14px;
+    }
+    .progress {
+      height: 8px;
+      background: #35445c;
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    .progress span {
+      display: block;
+      width: 18%;
+      height: 100%;
+      background: #7dd3fc;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 10px;
+      font-size: 14px;
+    }
+    th, td {
+      border: 1px solid var(--line);
+      padding: 8px;
+      text-align: left;
+      vertical-align: top;
+    }
+    th { background: #eef3f8; }
+    details {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 10px 12px;
+      background: #ffffff;
+      margin-top: 10px;
+    }
+    summary {
+      cursor: pointer;
+      font-weight: 700;
+    }
+    .callout {
+      border-left: 4px solid var(--warn);
+      background: #fff7ed;
+      padding: 10px 12px;
+      margin: 12px 0;
+    }
+    .status {
+      color: var(--accent-2);
+      font-weight: 700;
+      min-height: 24px;
+    }
+    .hidden { display: none; }
+    @media (max-width: 900px) {
+      main { grid-template-columns: 1fr; padding: 14px; }
+      .grid { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1 data-testid="article-title">BrowserAct: 面向 AI Agent 的浏览器自动化 CLI</h1>
+    <p class="lede" data-testid="article-lede">
+      本页面把微信公众号正文改写成本地测试 fixture，用于比较 A11y、自然语言 step、plan/do 和 Vision LLM 四种 dw-browser 测试方案。
+    </p>
+  </header>
+
+  <main>
+    <article>
+      <section data-region="hero" data-testid="section-overview">
+        <h2>核心判断</h2>
+        <p>
+          BrowserAct 的差异点不是普通无头 Chrome 封装，而是围绕 Agent 被网站拦截的问题设计了三层突破体系。
+          它还提供 stealth、chrome、chrome-direct 三种浏览器模式，并通过 Skill Forge 把跑通的网站流程沉淀为可复用 Skill。
+        </p>
+        <div class="video-box" role="group" aria-label="演示视频占位" data-testid="video-demo">
+          <strong>演示视频: Leader 说 Skills 就是 Prompt 换皮</strong>
+          <span>00:00 / 00:39 · 倍速 · 全屏 · Your browser does not support video tags</span>
+          <div class="progress" aria-label="播放进度 18%"><span></span></div>
+        </div>
+        <div class="callout" data-testid="source-warning">
+          微信原文需要环境验证；本 fixture 使用用户提供正文作为测试事实源。
+        </div>
+      </section>
+
+      <section data-region="controls" data-testid="section-controls">
+        <h2>交互筛选</h2>
+        <label for="search-box">按关键词筛选能力卡片</label>
+        <input id="search-box" data-testid="search-box" placeholder="例如: 动态代理 / remote-assist / stealth-extract">
+        <div class="toolbar" aria-label="能力层筛选">
+          <button id="btn-layer-all" data-testid="btn-layer-all" aria-pressed="true">全部</button>
+          <button id="btn-layer-env" data-testid="btn-layer-env" aria-pressed="false">环境层</button>
+          <button id="btn-layer-execution" data-testid="btn-layer-execution" aria-pressed="false">执行层</button>
+          <button id="btn-layer-human" data-testid="btn-layer-human" aria-pressed="false">人机协作层</button>
+        </div>
+        <p class="status" data-testid="filter-status">当前显示 6 个能力项</p>
+      </section>
+
+      <section data-region="capabilities" data-testid="section-capabilities">
+        <h2>三层突破体系</h2>
+        <div class="grid" id="capability-grid">
+          <div class="card" data-layer="env" data-testid="card-stealth">
+            <strong>stealth 反检测浏览器</strong>
+            <span>指纹伪装、WebDriver 隐身、请求头一致性，适合有访问限制的网站。</span>
+            <span class="tag">环境层</span>
+          </div>
+          <div class="card" data-layer="env" data-testid="card-proxy">
+            <strong>动态代理</strong>
+            <span>代理轮换配合反检测浏览器，用于 Product Hunt、YouTube 等高频采集。</span>
+            <span class="tag">环境层</span>
+          </div>
+          <div class="card" data-layer="execution" data-testid="card-stealth-extract">
+            <strong>stealth-extract</strong>
+            <span>像高级 WebFetch 一样启动反检测浏览器，等待 JavaScript 渲染后提取干净内容。</span>
+            <span class="tag">执行层</span>
+          </div>
+          <div class="card" data-layer="execution" data-testid="card-captcha">
+            <strong>solve-captcha</strong>
+            <span>自动解决常见验证码，让 Agent 在无人值守场景里继续执行。</span>
+            <span class="tag">执行层</span>
+          </div>
+          <div class="card" data-layer="human" data-testid="card-remote-assist">
+            <strong>remote-assist</strong>
+            <span>生成远程链接，让 Human 在手机或其他设备扫码登录、短信验证，然后 Agent 继续原会话。</span>
+            <span class="tag">人机协作层</span>
+          </div>
+          <div class="card" data-layer="human" data-testid="card-skill-forge">
+            <strong>Skill Forge</strong>
+            <span>把跑通的网站操作流程生成可复用 Skill，例如知乎搜索、小红书提取、微信文章检索。</span>
+            <span class="tag">人机协作层</span>
+          </div>
+        </div>
+      </section>
+
+      <section data-region="modes" data-testid="section-modes">
+        <h2>三种浏览器模式怎么选</h2>
+        <details data-testid="mode-stealth" open>
+          <summary>stealth 模式</summary>
+          <p>反检测浏览器 + 指纹伪装 + 代理轮换，适合批量采集、匿名访问、竞品监控。</p>
+        </details>
+        <details data-testid="mode-chrome">
+          <summary>chrome 模式</summary>
+          <p>把本地 Chrome Profile 导入独立环境，复用已有登录态但避免污染当前浏览器。</p>
+        </details>
+        <details data-testid="mode-chrome-direct">
+          <summary>chrome-direct 模式</summary>
+          <p>直接控制当前正在运行的 Chrome，零配置，天然带登录态和插件。</p>
+        </details>
+      </section>
+
+      <section data-region="comparison" data-testid="section-comparison">
+        <h2>和 agent-browser 对比</h2>
+        <table data-testid="comparison-table">
+          <thead>
+            <tr><th>能力</th><th>BrowserAct</th><th>agent-browser</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>基础浏览器操作</td><td>支持</td><td>支持</td></tr>
+            <tr><td>截图和数据提取</td><td>支持</td><td>支持</td></tr>
+            <tr><td>Cookie / Session 管理</td><td>支持</td><td>支持</td></tr>
+            <tr><td>反检测浏览器</td><td>支持</td><td>不支持</td></tr>
+            <tr><td>验证码自动解决</td><td>支持</td><td>不支持</td></tr>
+            <tr><td>动态代理</td><td>支持</td><td>不支持</td></tr>
+            <tr><td>remote-assist 人机协作</td><td>支持</td><td>不支持</td></tr>
+            <tr><td>stealth-extract 通用内容提取</td><td>支持</td><td>不支持</td></tr>
+          </tbody>
+        </table>
+      </section>
+    </article>
+
+    <aside data-region="scenarios" data-testid="scenario-sidebar">
+      <h2>文章提到的典型场景</h2>
+      <ol>
+        <li data-testid="scenario-httpbin">提取 httpbin headers，伪装成 Windows + Firefox。</li>
+        <li data-testid="scenario-xiaohongshu">小红书 Explore 页面提取推荐内容、作者和互动数据。</li>
+        <li data-testid="scenario-zhihu">知乎搜索 AI Agent，登录时通过 remote-assist 扫码。</li>
+        <li data-testid="scenario-sogou">搜狗微信搜索 AI Agent 相关文章，覆盖苍何、JavaGuide、沉默王二。</li>
+        <li data-testid="scenario-producthunt">Product Hunt 使用 stealth-extract + 动态代理穿透限制。</li>
+      </ol>
+      <button id="copy-summary" data-testid="copy-summary">生成测试摘要</button>
+      <p id="summary-output" data-testid="summary-output" aria-live="polite"></p>
+    </aside>
+  </main>
+
+  <script>
+    const searchBox = document.querySelector('[data-testid="search-box"]');
+    const status = document.querySelector('[data-testid="filter-status"]');
+    const buttons = Array.from(document.querySelectorAll('[data-testid^="btn-layer-"]'));
+    const cards = Array.from(document.querySelectorAll('#capability-grid .card'));
+    let activeLayer = 'all';
+
+    function update() {
+      const q = searchBox.value.trim().toLowerCase();
+      let count = 0;
+      for (const card of cards) {
+        const layerOK = activeLayer === 'all' || card.dataset.layer === activeLayer;
+        const textOK = !q || card.textContent.toLowerCase().includes(q);
+        const visible = layerOK && textOK;
+        card.classList.toggle('hidden', !visible);
+        if (visible) count += 1;
+      }
+      status.textContent = `当前显示 ${count} 个能力项`;
+    }
+
+    buttons.forEach((button) => {
+      button.addEventListener('click', () => {
+        activeLayer = button.id.replace('btn-layer-', '');
+        buttons.forEach((b) => b.setAttribute('aria-pressed', String(b === button)));
+        update();
+      });
+    });
+    searchBox.addEventListener('input', update);
+
+    document.querySelector('[data-testid="copy-summary"]').addEventListener('click', () => {
+      document.querySelector('[data-testid="summary-output"]').textContent =
+        '测试摘要: BrowserAct 覆盖 stealth、stealth-extract、remote-assist、动态代理、Skill Forge 五类关键能力。';
+    });
+  </script>
+</body>
+</html>

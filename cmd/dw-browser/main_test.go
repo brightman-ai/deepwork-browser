@@ -3,6 +3,9 @@ package main
 import (
 	"errors"
 	"github.com/brightman-ai/deepwork-browser/browser"
+	btest "github.com/brightman-ai/deepwork-browser/browser/testing"
+	"os"
+	"strings"
 	"testing"
 )
 
@@ -131,6 +134,167 @@ func TestNeedsRefRefresh(t *testing.T) {
 		if got := needsRefRefresh(tc.err); got != tc.want {
 			t.Fatalf("%s: needsRefRefresh() = %v, want %v", tc.name, got, tc.want)
 		}
+	}
+}
+
+func TestIsNLGoalDistinguishesStructuredActions(t *testing.T) {
+	tests := []struct {
+		action string
+		want   bool
+	}{
+		{action: "click #submit", want: false},
+		{action: "fill textbox:'Search' 'deepwork'", want: false},
+		{action: "press Enter", want: false},
+		{action: "back", want: false},
+		{action: "Open settings and inspect provider status", want: true},
+		{action: "在浏览器中打开设置并检查 Provider", want: true},
+	}
+
+	for _, tc := range tests {
+		if got := isNLGoal(tc.action); got != tc.want {
+			t.Fatalf("isNLGoal(%q) = %v, want %v", tc.action, got, tc.want)
+		}
+	}
+}
+
+func TestWaitSelectorCountJSSupportsTestIDShorthand(t *testing.T) {
+	js := waitSelectorCountJS("#card-remote-assist")
+	for _, want := range []string{
+		"document.querySelectorAll(selector)",
+		"data-testid",
+		"CSS.escape(testid)",
+	} {
+		if !strings.Contains(js, want) {
+			t.Fatalf("wait selector JS missing %q: %s", want, js)
+		}
+	}
+}
+
+func TestURLSurfacesMatchTopLevelAndBrowserPortalURL(t *testing.T) {
+	tests := []struct {
+		name     string
+		surfaces string
+		pattern  string
+		want     bool
+	}{
+		{
+			name:     "top level url",
+			surfaces: "https://example.com/",
+			pattern:  "example.com",
+			want:     true,
+		},
+		{
+			name:     "portal chip without scheme",
+			surfaces: "http://127.0.0.1:8080/portal/browser\n当前页面: iana.org/help/example-domains",
+			pattern:  "https://www.iana.org/help/example-domains",
+			want:     true,
+		},
+		{
+			name:     "glob marker stripped",
+			surfaces: "https://news.ycombinator.com/news",
+			pattern:  "**news.ycombinator.com**",
+			want:     true,
+		},
+		{
+			name:     "unrelated",
+			surfaces: "https://example.com/",
+			pattern:  "iana.org",
+			want:     false,
+		},
+	}
+
+	for _, tc := range tests {
+		if got := urlSurfacesMatch(tc.surfaces, tc.pattern); got != tc.want {
+			t.Fatalf("%s: urlSurfacesMatch() = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+func TestLoadNLPlanFileAcceptsPlanCommandOutput(t *testing.T) {
+	path := t.TempDir() + "/plan.json"
+	data := `{
+		"session_id": "s1",
+		"source": "llm",
+		"plan": {
+			"goal": "fill search",
+			"steps": [
+				{"description": "fill", "action": "fill #search-box 'stealth-extract'", "wait": "none"}
+			]
+		}
+	}`
+	if err := os.WriteFile(path, []byte(data), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	plan, err := loadNLPlanFile(path)
+	if err != nil {
+		t.Fatalf("loadNLPlanFile() error = %v", err)
+	}
+	if plan.Steps[0].Wait != "" {
+		t.Fatalf("wait filler should be normalized, got %q", plan.Steps[0].Wait)
+	}
+}
+
+func TestStabilizePlanSelectorsRewritesRefsToTestIDs(t *testing.T) {
+	plan := &btest.PlanResult{Goal: "filter", Steps: []btest.PlannedStep{
+		{Description: "fill", Action: "fill @r2 'stealth-extract'"},
+		{Description: "click", Action: "click @r10", Wait: "visible @r10"},
+	}}
+	snap := &browser.Snapshot{Refs: []browser.ElementRef{
+		{Ref: "@r2", TestID: "search-box"},
+		{Ref: "@r10", TestID: "copy-summary"},
+	}}
+
+	stabilizePlanSelectors(plan, snap)
+	if got := plan.Steps[0].Action; got != "fill #search-box 'stealth-extract'" {
+		t.Fatalf("step 1 action = %q", got)
+	}
+	if got := plan.Steps[1].Action; got != "click #copy-summary" {
+		t.Fatalf("step 2 action = %q", got)
+	}
+	if got := plan.Steps[1].Wait; got != "visible #copy-summary" {
+		t.Fatalf("step 2 wait = %q", got)
+	}
+}
+
+func TestParseLLMFlagsSetsEnvironmentAndLeavesCommandArgs(t *testing.T) {
+	t.Setenv("DW_BROWSER_LLM_URL", "")
+	t.Setenv("DW_BROWSER_LLM_MODEL", "")
+	t.Setenv("DW_BROWSER_LLM_PROVIDER", "")
+	t.Setenv("DW_BROWSER_LLM_API_KEY", "")
+	t.Setenv("DW_BROWSER_VISION_URL", "")
+	t.Setenv("DW_BROWSER_VISION_MODEL", "")
+	t.Setenv("DW_BROWSER_VISION_PROVIDER", "")
+	t.Setenv("DW_BROWSER_VISION_API_KEY", "")
+
+	_, remaining := parseLLMFlags([]string{
+		"--llm-url", "http://llm.local/v1",
+		"--llm-provider=openai",
+		"--llm-model=planner",
+		"--llm-api-key", "planner-key",
+		"--vlm-model", "vision",
+		"--vlm-api-key=vision-key",
+		"--id", "s1",
+		"goal text",
+	})
+
+	if os.Getenv("DW_BROWSER_LLM_URL") != "http://llm.local/v1" {
+		t.Fatalf("DW_BROWSER_LLM_URL = %q", os.Getenv("DW_BROWSER_LLM_URL"))
+	}
+	if os.Getenv("DW_BROWSER_VISION_URL") != "http://llm.local/v1" {
+		t.Fatalf("DW_BROWSER_VISION_URL should default to llm url, got %q", os.Getenv("DW_BROWSER_VISION_URL"))
+	}
+	if os.Getenv("DW_BROWSER_LLM_PROVIDER") != "openai" || os.Getenv("DW_BROWSER_VISION_PROVIDER") != "openai" {
+		t.Fatalf("provider env not set: llm=%q vision=%q", os.Getenv("DW_BROWSER_LLM_PROVIDER"), os.Getenv("DW_BROWSER_VISION_PROVIDER"))
+	}
+	if os.Getenv("DW_BROWSER_LLM_MODEL") != "planner" || os.Getenv("DW_BROWSER_VISION_MODEL") != "vision" {
+		t.Fatalf("model env not set: llm=%q vision=%q", os.Getenv("DW_BROWSER_LLM_MODEL"), os.Getenv("DW_BROWSER_VISION_MODEL"))
+	}
+	if os.Getenv("DW_BROWSER_LLM_API_KEY") != "planner-key" || os.Getenv("DW_BROWSER_VISION_API_KEY") != "vision-key" {
+		t.Fatalf("api key env not set")
+	}
+	if len(remaining) != 3 || remaining[0] != "--id" || remaining[1] != "s1" || remaining[2] != "goal text" {
+		t.Fatalf("remaining args = %#v", remaining)
 	}
 }
 
