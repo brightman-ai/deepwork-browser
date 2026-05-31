@@ -1,6 +1,6 @@
-// virtual_display_darwin_bridge.m — Objective-C implementation for CGVirtualDisplay.
+// virtual_display_bridge_darwin.m — Objective-C implementation for CGVirtualDisplay.
 // Compiled by CGo as a separate translation unit (clang -x objective-c).
-// All functions declared in virtual_display_darwin_bridge.h.
+// All functions are declared in virtual_display_darwin.go's CGo preamble.
 // Compiled with -fno-objc-arc (set via cgo directive) — manual retain/release.
 
 #import <Foundation/Foundation.h>

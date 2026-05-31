@@ -25,7 +25,7 @@ typedef struct {
 	char title[256];
 } dw_vd_rescue_record;
 
-// C declarations for functions implemented in virtual_display_darwin_bridge.m.
+// C declarations for functions implemented in virtual_display_bridge_darwin.m.
 // The CGo preamble is compiled as C (not Objective-C), so we use plain C
 // prototypes here. The actual Objective-C implementation lives in the .m file,
 // which CGo compiles separately with clang -x objective-c.
