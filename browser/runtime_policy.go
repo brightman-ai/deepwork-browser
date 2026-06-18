@@ -34,8 +34,8 @@ const (
 	ChromeCDPStartupPollInterval  = 500 * time.Millisecond
 
 	BrowserMuxHostDefaultIdleTTL             = 10 * time.Minute
-	BrowserMuxHostReadyTimeout               = 45 * time.Second
-	BrowserMuxHostLaunchReadyTimeout         = 30 * time.Second
+	BrowserMuxHostReadyTimeout               = 120 * time.Second
+	BrowserMuxHostLaunchReadyTimeout         = 120 * time.Second
 	BrowserMuxHostControlRequestTimeout      = 5 * time.Second
 	BrowserMuxHostShutdownTimeout            = 3 * time.Second
 	BrowserMuxHostReadyPollInterval          = 250 * time.Millisecond

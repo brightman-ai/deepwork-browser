@@ -1,4 +1,4 @@
-// testing.go — observe / diff / check / journey / do / get 命令实现
+// testing.go — observe / diff / check / journey 命令实现
 package main
 
 import (
@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -220,100 +221,53 @@ func containsHelp(args []string) bool {
 
 // printTestingHelp 打印 testing 子命令的完整帮助信息。
 func printTestingHelp() {
-	help := `dw-browser testing commands:
+	help := `dw-browser 基线回归命令 (场景 B — 确定性, CLI 零 LLM):
 
-  observe   Multi-channel page observation (A11y + screenshot + behavior + telemetry)
-  diff      Compare two observations (before/after state diff)
-  check     Run assertion against page or observation file
-  journey   Execute BDD YAML test scenario with evidence collection
-  plan      Plan natural language goal without executing browser actions
-  do        Execute natural language goal via LLM planner + Skills KB
-  get       Extract typed data from current page state
+  journey   跑 BDD YAML 旅程 (open/act/check 步) + 证据采集, pass/fail
+  check     对当前会话或 observation 文件求值断言
+  diff      对比两份 observe 快照 (before/after)
 
-Usage examples:
+用法:
 
-  # Observe current page state
-  dw-browser observe --id session1 --layers structural,behavior,telemetry --out obs.json
+  # BDD 旅程 + 证据 (CI 主入口)
+  dw-browser journey --file tests/bdd/portal.yaml --evidence evidence/run-001
+  dw-browser journey --file spec.yaml --base-url http://localhost:8080 --fail-fast
 
-  # Compare before/after
+  # 单条断言 (当前会话)
+  dw-browser check --id s1 --assert "console_errors_count == 0"
+  dw-browser check --id s1 --assert "exists(role='button', name='创建')"
+
+  # 批量断言 (baseline 的 invariants 段)
+  dw-browser check --id s1 --file baselines/portal/app-shell.yaml
+
+  # 对已落盘 observation 求值 (无需会话)
+  dw-browser observe --id s1 --json before.json
+  dw-browser check --observation before.json --assert "exists(role='button')"
+
+  # 对比前后
   dw-browser diff before.json after.json --out diff.json
 
-  # Run single assertion
-  dw-browser check --id session1 --assert "console_errors_count == 0"
+断言 DSL:
 
-  # Run baseline assertions from file
-  dw-browser check --id session1 --file baselines/portal/app-shell.yaml
+  exists(role='button', name='Search')    元素存在于 A11y 树
+  count(role='link') >= 1                 匹配元素计数
+  visible(testid='sidebar')               元素可见
+  gone(text='Loading')                    元素已消失
+  text_contains('hello')                  页面文本含字符串
+  url_matches('/portal/topic')            URL 含 pattern
+  tab_count == 2                          标签数
+  active_tab_url_contains('example.com')  活动标签 URL 含
+  console_errors_count == 0               无 console 错误
+  network_failures_count == 0             无网络失败
+  latency_lt(3000)                        动作延迟低于阈值 (ms)
 
-  # Run assertion against saved observation (no session needed)
-  dw-browser check --observation obs.json --assert "exists(role='button')"
+软审查 (soft-review): CLI 只跑确定性 hard 断言。视觉/语义判断 (UX 对不对)
+是调用方的活 — agent 自己 Read 截图判, 或 baseline YAML 里标 soft hint 交调用方。
+CLI 默认不起 LLM; 仅 --using visual 显式开启 vision oracle (opt-in):
 
-  # Execute BDD journey with evidence
-  dw-browser journey --file tests/bdd/bs15-sidebar-research.yaml --evidence ./evidence/
-
-  # Plan a natural language goal without side effects
-  dw-browser plan --id session1 "Open browser sidebar and search for AI testing"
-
-  # Execute natural language goal
-  dw-browser do --id session1 "Open browser sidebar and search for AI testing"
-
-  # Execute a previously reviewed/generated plan
-  dw-browser do --id session1 --plan-file plan.json
-
-  # Extract data
-  dw-browser get --id session1 "active tab url"
-
-  # Generate baseline from exploration
-  dw-browser explore --id session1 --learn-baseline --out candidate-baseline.yaml
-
-LLM/VLM configuration (for do, check --using visual, journey with visual checks):
-
-  --llm-url <url>        Planner LLM endpoint (Ollama/vLLM/OpenAI-compatible)
-                         Default: http://127.0.0.1:11434
-                         Env: DW_BROWSER_LLM_URL
-
-  --llm-provider <name>  Planner provider: auto|ollama|openai
-                         Env: DW_BROWSER_LLM_PROVIDER
-
-  --llm-model <name>     LLM model name
-                         Example: google/gemma-4-26b-a4b-it
-                         Env: DW_BROWSER_LLM_MODEL
-
-  --llm-api-key <key>    Planner API key (OpenAI-compatible providers)
-                         Env: DW_BROWSER_LLM_API_KEY
-
-  --vision-url <url>     VLM endpoint (defaults to --llm-url if not set)
-  --vlm-url <url>        Alias for --vision-url
-                         Env: DW_BROWSER_VISION_URL
-
-  --vision-provider <n>  VLM provider (defaults to --llm-provider if set)
-  --vlm-provider <n>     Alias for --vision-provider
-                         Env: DW_BROWSER_VISION_PROVIDER
-
-  --vision-model <name>  VLM model name (defaults to --llm-model if not set)
-  --vlm-model <name>     Alias for --vision-model
-                         Env: DW_BROWSER_VISION_MODEL
-
-  --vision-api-key <key> VLM API key (defaults to --llm-api-key if set)
-  --vlm-api-key <key>    Alias for --vision-api-key
-                         Env: DW_BROWSER_VISION_API_KEY
-
-  Gemma 4 OpenRouter example:
-    --llm-provider openai --llm-url https://openrouter.ai/api/v1 \
-    --llm-model google/gemma-4-26b-a4b-it --llm-api-key $OPENROUTER_API_KEY
-
-Assertion DSL primitives:
-
-  exists(role='button', name='Search')    Element exists in A11y tree
-  count(role='link') >= 1                 Count matching elements
-  visible(testid='sidebar')              Element is visible (= exists in P1)
-  gone(text='Loading')                   Element no longer exists
-  text_contains('hello')                 Page text contains string
-  url_matches('/portal/topic')           URL contains pattern
-  tab_count == 2                         Tab count equals value
-  active_tab_url_contains('example.com') Active tab URL contains
-  console_errors_count == 0              No console errors
-  network_failures_count == 0            No network failures
-  latency_lt(3000)                       Action latency under threshold (ms)
+  --llm-url / --llm-provider / --llm-model / --llm-api-key   Planner/VLM 端点 (env: DW_BROWSER_LLM_*)
+  --vision-url / --vision-model / --vision-api-key           VLM (默认回退 --llm-*; env: DW_BROWSER_VISION_*)
+  dw-browser check --id s1 --assert "looks_like('登录表单')" --using visual
 
 Exit codes: 0=PASS  1=FAIL  2=RUN_ERROR
 `
@@ -324,15 +278,64 @@ Exit codes: 0=PASS  1=FAIL  2=RUN_ERROR
 // § observe 命令
 // ============================================================
 
+// visibleErrorScanJS scans the rendered page for error UI a human notices instantly but
+// console/network telemetry misses (CHG-016 R3 — the "errs==0 but red banner on screen"
+// silent-failure gap). Four signal classes, deduped, capped, fail-safe: (1) W3C semantic
+// markers role=alert / aria-invalid / aria-errormessage; (2) error-styled leaf elements;
+// (3) red-colored visible text (computed color); (4) multilingual error keywords. Returns
+// [{kind,text,selector}]. Best practice: surface signals for the agent to INSPECT, not a
+// hard verdict — so false positives cost a look, never a missed error.
+const visibleErrorScanJS = `(() => {
+  const out = [], seen = new Set();
+  const vis = el => { try { const r = el.getBoundingClientRect(); return el.offsetParent !== null && r.width > 0 && r.height > 0; } catch (e) { return false; } };
+  const push = (kind, text, sel) => {
+    text = (text || '').replace(/\s+/g, ' ').trim().slice(0, 200);
+    if (!text) return;
+    const key = kind + '|' + text;
+    if (seen.has(key)) return; seen.add(key);
+    out.push({ kind: kind, text: text, selector: (sel || '').toString().slice(0, 80) });
+  };
+  try { document.querySelectorAll('[role=alert],[aria-invalid=true],[aria-errormessage]').forEach(el => {
+    if (out.length < 25 && vis(el) && el.textContent.trim()) push('aria', el.textContent, el.getAttribute('role') || 'aria-invalid');
+  }); } catch (e) {}
+  try { document.querySelectorAll('[class*=error i],[class*=danger i],[class*=invalid i],[class*=failed i],[data-error]').forEach(el => {
+    if (out.length < 25 && el.children.length === 0 && vis(el) && el.textContent.trim()) push('styled', el.textContent, el.className || el.tagName);
+  }); } catch (e) {}
+  try { document.querySelectorAll('body *').forEach(el => {
+    if (out.length >= 25 || el.children.length !== 0 || !el.textContent.trim() || !vis(el)) return;
+    const c = (getComputedStyle(el).color || ''), m = c.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/);
+    if (m) { const R = +m[1], G = +m[2], B = +m[3]; if (R > 150 && G < 90 && B < 90) push('color', el.textContent, 'red:' + el.tagName); }
+  }); } catch (e) {}
+  const kw = /(invalid context|failed to|exception|not found|timed? ?out|unavailable|请求失败|加载失败|无法连接|连接失败|出错了|未找到|无效|异常|不可用|报错)/i;
+  try { document.querySelectorAll('body *').forEach(el => {
+    if (out.length >= 25 || el.children.length !== 0 || !vis(el)) return;
+    const t = el.textContent.trim();
+    if (t && t.length < 160 && kw.test(t)) push('keyword', t, el.tagName.toLowerCase());
+  }); } catch (e) {}
+  return out.slice(0, 20);
+})()`
+
 // runObserve 采集当前 session 的多通道 Observation 快照。
 // dw-browser observe --id <session-id> [--layers structural,behavior,telemetry] [--out file.json]
+// runObserve — SSOT 感知动词。瘦默认 + 加法 flag。
+//
+//	dw-browser observe --id X              瘦默认 {elements@rN, user_state, run_id, step} ~3K
+//	  --out m.png                          + 存截图 → {screenshot: "<path>"} (AI Read 图判 UX)
+//	  --health                             + {telemetry:{console_errors,network_failures,visible_errors}}
+//	  --tree                               + {tree: "<全 a11y 文本>"} (罕用)
+//	  --top N / --budget B                 调 elements 列表 (默认 20 / 4096 字节)
+//	  --json out.json                      把整个 JSON 落盘 (默认 stdout)
+//
+// flag 自由组合 (加法, 非互斥枚举)。observe 与 act 共享 @rN ref-space:
+// observe 后 `act "click @rN"` 解析的是 observe 刚看到的同一批 refs。
 func runObserve(args []string) {
 	if containsHelp(args) {
-		printTestingHelp()
+		printObserveHelp()
 		os.Exit(exitOK)
 	}
-	var outFile string
-	var layersRaw string
+	var jsonOut, outFile string
+	wantHealth, wantTree := false, false
+	topN, budget := defaultBriefTopN, defaultBriefBudget
 	clean := make([]string, 0, len(args))
 
 	for i := 0; i < len(args); i++ {
@@ -343,11 +346,33 @@ func runObserve(args []string) {
 			i++
 		case strings.HasPrefix(arg, "--out="):
 			outFile = arg[len("--out="):]
-		case arg == "--layers" && i+1 < len(args):
-			layersRaw = args[i+1]
+		case arg == "--json" && i+1 < len(args):
+			jsonOut = args[i+1]
 			i++
-		case strings.HasPrefix(arg, "--layers="):
-			layersRaw = arg[len("--layers="):]
+		case strings.HasPrefix(arg, "--json="):
+			jsonOut = arg[len("--json="):]
+		case arg == "--health":
+			wantHealth = true
+		case arg == "--tree":
+			wantTree = true
+		case arg == "--top" && i+1 < len(args):
+			if n, err := strconv.Atoi(args[i+1]); err == nil {
+				topN = n
+			}
+			i++
+		case strings.HasPrefix(arg, "--top="):
+			if n, err := strconv.Atoi(arg[len("--top="):]); err == nil {
+				topN = n
+			}
+		case arg == "--budget" && i+1 < len(args):
+			if n, err := strconv.Atoi(args[i+1]); err == nil {
+				budget = n
+			}
+			i++
+		case strings.HasPrefix(arg, "--budget="):
+			if n, err := strconv.Atoi(arg[len("--budget="):]); err == nil {
+				budget = n
+			}
 		default:
 			clean = append(clean, arg)
 		}
@@ -357,24 +382,6 @@ func runObserve(args []string) {
 	if flags.sessionID == "" {
 		fmt.Fprintln(os.Stderr, "dw-browser observe: requires --id <session-id>")
 		os.Exit(exitRunErr)
-	}
-
-	// 解析 --layers（默认全部采集）
-	wantStructural, wantBehavior, wantTelemetry, wantLayout := true, true, true, true
-	if layersRaw != "" {
-		wantStructural, wantBehavior, wantTelemetry, wantLayout = false, false, false, false
-		for _, layer := range strings.Split(layersRaw, ",") {
-			switch strings.TrimSpace(layer) {
-			case "structural":
-				wantStructural = true
-			case "behavior":
-				wantBehavior = true
-			case "telemetry":
-				wantTelemetry = true
-			case "layout", "visual":
-				wantLayout = true
-			}
-		}
 	}
 
 	sessionInfo, err := browser.LoadSession(flags.sessionID)
@@ -390,75 +397,119 @@ func runObserve(args []string) {
 	defer closeSessionCore(impl)
 	impl.RestoreRefsFromSession(sessionInfo.Refs)
 
-	// — structural 层 —
-	var snap *browser.Snapshot
-	if wantStructural {
-		snap, err = impl.SnapWithSessionMode(ctx, sessionInfo.SnapEpoch)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "dw-browser observe: snap failed: %v\n", err)
-			os.Exit(exitRunErr)
+	// — 感知 a11y (始终) —
+	sessionInfo.SnapEpoch++
+	snap, err := impl.SnapWithSessionMode(ctx, sessionInfo.SnapEpoch)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "dw-browser observe: snap failed: %v\n", err)
+		os.Exit(exitRunErr)
+	}
+	// settle-wait — retry until SPA a11y tree is populated (up to ~6s).
+	for i := 0; i < 6 && (snap == nil || len(snap.Refs) == 0); i++ {
+		time.Sleep(1 * time.Second)
+		snap, _ = impl.SnapWithSessionMode(ctx, sessionInfo.SnapEpoch)
+	}
+	// SSOT: persist THIS observation's @rN refs so a subsequent `act "click @rN"`
+	// resolves the SAME refs the caller just saw (observe shares act's ref-space).
+	if snap != nil {
+		sessionRefs := make([]browser.SessionRef, 0, len(snap.Refs))
+		for _, ref := range snap.Refs {
+			sessionRefs = append(sessionRefs, browser.SessionRef{
+				Ref:           ref.Ref,
+				BackendNodeID: ref.BackendNodeID,
+				Role:          ref.Role,
+				Name:          ref.NameFull,
+				TestID:        ref.TestID,
+				Placeholder:   ref.Placeholder,
+			})
 		}
-		// FIX-J4: settle-wait — retry until SPA a11y tree is populated (up to ~6s).
-		for i := 0; i < 6 && (snap == nil || len(snap.Refs) == 0); i++ {
-			time.Sleep(1 * time.Second)
-			snap, _ = impl.SnapWithSessionMode(ctx, sessionInfo.SnapEpoch)
+		sessionInfo.Refs = sessionRefs
+		sessionInfo.PageURL = snap.URL
+		if err := browser.SaveSession(sessionInfo); err != nil {
+			fmt.Fprintf(os.Stderr, "dw-browser observe: save refs: %v\n", err)
 		}
 	}
+	if snap == nil {
+		fmt.Fprintln(os.Stderr, "dw-browser observe: empty snapshot")
+		os.Exit(exitRunErr)
+	}
 
-	// — visual 层（截图）—
-	var screenshotData []byte
-	screenshotPath := ""
+	// — 瘦默认输出 {elements@rN, user_state, run_id, step} —
+	elements, total, truncated := briefElements(snap.Refs, topN, budget)
+	output := map[string]interface{}{
+		"url":        snap.URL,
+		"title":      snap.PageTitle,
+		"user_state": buildUserState(snap, sessionInfo.PageURL),
+		"elements":   elements,
+		"shown":      len(elements),
+		"total":      total,
+	}
+	if truncated {
+		output["truncated"] = true
+		output["hint"] = "更多元素被省略; --top N / --budget BYTES 放宽, 或 --tree 看全树"
+	}
+	injectEvidenceID(output, sessionInfo)
+	injectSnapshotState(output, snap)
+	if hint := formatSkillHint(snap.URL); hint != "" {
+		output["skill_hint"] = hint
+	}
+
+	// — 加法: --tree (全 a11y 文本) —
+	if wantTree {
+		output["tree"] = snap.Text
+	}
+
+	// — 加法: --out (截图落盘, 返回路径) —
 	if outFile != "" {
-		dir := strings.TrimSuffix(outFile, ".json")
-		screenshotPath = dir + "-screenshot.png"
-	} else {
-		screenshotPath = fmt.Sprintf("obs-%d-screenshot.png", time.Now().UnixMilli())
-	}
-	if screenshotRaw, err2 := impl.Screenshot(ctx, false); err2 == nil {
-		screenshotData = screenshotRaw
-	}
-
-	// — behavior 层 — 从 SessionInfo 中提取（stateless CLI 模式）
-	var behavior *btest.BehaviorState
-	if wantBehavior {
-		behavior = behaviorFromSessionInfo(sessionInfo)
-	}
-
-	// — telemetry 层 — P1: CDP 持久连接不在 stateless CLI 范围，返回空+注记
-	var telemetry *btest.TelemetryState
-	if wantTelemetry {
-		telemetry = &btest.TelemetryState{
-			ConsoleErrors:   []btest.ConsoleEntry{},
-			NetworkFailures: []btest.NetworkEntry{},
-		}
-	}
-
-	obs := btest.BuildObservation(flags.sessionID, snap, screenshotData, screenshotPath, behavior, telemetry)
-
-	// — layout 层（data-region regions via JS eval）—
-	if wantLayout {
-		if regions, err2 := btest.CollectRegionsViaEval(func(expr string, result interface{}) error {
-			return impl.EvalJS(ctx, expr, result)
-		}); err2 == nil && len(regions) > 0 {
-			if obs.Visual == nil {
-				obs.Visual = &btest.VisualState{}
+		if shot, err2 := impl.Screenshot(ctx, false); err2 == nil {
+			if werr := os.WriteFile(outFile, shot, 0o644); werr == nil {
+				output["screenshot"] = outFile
+			} else {
+				fmt.Fprintf(os.Stderr, "dw-browser observe: write screenshot: %v\n", werr)
 			}
-			obs.Visual.Regions = regions
 		}
 	}
 
-	// 补充 telemetry 注记（不修改 browser/testing 包，在输出层添加）
-	type observeOutput struct {
-		*btest.Observation
-		TelemetryNote string `json:"_telemetry_note,omitempty"`
-	}
-	out := observeOutput{Observation: obs}
-	if wantTelemetry {
-		out.TelemetryNote = "P1: telemetry requires persistent CDP connection, not available in stateless CLI mode"
+	// — 加法: --health (console/network/visible_errors 诊断/grader lens) —
+	if wantHealth {
+		health := map[string]interface{}{
+			"console_errors":   []btest.ConsoleEntry{},
+			"network_failures": []btest.NetworkEntry{},
+		}
+		// visible-error scan — on-screen error UI a human sees instantly but
+		// console/network telemetry MISSES (the "errs==0 but red banner" gap).
+		var vis []btest.VisibleErrorEntry
+		if err2 := impl.EvalJS(ctx, visibleErrorScanJS, &vis); err2 == nil && len(vis) > 0 {
+			health["visible_errors"] = vis
+		}
+		health["_note"] = "console/network require persistent CDP; stateless CLI returns visible_errors (DOM scan) only"
+		output["telemetry"] = health
 	}
 
-	writeJSONOrStdout(out, outFile, "observe")
+	writeJSONOrStdout(output, jsonOut, "observe")
 	os.Exit(exitOK)
+}
+
+// printObserveHelp 打印 observe 的瘦默认 + 加法 flag 说明。
+func printObserveHelp() {
+	fmt.Fprintln(os.Stderr, "dw-browser observe — 感知当前会话 (SSOT 感知动词, 瘦默认 + 加法 flag)")
+	fmt.Fprintln(os.Stderr, "")
+	fmt.Fprintln(os.Stderr, "用法:")
+	fmt.Fprintln(os.Stderr, "  dw-browser observe --id X            瘦默认 {elements@rN, user_state, run_id, step} ~3K")
+	fmt.Fprintln(os.Stderr, "  dw-browser observe --id X --out m.png + 存截图 → {screenshot:\"<path>\"} (AI Read 图判 UX)")
+	fmt.Fprintln(os.Stderr, "  dw-browser observe --id X --health   + {telemetry:{console_errors,network_failures,visible_errors}}")
+	fmt.Fprintln(os.Stderr, "  dw-browser observe --id X --tree     + {tree:\"<全 a11y 文本>\"} (罕用)")
+	fmt.Fprintln(os.Stderr, "")
+	fmt.Fprintln(os.Stderr, "flag 自由组合 (加法, 非互斥):")
+	fmt.Fprintln(os.Stderr, "  --out <path>    截图落盘路径 (返回 screenshot 字段)")
+	fmt.Fprintln(os.Stderr, "  --health        附健康通道 (诊断/grader lens)")
+	fmt.Fprintln(os.Stderr, "  --tree          附全 a11y 树文本")
+	fmt.Fprintln(os.Stderr, "  --top <N>       elements 上限 (默认 20)")
+	fmt.Fprintln(os.Stderr, "  --budget <B>    elements 输出字节硬上限 (默认 4096)")
+	fmt.Fprintln(os.Stderr, "  --json <path>   整个 JSON 落盘 (默认 stdout)")
+	fmt.Fprintln(os.Stderr, "")
+	fmt.Fprintln(os.Stderr, "证据关联: 每次输出带 run_id (会话稳定) + step (单调), 把截图↔a11y↔finding 对齐。")
+	fmt.Fprintln(os.Stderr, "observe 后 act \"click @rN\" 解析 observe 刚看到的同一批 refs。")
 }
 
 // behaviorFromSessionInfo 从 SessionInfo 构建 BehaviorState（无需连接浏览器）。
@@ -1327,291 +1378,6 @@ type nlPlanBuildResult struct {
 
 // runPlan 只生成计划，不执行浏览器动作。
 // dw-browser plan --id <session-id> "Open browser sidebar"
-func runPlan(args []string) {
-	if containsHelp(args) {
-		printTestingHelp()
-		os.Exit(exitOK)
-	}
-	autoLoadLLMEnv()
-	_, args = parseLLMFlags(args)
-	var outFile string
-	clean := make([]string, 0, len(args))
-	for i := 0; i < len(args); i++ {
-		arg := args[i]
-		switch {
-		case arg == "--out" && i+1 < len(args):
-			outFile = args[i+1]
-			i++
-		case strings.HasPrefix(arg, "--out="):
-			outFile = arg[len("--out="):]
-		default:
-			clean = append(clean, arg)
-		}
-	}
-
-	positional, flags := parseCommonFlags(clean, "plan")
-	if flags.sessionID == "" {
-		fmt.Fprintln(os.Stderr, "dw-browser plan: requires --id <session-id>")
-		os.Exit(exitRunErr)
-	}
-	if len(positional) < 1 {
-		fmt.Fprintln(os.Stderr, "dw-browser plan: requires <goal>")
-		os.Exit(exitRunErr)
-	}
-	goal := strings.Join(positional, " ")
-
-	sessionInfo, err := browser.LoadSession(flags.sessionID)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "dw-browser plan: %v\n", err)
-		os.Exit(exitRunErr)
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-	defer cancel()
-
-	impl := connectSession(ctx, sessionInfo, "plan", flags)
-	defer closeSessionCore(impl)
-	impl.RestoreRefsFromSession(sessionInfo.Refs)
-
-	planResult, err := buildSessionNLPlan(ctx, impl, sessionInfo, goal)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "dw-browser plan: %v\n", err)
-		os.Exit(exitRunErr)
-	}
-
-	writeJSONOrStdout(nlPlanOutput{
-		SessionID: flags.sessionID,
-		PageURL:   planResult.PageURL,
-		Source:    planResult.Source,
-		Plan:      planResult.Plan,
-	}, outFile, "plan")
-	os.Exit(exitOK)
-}
-
-// buildSessionNLPlan is the single planning boundary shared by `plan` and `do`.
-// It captures a fresh snapshot, stabilizes generated @rN selectors to #testid
-// where possible, and persists refs so reviewed plan files remain executable.
-func buildSessionNLPlan(ctx context.Context, impl browser.SessionCore, sessionInfo *browser.SessionInfo, goal string) (*nlPlanBuildResult, error) {
-	snap, err := impl.SnapWithSessionMode(ctx, sessionInfo.SnapEpoch)
-	if err != nil {
-		return nil, fmt.Errorf("snap failed: %w", err)
-	}
-	persistPlanSnapshotRefs(sessionInfo, snap)
-	var structural *btest.StructuralState
-	pageURL := sessionInfo.PageURL
-	if snap != nil {
-		structural = doStructuralFromSnap(snap)
-		if strings.TrimSpace(snap.URL) != "" {
-			pageURL = snap.URL
-		}
-	}
-
-	if recipeSteps := lookupSkillRecipe(pageURL, goal); recipeSteps != nil {
-		return &nlPlanBuildResult{
-			Plan:    &btest.PlanResult{Goal: goal, Steps: recipeSteps},
-			Source:  "skill",
-			PageURL: pageURL,
-		}, nil
-	}
-
-	planner := btest.NewPlanner()
-	plan, err := planner.Plan(ctx, goal, structural)
-	if err != nil {
-		return nil, fmt.Errorf("planner: %w", err)
-	}
-	stabilizePlanSelectors(plan, snap)
-	if err := btest.ValidatePlan(plan); err != nil {
-		return nil, fmt.Errorf("planner stabilized invalid plan: %w", err)
-	}
-	return &nlPlanBuildResult{Plan: plan, Source: "llm", PageURL: pageURL}, nil
-}
-
-func persistPlanSnapshotRefs(sessionInfo *browser.SessionInfo, snap *browser.Snapshot) {
-	if sessionInfo == nil || snap == nil {
-		return
-	}
-	refs := make([]browser.SessionRef, 0, len(snap.Refs))
-	for _, ref := range snap.Refs {
-		refs = append(refs, browser.SessionRef{
-			Ref:           ref.Ref,
-			BackendNodeID: ref.BackendNodeID,
-			Role:          ref.Role,
-			Name:          ref.NameFull,
-			TestID:        ref.TestID,
-			Placeholder:   ref.Placeholder,
-		})
-	}
-	sessionInfo.Refs = refs
-	sessionInfo.PageURL = snap.URL
-	_ = browser.SaveSession(sessionInfo)
-}
-
-func stabilizePlanSelectors(plan *btest.PlanResult, snap *browser.Snapshot) {
-	if plan == nil || snap == nil {
-		return
-	}
-	refToTestID := make(map[string]string, len(snap.Refs))
-	for _, ref := range snap.Refs {
-		if ref.Ref != "" && ref.TestID != "" {
-			refToTestID[ref.Ref] = "#" + ref.TestID
-		}
-	}
-	for i := range plan.Steps {
-		plan.Steps[i].Action = stabilizeActionSelector(plan.Steps[i].Action, refToTestID)
-		plan.Steps[i].Wait = stabilizeWaitSelector(plan.Steps[i].Wait, refToTestID)
-	}
-	btest.NormalizePlan(plan)
-}
-
-func stabilizeActionSelector(action string, refToTestID map[string]string) string {
-	fields := strings.Fields(action)
-	if len(fields) < 2 {
-		return action
-	}
-	switch strings.ToLower(fields[0]) {
-	case "click", "fill", "type", "select", "hover", "focus", "press":
-	default:
-		return action
-	}
-	replacement, ok := refToTestID[fields[1]]
-	if !ok {
-		return action
-	}
-	return strings.Replace(action, fields[1], replacement, 1)
-}
-
-func stabilizeWaitSelector(wait string, refToTestID map[string]string) string {
-	fields := strings.Fields(wait)
-	if len(fields) < 2 {
-		return wait
-	}
-	switch strings.ToLower(fields[0]) {
-	case "visible", "gone":
-	default:
-		return wait
-	}
-	replacement, ok := refToTestID[fields[1]]
-	if !ok {
-		return wait
-	}
-	return strings.Replace(wait, fields[1], replacement, 1)
-}
-
-// ============================================================
-// § do 命令 — NL Facade: skill-first, planner fallback
-// ============================================================
-
-// runDo 执行 NL 目标：先查 Skills KB，无匹配时调 Planner 分解，逐步执行。
-// dw-browser do --id <session-id> "Open browser sidebar"
-func runDo(args []string) {
-	if containsHelp(args) {
-		printTestingHelp()
-		os.Exit(exitOK)
-	}
-	autoLoadLLMEnv()
-	_, args = parseLLMFlags(args)
-	var planFile string
-	clean := make([]string, 0, len(args))
-	for i := 0; i < len(args); i++ {
-		arg := args[i]
-		switch {
-		case arg == "--plan-file" && i+1 < len(args):
-			planFile = args[i+1]
-			i++
-		case strings.HasPrefix(arg, "--plan-file="):
-			planFile = arg[len("--plan-file="):]
-		default:
-			clean = append(clean, arg)
-		}
-	}
-	positional, flags := parseCommonFlags(clean, "do")
-
-	if flags.sessionID == "" {
-		fmt.Fprintln(os.Stderr, "dw-browser do: requires --id <session-id>")
-		os.Exit(exitRunErr)
-	}
-	if len(positional) < 1 && planFile == "" {
-		fmt.Fprintln(os.Stderr, "dw-browser do: requires <goal>")
-		os.Exit(exitRunErr)
-	}
-	goal := strings.Join(positional, " ")
-
-	sessionInfo, err := browser.LoadSession(flags.sessionID)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "dw-browser do: %v\n", err)
-		os.Exit(exitRunErr)
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-	defer cancel()
-
-	impl := connectSession(ctx, sessionInfo, "do", flags)
-	defer closeSessionCore(impl)
-	impl.RestoreRefsFromSession(sessionInfo.Refs)
-
-	var planResult *nlPlanBuildResult
-	if planFile != "" {
-		plan, err := loadNLPlanFile(planFile)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "dw-browser do: load plan: %v\n", err)
-			os.Exit(exitRunErr)
-		}
-		planResult = &nlPlanBuildResult{Plan: plan, Source: "file", PageURL: sessionInfo.PageURL}
-	} else {
-		var err error
-		planResult, err = buildSessionNLPlan(ctx, impl, sessionInfo, goal)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "dw-browser do: %v\n", err)
-			os.Exit(exitRunErr)
-		}
-	}
-	plan := planResult.Plan
-
-	// Step 2: 逐步执行
-	executor := &cliActionExecutor{
-		sessionID:   flags.sessionID,
-		sessionInfo: sessionInfo,
-		impl:        impl,
-		ctx:         ctx,
-	}
-
-	stepErrors := make([]string, 0)
-	for i, step := range plan.Steps {
-		if err := executor.Execute(ctx, step.Action); err != nil {
-			stepErrors = append(stepErrors, fmt.Sprintf("step %d (%s): %v", i+1, step.Description, err))
-			break // stop on first failure
-		}
-		if step.Wait != "" {
-			if waitErr := executor.Wait(ctx, step.Wait, 15000); waitErr != nil {
-				stepErrors = append(stepErrors, fmt.Sprintf("step %d wait (%s): %v", i+1, step.Wait, waitErr))
-				break
-			}
-		}
-	}
-
-	// Step 3: observe final state
-	finalObs := observeSession(flags, "do")
-
-	type doOutput struct {
-		Plan        *btest.PlanResult  `json:"plan"`
-		PlanSource  string             `json:"plan_source"`
-		Observation *btest.Observation `json:"observation"`
-		Errors      []string           `json:"errors,omitempty"`
-	}
-	out := doOutput{Plan: plan, PlanSource: planResult.Source, Observation: finalObs}
-	if len(stepErrors) > 0 {
-		out.Errors = stepErrors
-	}
-
-	enc, _ := json.MarshalIndent(out, "", "  ")
-	fmt.Println(string(enc))
-
-	if len(stepErrors) > 0 {
-		os.Exit(exitFail)
-	}
-	os.Exit(exitOK)
-}
-
 func cliUsingContainsVisual(using []string) bool {
 	for _, u := range using {
 		if strings.EqualFold(strings.TrimSpace(u), "visual") {
@@ -1621,32 +1387,6 @@ func cliUsingContainsVisual(using []string) bool {
 	return false
 }
 
-func loadNLPlanFile(path string) (*btest.PlanResult, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
-	}
-	var wrapped nlPlanOutput
-	if err := json.Unmarshal(data, &wrapped); err == nil && wrapped.Plan != nil {
-		btest.NormalizePlan(wrapped.Plan)
-		if err := btest.ValidatePlan(wrapped.Plan); err != nil {
-			return nil, err
-		}
-		return wrapped.Plan, nil
-	}
-	var raw btest.PlanResult
-	if err := json.Unmarshal(data, &raw); err != nil {
-		return nil, err
-	}
-	btest.NormalizePlan(&raw)
-	if err := btest.ValidatePlan(&raw); err != nil {
-		return nil, err
-	}
-	return &raw, nil
-}
-
-// lookupSkillRecipe 检查当前页面 domain 的 skill 中是否有匹配 goal 的 recipe。
-// 返回 []btest.PlannedStep（来自 recipe 行），未匹配返回 nil。
 func lookupSkillRecipe(pageURL, goal string) []btest.PlannedStep {
 	if pageURL == "" {
 		return nil
@@ -1730,29 +1470,3 @@ func doStructuralFromSnap(snap *browser.Snapshot) *btest.StructuralState {
 
 // runGetNL 执行 NL get 查询：observe 当前 session 状态，Getter 提取字段。
 // dw-browser get --id <session-id> "active tab url"
-func runGetNL(args []string) {
-	if containsHelp(args) {
-		printTestingHelp()
-		os.Exit(exitOK)
-	}
-	positional, flags := parseCommonFlags(args, "get")
-
-	if flags.sessionID == "" {
-		fmt.Fprintln(os.Stderr, "dw-browser get: requires --id <session-id>")
-		os.Exit(exitRunErr)
-	}
-	if len(positional) < 1 {
-		fmt.Fprintln(os.Stderr, "dw-browser get: requires <query>")
-		os.Exit(exitRunErr)
-	}
-	query := positional[0]
-
-	obs := observeSession(flags, "get")
-
-	g := btest.Getter{}
-	result := g.Get(obs, query)
-
-	enc, _ := json.MarshalIndent(result, "", "  ")
-	fmt.Println(string(enc))
-	os.Exit(exitOK)
-}

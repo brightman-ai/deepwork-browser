@@ -3,7 +3,6 @@ package main
 import (
 	"errors"
 	"github.com/brightman-ai/deepwork-browser/browser"
-	btest "github.com/brightman-ai/deepwork-browser/browser/testing"
 	"os"
 	"strings"
 	"testing"
@@ -207,53 +206,6 @@ func TestURLSurfacesMatchTopLevelAndBrowserPortalURL(t *testing.T) {
 		if got := urlSurfacesMatch(tc.surfaces, tc.pattern); got != tc.want {
 			t.Fatalf("%s: urlSurfacesMatch() = %v, want %v", tc.name, got, tc.want)
 		}
-	}
-}
-
-func TestLoadNLPlanFileAcceptsPlanCommandOutput(t *testing.T) {
-	path := t.TempDir() + "/plan.json"
-	data := `{
-		"session_id": "s1",
-		"source": "llm",
-		"plan": {
-			"goal": "fill search",
-			"steps": [
-				{"description": "fill", "action": "fill #search-box 'stealth-extract'", "wait": "none"}
-			]
-		}
-	}`
-	if err := os.WriteFile(path, []byte(data), 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	plan, err := loadNLPlanFile(path)
-	if err != nil {
-		t.Fatalf("loadNLPlanFile() error = %v", err)
-	}
-	if plan.Steps[0].Wait != "" {
-		t.Fatalf("wait filler should be normalized, got %q", plan.Steps[0].Wait)
-	}
-}
-
-func TestStabilizePlanSelectorsRewritesRefsToTestIDs(t *testing.T) {
-	plan := &btest.PlanResult{Goal: "filter", Steps: []btest.PlannedStep{
-		{Description: "fill", Action: "fill @r2 'stealth-extract'"},
-		{Description: "click", Action: "click @r10", Wait: "visible @r10"},
-	}}
-	snap := &browser.Snapshot{Refs: []browser.ElementRef{
-		{Ref: "@r2", TestID: "search-box"},
-		{Ref: "@r10", TestID: "copy-summary"},
-	}}
-
-	stabilizePlanSelectors(plan, snap)
-	if got := plan.Steps[0].Action; got != "fill #search-box 'stealth-extract'" {
-		t.Fatalf("step 1 action = %q", got)
-	}
-	if got := plan.Steps[1].Action; got != "click #copy-summary" {
-		t.Fatalf("step 2 action = %q", got)
-	}
-	if got := plan.Steps[1].Wait; got != "visible #copy-summary" {
-		t.Fatalf("step 2 wait = %q", got)
 	}
 }
 

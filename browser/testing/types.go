@@ -92,6 +92,19 @@ type Rect struct {
 type TelemetryState struct {
 	ConsoleErrors   []ConsoleEntry `json:"console_errors"`
 	NetworkFailures []NetworkEntry `json:"network_failures"`
+	// VisibleErrors — on-screen error UI a human sees instantly but console/network checks
+	// MISS (CHG-016 R3, closes the "console_errors==0 yet a red error banner is on screen"
+	// silent-failure gap). Sourced by DOM scan: W3C role=alert / aria-invalid, error-styled
+	// classes, red-colored text, and multilingual error keywords. Non-empty ⇒ the agent must
+	// NOT report "healthy" — it has to inspect the screenshot and explain each signal.
+	VisibleErrors []VisibleErrorEntry `json:"visible_errors,omitempty"`
+}
+
+// VisibleErrorEntry — one on-screen error signal.
+type VisibleErrorEntry struct {
+	Kind     string `json:"kind"`               // "aria" | "styled" | "color" | "keyword"
+	Text     string `json:"text"`               // the visible message (trimmed)
+	Selector string `json:"selector,omitempty"` // role / class / tag hint for locating it
 }
 
 // ConsoleEntry — 单条控制台日志

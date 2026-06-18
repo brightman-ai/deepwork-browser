@@ -31,11 +31,15 @@ func newActionEngine(snapEngine *snapshotEngine) *actionEngine {
 
 // ParsedAction 是解析后的操作结构。
 type ParsedAction struct {
-	Op     string  // "click" | "clickat" | "tap" | "tapat" | "type" | "scroll" | "hover" | "select"
-	Ref    string  // Element Ref（如 "e3"）或语义选择器（如 "#testid", "button:'name'"）
-	Value  string  // type/select 的值
-	CoordX float64 // clickat 的相对 X 坐标（0..1）
-	CoordY float64 // clickat 的相对 Y 坐标（0..1）
+	Op      string  // "click" | "clickat" | "hoverat" | "dragat" | "tap" | "tapat" | "type" | "scroll" | "hover" | "select"
+	Ref     string  // Element Ref（如 "e3"）或语义选择器（如 "#testid", "button:'name'"）
+	Value   string  // type/select 的值
+	CoordX  float64 // clickat/hoverat/dragat/wheelat/... 起点相对 X 坐标（0..1）
+	CoordY  float64 // clickat/hoverat/dragat/wheelat/... 起点相对 Y 坐标（0..1）
+	CoordX2 float64 // dragat/swipeat 终点相对 X 坐标（0..1）
+	CoordY2 float64 // dragat/swipeat 终点相对 Y 坐标（0..1）
+	DeltaX  float64 // wheelat 横向滚轮位移（带符号像素）
+	DeltaY  float64 // wheelat 纵向滚轮位移（带符号像素）
 }
 
 // SelectorType 语义选择器类型。
@@ -302,8 +306,16 @@ func isLegacyRef(s string) bool {
 //
 // 支持操作:
 //   - "click #testid" | "click button:'名称'"
-//   - "clickat #canvas 92% 8%" — 对元素相对坐标执行真实鼠标点击
-//   - "tap button:'接管'" | "tapat #browser-liveview 92% 8%" — 对元素执行真实触控点击
+//   - 坐标指针动作族（canvas 类 UI：echarts/Univer/地图/白板，无子 DOM，靠真实坐标命中）:
+//   - "clickat #canvas 92% 8%" — 真实鼠标左键单击（点选柱/扇区/数据点）
+//   - "dblclickat css=#cell 30% 40%" — 真实鼠标双击（Univer 单元格进入编辑 / 缩放复位）
+//   - "rclickat css=#chart 30% 40%" — 真实鼠标右键（上下文菜单）
+//   - "hoverat css=#chart 50% 50%" — 真实鼠标悬停（echarts tooltip/十字线）
+//   - "dragat css=#chart 20% 50% 80% 50%" — 真实鼠标拖拽（echarts dataZoom/brush 框选）
+//   - "wheelat css=#chart 50% 50% -240" — 真实滚轮（echarts dataZoom:'inside'、Univer/地图缩放）
+//   - "tap button:'接管'" | "tapat #browser-liveview 92% 8%" — 真实触控点击
+//   - "swipeat css=#chart 80% 50% 20% 50%" — 真实触控滑动（移动端 canvas 平移）
+//     注意: #x 默认按 data-testid 解析；echarts/Univer 容器多为 id/class，需用 css= 前缀
 //   - "fill #input 'text'" — 清空后输入
 //   - "type textbox:'名称' 'hello'"
 //   - "press Enter" | "press Ctrl+A" | "press #btn Ctrl+K"
@@ -326,6 +338,44 @@ func ParseAction(action string) (*ParsedAction, error) {
 	}
 
 	op := strings.ToLower(parts[0])
+
+	// 绝对视口坐标真实点击 — 完全绕过 a11y/locator 模型，直接对视口像素发真实鼠标事件。
+	// 服务自定义 Vue/canvas UI: 大量可见控件（自定义 button、原生 select、div 点击区）
+	// 不进 a11y 树，css= 选择器引擎解析超时，clickat 又需已被 a11y 找到的 ref 作原点。
+	// 两种等价语法:
+	//   - "tapxy <xfrac> <yfrac>"            (无 ref，对视口比例点击)
+	//   - "clickat viewport <xfrac> <yfrac>" (与 clickat 同形，parts[1]=="viewport" 触发)
+	if op == "tapxy" || (op == "clickat" && len(parts) >= 2 && strings.ToLower(parts[1]) == "viewport") {
+		coordParts := parts[1:] // tapxy: x y
+		if op == "clickat" {
+			coordParts = parts[2:] // clickat viewport x y
+		}
+		if len(coordParts) < 2 {
+			return nil, fmt.Errorf("%w: tapxy requires xfrac and yfrac (0..1 or 0%%..100%%)", ErrActFailed)
+		}
+		x, err := parseNormalizedCoordinate(coordParts[0])
+		if err != nil {
+			return nil, err
+		}
+		y, err := parseNormalizedCoordinate(coordParts[1])
+		if err != nil {
+			return nil, err
+		}
+		return &ParsedAction{Op: "tapxy", CoordX: x, CoordY: y}, nil
+	}
+
+	// 向当前聚焦元素插入文本 — 完全绕过 a11y/locator 模型，不解析任何 ref/selector。
+	// 服务自定义 Vue/canvas input: 配合 tapxy 先聚焦不进 a11y 树的输入框，再用本动作
+	//   "typetext <text>" 直接对聚焦元素发 CDP Input.insertText（一次性插入，不走键盘逐字）。
+	// <text> 取整个剩余字符串（允许含空格/点/特殊字符），不做引号剥离。
+	if op == "typetext" {
+		text := strings.TrimSpace(strings.TrimPrefix(action, parts[0]))
+		if text == "" {
+			return nil, fmt.Errorf("%w: typetext requires text argument", ErrActFailed)
+		}
+		return &ParsedAction{Op: "typetext", Value: text}, nil
+	}
+
 	switch op {
 	case "click", "tap", "hover", "focus", "scrollinto", "check", "uncheck":
 		if len(parts) < 2 {
@@ -333,9 +383,11 @@ func ParseAction(action string) (*ParsedAction, error) {
 		}
 		return &ParsedAction{Op: op, Ref: parts[1]}, nil
 
-	case "clickat":
+	// 坐标指针动作族 — 单点 (ref x y): 鼠标单/双/右击、悬停、触控点击。
+	// 按"形状/参数个数"而非逐个动词分支，新增同形动作零成本。
+	case "clickat", "dblclickat", "rclickat", "hoverat", "tapat":
 		if len(parts) < 4 {
-			return nil, fmt.Errorf("%w: clickat requires selector, x, and y", ErrActFailed)
+			return nil, fmt.Errorf("%w: %s requires selector, x, and y", ErrActFailed, op)
 		}
 		x, err := parseNormalizedCoordinate(parts[2])
 		if err != nil {
@@ -345,11 +397,35 @@ func ParseAction(action string) (*ParsedAction, error) {
 		if err != nil {
 			return nil, err
 		}
-		return &ParsedAction{Op: "clickat", Ref: parts[1], CoordX: x, CoordY: y}, nil
+		return &ParsedAction{Op: op, Ref: parts[1], CoordX: x, CoordY: y}, nil
 
-	case "tapat":
-		if len(parts) < 4 {
-			return nil, fmt.Errorf("%w: tapat requires selector, x, and y", ErrActFailed)
+	// 坐标指针动作族 — 两点 (ref x1 y1 x2 y2): 鼠标拖拽、触控滑动。
+	case "dragat", "swipeat":
+		if len(parts) < 6 {
+			return nil, fmt.Errorf("%w: %s requires selector, x1, y1, x2, and y2", ErrActFailed, op)
+		}
+		x1, err := parseNormalizedCoordinate(parts[2])
+		if err != nil {
+			return nil, err
+		}
+		y1, err := parseNormalizedCoordinate(parts[3])
+		if err != nil {
+			return nil, err
+		}
+		x2, err := parseNormalizedCoordinate(parts[4])
+		if err != nil {
+			return nil, err
+		}
+		y2, err := parseNormalizedCoordinate(parts[5])
+		if err != nil {
+			return nil, err
+		}
+		return &ParsedAction{Op: op, Ref: parts[1], CoordX: x1, CoordY: y1, CoordX2: x2, CoordY2: y2}, nil
+
+	// 滚轮 (ref x y deltaY [deltaX]): deltaY 必填，deltaX 可选默认 0。
+	case "wheelat":
+		if len(parts) < 5 {
+			return nil, fmt.Errorf("%w: wheelat requires selector, x, y, and deltaY", ErrActFailed)
 		}
 		x, err := parseNormalizedCoordinate(parts[2])
 		if err != nil {
@@ -359,7 +435,18 @@ func ParseAction(action string) (*ParsedAction, error) {
 		if err != nil {
 			return nil, err
 		}
-		return &ParsedAction{Op: "tapat", Ref: parts[1], CoordX: x, CoordY: y}, nil
+		dy, err := parseDelta(parts[4])
+		if err != nil {
+			return nil, err
+		}
+		dx := 0.0
+		if len(parts) >= 6 {
+			dx, err = parseDelta(parts[5])
+			if err != nil {
+				return nil, err
+			}
+		}
+		return &ParsedAction{Op: "wheelat", Ref: parts[1], CoordX: x, CoordY: y, DeltaX: dx, DeltaY: dy}, nil
 
 	case "fill":
 		if len(parts) < 3 {
@@ -420,6 +507,16 @@ func ParseAction(action string) (*ParsedAction, error) {
 	default:
 		return nil, fmt.Errorf("%w: unknown operation %q", ErrActFailed, op)
 	}
+}
+
+// parseDelta 解析滚轮位移量（带符号像素，如 -240 / 120），不做 0..1 归一。
+func parseDelta(raw string) (float64, error) {
+	raw = strings.TrimSpace(raw)
+	v, err := strconv.ParseFloat(raw, 64)
+	if err != nil {
+		return 0, fmt.Errorf("%w: invalid wheel delta %q", ErrActFailed, raw)
+	}
+	return v, nil
 }
 
 func parseNormalizedCoordinate(raw string) (float64, error) {
@@ -523,7 +620,9 @@ func (e *actionEngine) ExecuteWithSessionMode(ctx context.Context, action string
 	}
 
 	// page-level 操作不需要选择器
-	noSelectorOps := map[string]bool{"scroll": true, "back": true, "forward": true}
+	// tapxy 是绝对视口坐标点击，刻意不解析 ref（绕过 a11y/locator）。
+	// typetext 向当前聚焦元素插入文本，同样刻意不解析 ref。
+	noSelectorOps := map[string]bool{"scroll": true, "back": true, "forward": true, "tapxy": true, "typetext": true}
 
 	var resolvedRef string
 	if !noSelectorOps[parsed.Op] && parsed.Ref != "" {
@@ -547,6 +646,38 @@ func (e *actionEngine) ExecuteWithSessionMode(ctx context.Context, action string
 		}
 	case "clickat":
 		if err := e.executeClickAt(ctx, resolvedRef, parsed.CoordX, parsed.CoordY); err != nil {
+			return nil, err
+		}
+	case "tapxy":
+		if err := e.executeTapXY(ctx, parsed.CoordX, parsed.CoordY); err != nil {
+			return nil, err
+		}
+	case "typetext":
+		if err := e.executeTypeText(ctx, parsed.Value); err != nil {
+			return nil, err
+		}
+	case "dblclickat":
+		if err := e.executeDoubleClickAt(ctx, resolvedRef, parsed.CoordX, parsed.CoordY); err != nil {
+			return nil, err
+		}
+	case "rclickat":
+		if err := e.executeRightClickAt(ctx, resolvedRef, parsed.CoordX, parsed.CoordY); err != nil {
+			return nil, err
+		}
+	case "hoverat":
+		if err := e.executeHoverAt(ctx, resolvedRef, parsed.CoordX, parsed.CoordY); err != nil {
+			return nil, err
+		}
+	case "dragat":
+		if err := e.executeDragAt(ctx, resolvedRef, parsed.CoordX, parsed.CoordY, parsed.CoordX2, parsed.CoordY2); err != nil {
+			return nil, err
+		}
+	case "wheelat":
+		if err := e.executeWheelAt(ctx, resolvedRef, parsed.CoordX, parsed.CoordY, parsed.DeltaX, parsed.DeltaY); err != nil {
+			return nil, err
+		}
+	case "swipeat":
+		if err := e.executeSwipeAt(ctx, resolvedRef, parsed.CoordX, parsed.CoordY, parsed.CoordX2, parsed.CoordY2); err != nil {
 			return nil, err
 		}
 	case "tap":
@@ -994,21 +1125,145 @@ func (e *actionEngine) resolveElementBox(ctx context.Context, ref string) (actio
 	return e.elementBoxForRef(ctx, ref)
 }
 
-func dispatchMouseClickAt(ctx context.Context, x, y float64) error {
+// resolveValidBox 解析元素 box 并校验尺寸有效。坐标动作的统一前置（去重）。
+func (e *actionEngine) resolveValidBox(ctx context.Context, ref string) (actionElementBox, error) {
+	box, err := e.resolveElementBox(ctx, ref)
+	if err != nil {
+		return actionElementBox{}, err
+	}
+	if box.Width <= 0 || box.Height <= 0 {
+		return actionElementBox{}, fmt.Errorf("%w: target %q has invalid box %.1fx%.1f", ErrActFailed, ref, box.Width, box.Height)
+	}
+	return box, nil
+}
+
+// resolvePoint 将 (ref, 相对坐标 0..1) 解析为视口绝对坐标。
+// 单点坐标动作（clickat/dblclickat/rclickat/hoverat/wheelat/tapat）的统一目标解析。
+func (e *actionEngine) resolvePoint(ctx context.Context, ref string, relX, relY float64) (float64, float64, error) {
+	box, err := e.resolveValidBox(ctx, ref)
+	if err != nil {
+		return 0, 0, err
+	}
+	return box.Left + box.Width*relX, box.Top + box.Height*relY, nil
+}
+
+// mouseButtonsMask 返回按键对应的 buttons 位掩码（左1/右2/中4），
+// 用于 press 及拖拽过程中 move 的"按键保持按下"状态。
+func mouseButtonsMask(button input.MouseButton) int64 {
+	switch button {
+	case input.Right:
+		return 2
+	case input.Middle:
+		return 4
+	default:
+		return 1
+	}
+}
+
+// dispatchMouseClick 在 (x,y) 派发真实鼠标点击：move → 递增 clickCount 的多对 press/release。
+// 单一原语参数化覆盖 单击(left,1) / 双击(left,2) / 右键(right,1)：
+// clickCount>1 时连续发多对 down/up 且 detail 递增，浏览器据此识别 dblclick。
+func dispatchMouseClick(ctx context.Context, x, y float64, button input.MouseButton, clickCount int64) error {
+	if clickCount < 1 {
+		clickCount = 1
+	}
+	mask := mouseButtonsMask(button)
 	return chromedp.Run(ctx, chromedp.ActionFunc(func(ctx context.Context) error {
 		if err := input.DispatchMouseEvent(input.MouseMoved, x, y).Do(ctx); err != nil {
 			return err
 		}
 		time.Sleep(18 * time.Millisecond)
-		if err := input.DispatchMouseEvent(input.MousePressed, x, y).
+		for n := int64(1); n <= clickCount; n++ {
+			if err := input.DispatchMouseEvent(input.MousePressed, x, y).
+				WithButton(button).
+				WithButtons(mask).
+				WithClickCount(n).
+				Do(ctx); err != nil {
+				return err
+			}
+			time.Sleep(42 * time.Millisecond)
+			if err := input.DispatchMouseEvent(input.MouseReleased, x, y).
+				WithButton(button).
+				WithClickCount(n).
+				Do(ctx); err != nil {
+				return err
+			}
+			if n < clickCount {
+				time.Sleep(30 * time.Millisecond)
+			}
+		}
+		return nil
+	}))
+}
+
+// dispatchMouseClickAt 是左键单击便捷封装（保留既有调用方语义，如 executeClick 的 CSS 路径）。
+func dispatchMouseClickAt(ctx context.Context, x, y float64) error {
+	return dispatchMouseClick(ctx, x, y, input.Left, 1)
+}
+
+// dispatchMouseWheel 在 (x,y) 派发真实滚轮：先 move 使指针落在目标上，再发 wheel。
+// echarts dataZoom:'inside'、Univer/地图缩放、canvas 内滚动均由 deltaX/deltaY 驱动；
+// deltaY<0 一般为向上滚/放大，deltaY>0 向下滚/缩小（最终方向由页面逻辑决定）。
+func dispatchMouseWheel(ctx context.Context, x, y, deltaX, deltaY float64) error {
+	return chromedp.Run(ctx, chromedp.ActionFunc(func(ctx context.Context) error {
+		if err := input.DispatchMouseEvent(input.MouseMoved, x, y).Do(ctx); err != nil {
+			return err
+		}
+		time.Sleep(18 * time.Millisecond)
+		return input.DispatchMouseEvent(input.MouseWheel, x, y).
+			WithDeltaX(deltaX).
+			WithDeltaY(deltaY).
+			Do(ctx)
+	}))
+}
+
+// mouseDragInterpolationSteps 是拖拽时起点→终点之间插入的中间 move 段数。
+// canvas 类 UI（echarts dataZoom/brush、Univer 选区）靠逐帧 mousemove 增量识别
+// 拖拽轨迹，单次跳变（press→直接 release 在终点）无法触发，必须分段移动。
+const mouseDragInterpolationSteps = 12
+
+// dispatchMouseMove 派发单次真实鼠标移动事件。
+// canvas 命中测试（echarts tooltip/axisPointer）依赖真实 clientX/Y，
+// 与 DOM 合成事件不同，必须经 CDP input 派发。
+func dispatchMouseMove(ctx context.Context, x, y float64) error {
+	return chromedp.Run(ctx, chromedp.ActionFunc(func(ctx context.Context) error {
+		return input.DispatchMouseEvent(input.MouseMoved, x, y).Do(ctx)
+	}))
+}
+
+// dispatchMouseDrag 派发真实鼠标拖拽：起点 move→press → 多段插值 move（左键按住）→ 终点 release。
+// steps<1 时归一为 1。
+func dispatchMouseDrag(ctx context.Context, x1, y1, x2, y2 float64, steps int) error {
+	if steps < 1 {
+		steps = 1
+	}
+	return chromedp.Run(ctx, chromedp.ActionFunc(func(ctx context.Context) error {
+		if err := input.DispatchMouseEvent(input.MouseMoved, x1, y1).Do(ctx); err != nil {
+			return err
+		}
+		time.Sleep(18 * time.Millisecond)
+		if err := input.DispatchMouseEvent(input.MousePressed, x1, y1).
 			WithButton(input.Left).
 			WithButtons(1).
 			WithClickCount(1).
 			Do(ctx); err != nil {
 			return err
 		}
-		time.Sleep(42 * time.Millisecond)
-		return input.DispatchMouseEvent(input.MouseReleased, x, y).
+		time.Sleep(18 * time.Millisecond)
+		for i := 1; i <= steps; i++ {
+			t := float64(i) / float64(steps)
+			mx := x1 + (x2-x1)*t
+			my := y1 + (y2-y1)*t
+			// 拖拽过程中左键保持按下：buttons=1，button=None。
+			if err := input.DispatchMouseEvent(input.MouseMoved, mx, my).
+				WithButtons(1).
+				Do(ctx); err != nil {
+				return err
+			}
+			time.Sleep(16 * time.Millisecond)
+		}
+		time.Sleep(18 * time.Millisecond)
+		return input.DispatchMouseEvent(input.MouseReleased, x2, y2).
 			WithButton(input.Left).
 			WithClickCount(1).
 			Do(ctx)
@@ -1030,21 +1285,110 @@ func dispatchTouchTapAt(ctx context.Context, x, y float64) error {
 	}))
 }
 
-// executeClickAt 对目标元素的相对坐标执行真实鼠标点击。
+// dispatchTouchSwipe 派发真实触控滑动：TouchStart → 多段插值 TouchMove → TouchEnd。
+// 作为 dragat 的触控对偶，服务移动端 canvas 平移（echarts mobile pan、轮播）。steps<1 归一为 1。
+func dispatchTouchSwipe(ctx context.Context, x1, y1, x2, y2 float64, steps int) error {
+	if steps < 1 {
+		steps = 1
+	}
+	return chromedp.Run(ctx, chromedp.ActionFunc(func(ctx context.Context) error {
+		if err := input.DispatchTouchEvent(input.TouchStart,
+			[]*input.TouchPoint{{X: x1, Y: y1, ID: 1}}).Do(ctx); err != nil {
+			return err
+		}
+		time.Sleep(18 * time.Millisecond)
+		for i := 1; i <= steps; i++ {
+			t := float64(i) / float64(steps)
+			mx := x1 + (x2-x1)*t
+			my := y1 + (y2-y1)*t
+			if err := input.DispatchTouchEvent(input.TouchMove,
+				[]*input.TouchPoint{{X: mx, Y: my, ID: 1}}).Do(ctx); err != nil {
+				return err
+			}
+			time.Sleep(16 * time.Millisecond)
+		}
+		time.Sleep(18 * time.Millisecond)
+		return input.DispatchTouchEvent(input.TouchEnd, []*input.TouchPoint{}).Do(ctx)
+	}))
+}
+
+// executeClickAt 对目标元素相对坐标执行真实鼠标左键单击。
 // 设计意图:
 //   - 保持现有 click 语义不变，避免把宿主 DOM 自动化和人类指针输入混为一谈
-//   - 为 liveview/takeover 这类需要真实 clientX/clientY 的桌面鼠标交互提供稳定入口
+//   - canvas 类图表(echarts/Univer)无子 DOM，点选具体图元只能靠真实坐标命中
 func (e *actionEngine) executeClickAt(ctx context.Context, ref string, relX, relY float64) error {
-	box, err := e.resolveElementBox(ctx, ref)
+	x, y, err := e.resolvePoint(ctx, ref, relX, relY)
 	if err != nil {
 		return err
 	}
-	if box.Width <= 0 || box.Height <= 0 {
-		return fmt.Errorf("%w: target %q has invalid box %.1fx%.1f", ErrActFailed, ref, box.Width, box.Height)
+	return dispatchMouseClick(ctx, x, y, input.Left, 1)
+}
+
+// viewportSize 读取当前视口像素尺寸（CSS 像素）。
+// 用 window.innerWidth/innerHeight：与快照 probe 同源，DPR 无关，等价 CDP
+// Page.getLayoutMetrics 的 cssLayoutViewport，但无需 Page domain enable。
+func (e *actionEngine) viewportSize(ctx context.Context) (float64, float64, error) {
+	var dims struct {
+		W float64 `json:"w"`
+		H float64 `json:"h"`
 	}
-	x := box.Left + box.Width*relX
-	y := box.Top + box.Height*relY
-	return dispatchMouseClickAt(ctx, x, y)
+	js := `(() => JSON.stringify({w: window.innerWidth || 0, h: window.innerHeight || 0}))()`
+	var raw string
+	if err := chromedp.Run(ctx, chromedp.Evaluate(js, &raw)); err != nil {
+		return 0, 0, fmt.Errorf("%w: read viewport size: %v", ErrActFailed, err)
+	}
+	if raw == "" || raw == "null" {
+		return 0, 0, fmt.Errorf("%w: viewport size unavailable", ErrActFailed)
+	}
+	if err := json.Unmarshal([]byte(raw), &dims); err != nil {
+		return 0, 0, fmt.Errorf("%w: parse viewport size: %v", ErrActFailed, err)
+	}
+	if dims.W <= 0 || dims.H <= 0 {
+		return 0, 0, fmt.Errorf("%w: viewport size invalid %.0fx%.0f", ErrActFailed, dims.W, dims.H)
+	}
+	return dims.W, dims.H, nil
+}
+
+// executeTapXY 对视口比例坐标 (xfrac, yfrac ∈ 0..1) 执行真实鼠标左键单击。
+// 完全绕过 a11y/locator 模型：不解析任何 ref，直接 viewport_width*xfrac / viewport_height*yfrac
+// 得到视口像素，经 CDP Input.dispatchMouseEvent 发真实左键 press/release。
+// 服务自定义 Vue/canvas UI 中不进 a11y 树、css= 选择器无法命中的可见控件。
+func (e *actionEngine) executeTapXY(ctx context.Context, fracX, fracY float64) error {
+	w, h, err := e.viewportSize(ctx)
+	if err != nil {
+		return err
+	}
+	x := w * fracX
+	y := h * fracY
+	return dispatchMouseClick(ctx, x, y, input.Left, 1)
+}
+
+// executeTypeText 向当前聚焦元素一次性插入文本，完全绕过 a11y/locator 模型：
+// 不解析任何 ref/selector，直接经 CDP Input.insertText 把 text 插入当前焦点（聚焦元素）。
+// 服务自定义 Vue/canvas input —— 配合 tapxy 先聚焦不进 a11y 树、css= 无法命中的输入框，
+// 再用本动作填入文本。与逐字键盘事件不同，insertText 等价于 IME/粘贴提交，单次生效。
+func (e *actionEngine) executeTypeText(ctx context.Context, text string) error {
+	return chromedp.Run(ctx, chromedp.ActionFunc(func(ctx context.Context) error {
+		return input.InsertText(text).Do(ctx)
+	}))
+}
+
+// executeDoubleClickAt 对目标元素相对坐标执行真实鼠标左键双击（Univer 单元格编辑 / 缩放复位）。
+func (e *actionEngine) executeDoubleClickAt(ctx context.Context, ref string, relX, relY float64) error {
+	x, y, err := e.resolvePoint(ctx, ref, relX, relY)
+	if err != nil {
+		return err
+	}
+	return dispatchMouseClick(ctx, x, y, input.Left, 2)
+}
+
+// executeRightClickAt 对目标元素相对坐标执行真实鼠标右键点击（上下文菜单）。
+func (e *actionEngine) executeRightClickAt(ctx context.Context, ref string, relX, relY float64) error {
+	x, y, err := e.resolvePoint(ctx, ref, relX, relY)
+	if err != nil {
+		return err
+	}
+	return dispatchMouseClick(ctx, x, y, input.Right, 1)
 }
 
 func (e *actionEngine) executeTap(ctx context.Context, ref string) error {
@@ -1056,16 +1400,63 @@ func (e *actionEngine) executeTap(ctx context.Context, ref string) error {
 //   - 作为 clickat 的触控对偶，支撑 iOS / Android / coarse pointer 测试
 //   - 在 liveview 宿主页上触发 BrowserPanel 的 touch* 链路，而不是退化成 mouse 事件
 func (e *actionEngine) executeTapAt(ctx context.Context, ref string, relX, relY float64) error {
-	box, err := e.resolveElementBox(ctx, ref)
+	x, y, err := e.resolvePoint(ctx, ref, relX, relY)
 	if err != nil {
 		return err
 	}
-	if box.Width <= 0 || box.Height <= 0 {
-		return fmt.Errorf("%w: target %q has invalid box %.1fx%.1f", ErrActFailed, ref, box.Width, box.Height)
-	}
-	x := box.Left + box.Width*relX
-	y := box.Top + box.Height*relY
 	return dispatchTouchTapAt(ctx, x, y)
+}
+
+// executeHoverAt 对目标元素的相对坐标执行真实鼠标悬停（仅 move，不按下）。
+// 设计意图:
+//   - 作为 clickat 的悬停对偶，覆盖 canvas 类图表的 hover 反馈
+//   - echarts tooltip / axisPointer 十字线 / 图表联动 hover 由真实 mousemove 的
+//     clientX/Y 命中测试驱动；hover 选择器只能落到元素几何中心，无法定位具体数据点
+func (e *actionEngine) executeHoverAt(ctx context.Context, ref string, relX, relY float64) error {
+	x, y, err := e.resolvePoint(ctx, ref, relX, relY)
+	if err != nil {
+		return err
+	}
+	return dispatchMouseMove(ctx, x, y)
+}
+
+// executeWheelAt 对目标元素相对坐标执行真实滚轮（echarts dataZoom:'inside'、Univer/地图缩放）。
+func (e *actionEngine) executeWheelAt(ctx context.Context, ref string, relX, relY, deltaX, deltaY float64) error {
+	x, y, err := e.resolvePoint(ctx, ref, relX, relY)
+	if err != nil {
+		return err
+	}
+	return dispatchMouseWheel(ctx, x, y, deltaX, deltaY)
+}
+
+// executeDragAt 在目标元素内从相对坐标起点拖拽到终点（真实 press→move→release）。
+// 设计意图:
+//   - 作为 clickat 的拖拽对偶，覆盖 canvas 类 UI 的区域交互
+//   - echarts dataZoom 缩放/平移、brush 框选、Univer 单元格选区只能由真实拖拽手势
+//     驱动，无法用 DOM 选择器表达；坐标按元素 box 归一，分辨率无关
+func (e *actionEngine) executeDragAt(ctx context.Context, ref string, relX1, relY1, relX2, relY2 float64) error {
+	box, err := e.resolveValidBox(ctx, ref)
+	if err != nil {
+		return err
+	}
+	x1 := box.Left + box.Width*relX1
+	y1 := box.Top + box.Height*relY1
+	x2 := box.Left + box.Width*relX2
+	y2 := box.Top + box.Height*relY2
+	return dispatchMouseDrag(ctx, x1, y1, x2, y2, mouseDragInterpolationSteps)
+}
+
+// executeSwipeAt 在目标元素内执行真实触控滑动（dragat 的触控对偶，移动端 canvas 平移）。
+func (e *actionEngine) executeSwipeAt(ctx context.Context, ref string, relX1, relY1, relX2, relY2 float64) error {
+	box, err := e.resolveValidBox(ctx, ref)
+	if err != nil {
+		return err
+	}
+	x1 := box.Left + box.Width*relX1
+	y1 := box.Top + box.Height*relY1
+	x2 := box.Left + box.Width*relX2
+	y2 := box.Top + box.Height*relY2
+	return dispatchTouchSwipe(ctx, x1, y1, x2, y2, mouseDragInterpolationSteps)
 }
 
 // executeType 执行文本输入操作，密码字段拒绝 [TC-09-U-07, TC-09-U-08]。

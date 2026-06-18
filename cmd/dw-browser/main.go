@@ -25,7 +25,6 @@ import (
 	"github.com/brightman-ai/deepwork-browser/browser"
 	"github.com/brightman-ai/deepwork-browser/browser/audit"
 	"github.com/brightman-ai/deepwork-browser/browser/safari"
-	btest "github.com/brightman-ai/deepwork-browser/browser/testing"
 	cdpTarget "github.com/chromedp/cdproto/target"
 	"github.com/chromedp/chromedp"
 	"gopkg.in/yaml.v3"
@@ -155,12 +154,6 @@ func parseCommonFlags(args []string, cmd string) (positional []string, flags com
 			i += 2
 		case strings.HasPrefix(arg, "--id="):
 			flags.sessionID = arg[len("--id="):]
-			i++
-		case arg == "--session" && i+1 < len(args):
-			flags.sessionID = args[i+1]
-			i += 2
-		case strings.HasPrefix(arg, "--session="):
-			flags.sessionID = arg[len("--session="):]
 			i++
 		case arg == "--kind" && i+1 < len(args):
 			kind, ok := parseBrowserSessionKind(args[i+1])
@@ -425,7 +418,7 @@ func parseViewport(s string) (w, h int, err error) {
 // 默认        → 使用 fallback
 func resolveProfileID(flags commonFlags, fallback string) string {
 	if flags.ephemeral {
-		return fmt.Sprintf("ephemeral-%d-%d", os.Getpid(), time.Now().UnixNano())
+		return browser.NewBrowserCLIEphemeralProfileID()
 	}
 	if flags.profileID != "" {
 		return flags.profileID
@@ -529,9 +522,9 @@ func resolveSessionPresetID(flags commonFlags) string {
 
 // cleanupEphemeral 清理 ephemeral profile 目录。
 func cleanupEphemeral(profileID string) {
-	homeDir, _ := os.UserHomeDir()
-	profilePath := fmt.Sprintf("%s/.deepwork/browser-cli/%s", homeDir, profileID)
-	os.RemoveAll(profilePath)
+	if err := browser.RemoveBrowserCLIEphemeralProfile(profileID); err != nil {
+		fmt.Fprintf(os.Stderr, "dw-browser: cleanup ephemeral profile %q: %v\n", profileID, err)
+	}
 }
 
 func main() {
@@ -550,14 +543,10 @@ func main() {
 		os.Exit(exitOK)
 	case "session":
 		runSession(os.Args[2:])
-	case "view":
-		runView(os.Args[2:])
 	case "once":
 		runOnce(os.Args[2:])
 	case "muxhost":
 		runMuxHost(os.Args[2:])
-	case "batch":
-		runBatch(os.Args[2:])
 	case "tabs":
 		runTabs(os.Args[2:])
 	case "htr":
@@ -566,22 +555,14 @@ func main() {
 		runOpen(os.Args[2:])
 	case "close":
 		runClose(os.Args[2:])
-	case "snap":
-		runSnap(os.Args[2:])
 	case "act":
 		runAct(os.Args[2:])
-	case "get":
-		runGet(os.Args[2:])
 	case "wait":
 		runWait(os.Args[2:])
-	case "screenshot":
-		runScreenshot(os.Args[2:])
 	case "test":
 		runTest(os.Args[2:])
 	case "layout":
 		runLayout(os.Args[2:])
-	case "explore":
-		runExplore(os.Args[2:])
 	case "eval":
 		runEval(os.Args[2:])
 	case "cookie-import":
@@ -600,17 +581,8 @@ func main() {
 		runDiff(os.Args[2:])
 	case "check":
 		runCheck(os.Args[2:])
-	case "state":
-		runState(os.Args[2:])
 	case "journey":
 		runJourney(os.Args[2:])
-	case "plan":
-		runPlan(os.Args[2:])
-	case "do":
-		runDo(os.Args[2:])
-	case "test-help":
-		printTestingHelp()
-		os.Exit(exitOK)
 	default:
 		fmt.Fprintf(os.Stderr, "dw-browser: unknown command %q\n", cmd)
 		printUsage()
@@ -673,135 +645,17 @@ func runSession(args []string) {
 	}
 }
 
-func runView(args []string) {
-	if len(args) == 1 && wantsHelp(args) {
-		printCommandUsage("view")
-		os.Exit(exitOK)
-	}
-	if len(args) < 1 {
-		fmt.Fprintln(os.Stderr, "dw-browser view: requires subcommand (action|reading|state|evidence)")
-		os.Exit(exitRunErr)
-	}
-	switch args[0] {
-	case "action":
-		runSnap(args[1:])
-	case "reading":
-		runViewReading(args[1:])
-	case "state":
-		runViewState(args[1:])
-	case "evidence":
-		runScreenshot(args[1:])
-	default:
-		fmt.Fprintf(os.Stderr, "dw-browser view: unknown subcommand %q (use action|reading|state|evidence)\n", args[0])
-		os.Exit(exitRunErr)
-	}
-}
-
-// runViewReading handles `view reading [--format plain|list|table] [--wait <ms>]`.
-// plain (default) → delegates to runGet "text" (existing path)
-// list            → extract <li> items via JS
-// table           → extract all <table> rows via JS
-func runViewReading(args []string) {
-	format := "plain"
-	waitMs := 0
-	clean := make([]string, 0, len(args))
-	for i := 0; i < len(args); i++ {
-		arg := args[i]
-		switch {
-		case arg == "--format" && i+1 < len(args):
-			format = strings.ToLower(strings.TrimSpace(args[i+1]))
-			i++
-		case strings.HasPrefix(arg, "--format="):
-			format = strings.ToLower(strings.TrimSpace(arg[len("--format="):]))
-		case arg == "--wait" && i+1 < len(args):
-			if n, err := strconv.Atoi(args[i+1]); err == nil {
-				waitMs = n
-			}
-			i++
-		case strings.HasPrefix(arg, "--wait="):
-			if n, err := strconv.Atoi(arg[len("--wait="):]); err == nil {
-				waitMs = n
-			}
-		default:
-			clean = append(clean, arg)
-		}
-	}
-
-	if format == "plain" {
-		// delegate to existing path; --wait not handled there (SPA heuristic only needed for structured formats)
-		runGet(append([]string{"text"}, clean...))
-		return
-	}
-
-	if format != "list" && format != "table" {
-		fmt.Fprintf(os.Stderr, "dw-browser view reading: unknown --format %q (use plain|list|table)\n", format)
-		os.Exit(exitRunErr)
-	}
-
-	_, flags := parseCommonFlags(clean, "view reading")
-	if flags.sessionID == "" {
-		fmt.Fprintln(os.Stderr, "dw-browser view reading: requires --session <id> for --format list|table")
-		os.Exit(exitRunErr)
-	}
-
-	sessionInfo, err := browser.LoadSession(flags.sessionID)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "dw-browser view reading: %v\n", err)
-		os.Exit(exitRunErr)
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	impl := connectSession(ctx, sessionInfo, "view reading", flags)
-
-	if waitMs > 0 {
-		time.Sleep(time.Duration(waitMs) * time.Millisecond)
-	}
-
-	var currentURL, title string
-	impl.EvalJS(ctx, "window.location.href", &currentURL)
-	impl.EvalJS(ctx, "document.title", &title)
-
-	switch format {
-	case "list":
-		var items []string
-		jsExpr := `Array.from(document.querySelectorAll('li')).map(li=>li.innerText.trim()).filter(Boolean)`
-		if err := impl.EvalJS(ctx, jsExpr, &items); err != nil {
-			fmt.Fprintf(os.Stderr, "dw-browser view reading list: %v\n", err)
-			exitSessionCore(impl, exitRunErr)
-		}
-		output := map[string]interface{}{
-			"view":   "reading",
-			"format": "list",
-			"url":    currentURL,
-			"title":  title,
-			"items":  items,
-		}
-		enc, _ := json.MarshalIndent(output, "", "  ")
-		fmt.Println(string(enc))
-
-	case "table":
-		var tables [][][]string
-		jsExpr := `Array.from(document.querySelectorAll('table')).map(tbl=>Array.from(tbl.querySelectorAll('tr')).map(tr=>Array.from(tr.querySelectorAll('th,td')).map(td=>td.innerText.trim())))`
-		if err := impl.EvalJS(ctx, jsExpr, &tables); err != nil {
-			fmt.Fprintf(os.Stderr, "dw-browser view reading table: %v\n", err)
-			exitSessionCore(impl, exitRunErr)
-		}
-		output := map[string]interface{}{
-			"view":   "reading",
-			"format": "table",
-			"url":    currentURL,
-			"title":  title,
-			"tables": tables,
-		}
-		enc, _ := json.MarshalIndent(output, "", "  ")
-		fmt.Println(string(enc))
-	}
-
-	exitSessionCore(impl, exitOK)
-}
-
+// runView — CHG-DWB-AGENT-CLI: 单一感知动词。
+//
+//	dw-browser view --id S                # 默认 brief: top-N 可操作元素 + user_state,无 a11y 树 (~瘦)
+//	dw-browser view --id S --as full      # 全量: a11y 树 + 全 elements (=旧 snap 语义)
+//	dw-browser view --id S --as shot      # 看图: 截图落盘,返回 {screenshot, run_id, step}
+//	dw-browser view --id S --as reading   # 读正文: 纯文本
+//	dw-browser view --id S --as state     # 会话/target 状态
+//	dw-browser view --id S --as evidence  # 证据包: 截图 + a11y + (run_id, step)
+//	dw-browser view --id S --as compact   # 仅 compact 索引元素 (= 旧 state 命令)
+//
+// 已废弃子命令 view action|reading|state|evidence 仍可用 (stderr 警告),下个 cycle 删除。
 func runSessionStatus(args []string) {
 	_, flags := parseCommonFlags(args, "session status")
 	if flags.sessionID == "" {
@@ -841,64 +695,67 @@ func runSessionList(args []string) {
 	os.Exit(exitOK)
 }
 
-// runProfile handles `dw-browser profile list|import`.
+// runProfile handles `dw-browser profile list|import|prune`.
 // profile list   → lists profiles under ~/.deepwork/browser-cli/
 // profile import <src> [--name <name>] → copies src dir into the profile dir
+// profile prune --ephemeral [--dry-run] [--min-age 30m] → removes stale temp sessions
 //
 // Both use ~/.deepwork/browser-cli/ — the same dir that --profile <name>
 // resolves to (see resolveProfileID → browser-cli/{profileID}). Imported
 // profiles must live here or --profile would never find them.
 func runProfile(args []string) {
 	if len(args) < 1 {
-		fmt.Fprintln(os.Stderr, "dw-browser profile: requires subcommand (list|import)")
+		fmt.Fprintln(os.Stderr, "dw-browser profile: requires subcommand (list|import|prune)")
 		os.Exit(exitRunErr)
 	}
 	switch args[0] {
 	case "list":
-		homeDir, err := os.UserHomeDir()
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "dw-browser profile list: %v\n", err)
-			os.Exit(exitRunErr)
-		}
-		profilesDir := filepath.Join(homeDir, ".deepwork", "browser-cli")
-		entries, err := os.ReadDir(profilesDir)
-		if err != nil && !os.IsNotExist(err) {
-			fmt.Fprintf(os.Stderr, "dw-browser profile list: %v\n", err)
-			os.Exit(exitRunErr)
-		}
 		type profileEntry struct {
 			Name   string  `json:"name"`
 			Path   string  `json:"path"`
 			SizeMB float64 `json:"size_mb"`
 		}
 		profiles := []profileEntry{}
-		for _, e := range entries {
-			if !e.IsDir() {
-				continue
+		for _, profilesDir := range browser.BrowserCLIProfileRoots("") {
+			entries, err := os.ReadDir(profilesDir)
+			if err != nil {
+				if os.IsNotExist(err) {
+					continue
+				}
+				fmt.Fprintf(os.Stderr, "dw-browser profile list: %v\n", err)
+				os.Exit(exitRunErr)
 			}
-			p := filepath.Join(profilesDir, e.Name())
-			var sizeBytes int64
-			_ = filepath.WalkDir(p, func(_ string, d os.DirEntry, err error) error {
-				if err != nil {
-					return nil
+			for _, e := range entries {
+				if !e.IsDir() {
+					continue
 				}
-				if !d.IsDir() {
-					if info, infoErr := d.Info(); infoErr == nil {
-						sizeBytes += info.Size()
+				p := filepath.Join(profilesDir, e.Name())
+				var sizeBytes int64
+				_ = filepath.WalkDir(p, func(_ string, d os.DirEntry, err error) error {
+					if err != nil {
+						return nil
 					}
-				}
-				return nil
-			})
-			profiles = append(profiles, profileEntry{
-				Name:   e.Name(),
-				Path:   p,
-				SizeMB: float64(sizeBytes) / (1024 * 1024),
-			})
+					if !d.IsDir() {
+						if info, infoErr := d.Info(); infoErr == nil {
+							sizeBytes += info.Size()
+						}
+					}
+					return nil
+				})
+				profiles = append(profiles, profileEntry{
+					Name:   e.Name(),
+					Path:   p,
+					SizeMB: float64(sizeBytes) / (1024 * 1024),
+				})
+			}
 		}
 		output := map[string]interface{}{"profiles": profiles}
 		enc, _ := json.MarshalIndent(output, "", "  ")
 		fmt.Println(string(enc))
 		os.Exit(exitOK)
+
+	case "prune":
+		runProfilePrune(args[1:])
 
 	case "import":
 		if len(args) < 2 {
@@ -923,12 +780,7 @@ func runProfile(args []string) {
 			importName = "imported-" + fmt.Sprintf("%d", time.Now().Unix())
 		}
 
-		homeDir, err := os.UserHomeDir()
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "dw-browser profile import: %v\n", err)
-			os.Exit(exitRunErr)
-		}
-		profilesDir := filepath.Join(homeDir, ".deepwork", "browser-cli")
+		profilesDir := browser.BrowserCLIProfileRoot("")
 		if err := os.MkdirAll(profilesDir, 0755); err != nil {
 			fmt.Fprintf(os.Stderr, "dw-browser profile import: mkdir %s: %v\n", profilesDir, err)
 			os.Exit(exitRunErr)
@@ -954,43 +806,56 @@ func runProfile(args []string) {
 		os.Exit(exitOK)
 
 	default:
-		fmt.Fprintf(os.Stderr, "dw-browser profile: unknown subcommand %q (use list|import)\n", args[0])
+		fmt.Fprintf(os.Stderr, "dw-browser profile: unknown subcommand %q (use list|import|prune)\n", args[0])
 		os.Exit(exitRunErr)
 	}
 }
 
-func runViewState(args []string) {
-	_, flags := parseCommonFlags(args, "view state")
-	if flags.sessionID == "" {
-		fmt.Fprintln(os.Stderr, "dw-browser view state: requires --id <id>")
-		os.Exit(exitRunErr)
-	}
-	sessionInfo, err := browser.LoadSession(flags.sessionID)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "dw-browser view state: %v\n", err)
-		os.Exit(exitRunErr)
-	}
-	currentTarget := map[string]interface{}{}
-	targets := []map[string]interface{}{}
-	if sessionInfo.DebugPort > 0 {
-		if fetched, fetchErr := browser.FetchChromeTargets(sessionInfo.DebugPort); fetchErr == nil {
-			targets = fetched
-			for _, target := range fetched {
-				if browser.ExtractDevToolsTargetID(target) == sessionInfo.TargetID {
-					currentTarget = target
-					break
-				}
+func runProfilePrune(args []string) {
+	minAge := time.Duration(0)
+	dryRun := false
+	ephemeralOnly := false
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		switch {
+		case arg == "--ephemeral":
+			ephemeralOnly = true
+		case arg == "--dry-run":
+			dryRun = true
+		case arg == "--min-age" && i+1 < len(args):
+			d, err := time.ParseDuration(args[i+1])
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "dw-browser profile prune: invalid --min-age %q\n", args[i+1])
+				os.Exit(exitRunErr)
 			}
+			minAge = d
+			i++
+		case strings.HasPrefix(arg, "--min-age="):
+			raw := strings.TrimPrefix(arg, "--min-age=")
+			d, err := time.ParseDuration(raw)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "dw-browser profile prune: invalid --min-age %q\n", raw)
+				os.Exit(exitRunErr)
+			}
+			minAge = d
+		default:
+			fmt.Fprintf(os.Stderr, "dw-browser profile prune: unknown flag %q\n", arg)
+			os.Exit(exitRunErr)
 		}
 	}
-	output := map[string]interface{}{
-		"browser_session_id": sessionInfo.BrowserSessionID,
-		"session_kind":       sessionInfo.SessionKind,
-		"authority_state":    sessionInfo.AuthorityState,
-		"current_target":     currentTarget,
-		"targets":            targets,
+	if !ephemeralOnly {
+		fmt.Fprintln(os.Stderr, "dw-browser profile prune: requires --ephemeral")
+		os.Exit(exitRunErr)
 	}
-	enc, _ := json.MarshalIndent(output, "", "  ")
+	result, err := browser.PruneBrowserCLIEphemeralProfiles(browser.BrowserCLIEphemeralPruneOptions{
+		MinAge: minAge,
+		DryRun: dryRun,
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "dw-browser profile prune: %v\n", err)
+		os.Exit(exitRunErr)
+	}
+	enc, _ := json.MarshalIndent(result, "", "  ")
 	fmt.Println(string(enc))
 	os.Exit(exitOK)
 }
@@ -1185,200 +1050,93 @@ func runOnce(args []string) {
 
 // printUsage 打印使用说明。
 func printUsage() {
-	fmt.Println("dw-browser — BrowserSession 驱动的 AOT/HTR 浏览器运行时")
-	fmt.Println()
-	fmt.Println("公开命令:")
-	fmt.Println("  dw-browser session start --id <id> --kind task|interactive|service|debug|test --url <url>")
-	fmt.Println("  dw-browser session start --id <id> --kind task <url>")
-	fmt.Println("  dw-browser session status --id <id>")
-	fmt.Println("  dw-browser session list")
-	fmt.Println("  dw-browser session close --id <id>")
-	fmt.Println()
-	fmt.Println("视图命令:")
-	fmt.Println("  dw-browser view action --id <id> [--selector <selector>] [--compact]")
-	fmt.Println("  dw-browser view reading --id <id> [locator]")
-	fmt.Println("  dw-browser view state --id <id>")
-	fmt.Println("  dw-browser view evidence --id <id> [out.png]")
-	fmt.Println()
-	fmt.Println("操作命令:")
-	fmt.Println("  dw-browser batch --id <id> --file actions.jsonl [--snap]")
-	fmt.Println("  dw-browser tabs list|select|close|new --id <id>")
-	fmt.Println("  dw-browser htr attach|takeover|yield|share --id <id>")
-	fmt.Println()
-	fmt.Println("运行时运维:")
-	fmt.Println("  dw-browser muxhost status|release|shutdown --id <session-id>")
-	fmt.Println("  dw-browser muxhost status --muxhost-id browser-mux-host-global")
-	fmt.Println("  dw-browser muxhost ensure --id <session-id> --mode headed|headless")
-	fmt.Println()
-	fmt.Println("单次命令:")
-	fmt.Println("  dw-browser once --url <url> --view action|reading|evidence [--action '<action>']")
-	fmt.Println()
-	fmt.Println("AI-native 测试命令:")
-	fmt.Println("  dw-browser observe --id <id> [--layers structural,behavior,telemetry,layout]")
-	fmt.Println("  dw-browser diff before.json after.json")
-	fmt.Println("  dw-browser check --id <id> --assert \"console_errors_count == 0\"")
-	fmt.Println("  dw-browser journey --file spec.yaml [--evidence dir]")
-	fmt.Println("  dw-browser plan --id <id> \"natural language goal\"")
-	fmt.Println("  dw-browser do --id <id> \"natural language goal\"")
-	fmt.Println("  dw-browser get --id <id> \"active tab url\"")
-	fmt.Println()
-	fmt.Println("核心参数:")
-	fmt.Println("  --id <id>              BrowserSession 本地句柄；--session 仅作为隐藏兼容别名")
-	fmt.Println("  --kind <kind>          task/interactive/service/debug/test；不使用 portal/webchat 作为公开 kind")
-	fmt.Println("  --goal <text>          本次 BrowserSession 目标")
-	fmt.Println("  --profile <id>         dedicated profile；与 --ephemeral 互斥")
-	fmt.Println("  --account <id>         service 类登录身份")
-	fmt.Println("  --isolation <mode>     ephemeral/dedicated/profile-pool")
-	fmt.Println("  --mode <mode>          headless/headed/visible；未指定时由 --kind 决定")
-	fmt.Println("  --viewport WxH, --device <preset>, --user-agent <ua>")
-	fmt.Println("  --engine <engine>      浏览器引擎: chrome (默认) | safari (iOS Simulator)")
-	fmt.Println("  --safari-device <dev>  Safari 引擎: Simulator 设备名或 UDID")
-	fmt.Println()
-	fmt.Println("默认策略:")
-	fmt.Println("  task/test: headless + ephemeral + agentic")
-	fmt.Println("  interactive: headed + dedicated + human")
-	fmt.Println("  service: headed + dedicated + service account")
-	fmt.Println("  debug: visible + dedicated + human")
-	fmt.Println()
+	p := func(s string) { fmt.Println(s) }
+	p("dw-browser — AI agent 浏览器运行时。两个场景:")
+	p("")
+	p("  A 探索发现 (Claude agent 调): 瘦感知 + act 循环, 撞体验问题。")
+	p("  B 基线回归 (测试脚本/CI 调): 确定性 pass/fail + 证据, 无 LLM。")
+	p("")
+	p("─── A 探索循环 ─────────────────────────────────────────────")
+	p("  open <url> --id X                   打开/导航 (默认 headless 即可截图供 AI 判断; headed/visible 仅 Human 看窗)")
+	p("  observe --id X                      ★感知: 瘦默认 {elements@rN, user_state, run_id, step} ~3K")
+	p("      --out shot.png                  + 存截图, 返回 {screenshot:\"<path>\"} (Read 图判 UX)")
+	p("      --health                        + {telemetry:{console_errors,network_failures,visible_errors}}")
+	p("      --tree                          + {tree:\"<全 a11y 文本>\"} (罕用)")
+	p("                                      flag 自由组合 (加法, 非互斥)")
+	p("  act --id X \"click @rN\"              操作; @rN 取自上次 observe; 默认瘦 {success,user_state}")
+	p("      act --id X \"fill @r3 'hi'\" --snap   --snap 才附 a11y 全树")
+	p("  close --id X                        关闭会话")
+	p("")
+	p("  典型循环: open → observe → (Read 截图/看 elements) → act \"click @rN\" → observe → … → close")
+	p("  每条输出带 run_id (会话稳定) + step (单调) — 把截图 ↔ a11y ↔ finding 对齐。")
+	p("")
+	p("─── B 基线回归 ─────────────────────────────────────────────")
+	p("  journey --file b.yaml --evidence d/   跑 open/act/check 步; 确定性 pass/fail + 证据; CLI 零 LLM")
+	p("  check --id X --assert \"<expr>\"        单条硬断言; exit 0=PASS 1=FAIL 2=ERR")
+	p("      console_errors_count==0 · exists(role='button') · text_contains('hi') · url_matches('/topic')")
+	p("      count(role='link')>=1 · tab_count==2 · network_failures_count==0 · visible(testid='x')")
+	p("  check --id X --file baseline.yaml     批量断言 (baseline 的 invariants 段)")
+	p("  diff before.json after.json           对比两份 observe 快照 (用 observe --json 落盘)")
+	p("")
+	p("─── 共享 ───────────────────────────────────────────────────")
+	p("  session list                         所有会话总览")
+	p("  session status --id X                单会话状态")
+	p("  once --url <url> [--action <act>]     无状态一次性 (开+看+关, 不留会话)")
+	p("  wait --id X \"<cond>\"                  等条件: 2000(ms) / 'visible #btn' / 'gone #mask' / 'text 成功'")
+	p("")
+	p("─── 核心参数 ───────────────────────────────────────────────")
+	p("  --id <id>            会话句柄 (开一次, 后续命令全程复用)")
+	p("  --mode <mode>        headless(默认·可截图) | headed | visible (后两者给 Human 看窗调试; CI 锁 DW_BROWSER_DEFAULT_MODE=headless)")
+	p("  --kind <kind>        task | interactive | service | debug | test (决定默认 mode/isolation)")
+	p("  --ephemeral          临时 profile, 命令结束即删 (与 --profile 互斥)")
+	p("  --profile <id>       固定 profile (登录态/Human 主浏览器)")
+	p("  --viewport WxH       视口 (默认 1920x1080)   --device <preset>   设备表观模拟   --user-agent <ua>")
+	p("  --goal <text>        本次会话目标 (写入 contract)")
+	p("")
 	printDevicePresets()
-	fmt.Println()
-	fmt.Println("用法 (Session 模式 — Agent 实时交互):")
-	fmt.Println("  dw-browser open <url> --session <id> [flags]      启动 Chrome 并导航")
-	fmt.Println("  dw-browser snap --session <id> [flags]            获取 A11y 快照（@rN refs）")
-	fmt.Println("  dw-browser act --session <id> <action> [flags]    执行操作（支持 @rN）")
-	fmt.Println("  dw-browser get text --session <id> [locator]      提取文本")
-	fmt.Println("  dw-browser wait --session <id> <condition>        等待条件")
-	fmt.Println("  dw-browser screenshot --session <id> [out.png]    截图")
-	fmt.Println("  dw-browser close --session <id>                   关闭会话")
-	fmt.Println()
-	fmt.Println("用法 (Browser Skills — 站点操作知识库):")
-	fmt.Println("  dw-browser skills list                             列出所有已知 skill")
-	fmt.Println("  dw-browser skills read <name> [--action <action>]  读取 skill/action")
-	fmt.Println("  dw-browser skills write <name> --action <action>   写入 action (stdin)")
-	fmt.Println()
-	fmt.Println("用法 (Record Mode — 录制操作轨迹 → 提炼 Skill):")
-	fmt.Println("  dw-browser record start  --session <id>           开始录制")
-	fmt.Println("  dw-browser record stop   --session <id>           停止录制 → stdout: trace JSON")
-	fmt.Println("  dw-browser record export --session <id>           导出快照（不停止录制）")
-	fmt.Println()
-	fmt.Println("用法 (One-shot 模式 — 向后兼容):")
-	fmt.Println("  dw-browser snap <url> [flags]                     获取 A11y 快照")
-	fmt.Println("  dw-browser act <url> <action> [flags]             执行操作")
-	fmt.Println("  dw-browser screenshot <url> [output.png] [flags]  截图")
-	fmt.Println("  dw-browser test <spec.yaml> [flags]               运行 YAML 规格测试")
-	fmt.Println("  dw-browser layout <url> [flags]                   布局验证 (L2)")
-	fmt.Println("  dw-browser explore <url> [flags]                  AI 探索 (见下方详细说明)")
-	fmt.Println("  dw-browser version                                打印版本")
-	fmt.Println()
-	fmt.Println("用法 (AI-native 测试 — 观察 / 断言 / 规划 / 执行):")
-	fmt.Println("  dw-browser observe --id s1 --out before.json")
-	fmt.Println("  dw-browser check --id s1 --assert \"exists(role='button')\"")
-	fmt.Println("  dw-browser plan --id s1 \"Open settings and inspect provider status\"")
-	fmt.Println("  dw-browser do --id s1 \"Open settings and inspect provider status\"")
-	fmt.Println("  dw-browser journey --file tests/bdd/portal.yaml --evidence evidence/run-001")
-	fmt.Println("  dw-browser test-help                              打印完整测试命令说明")
-	fmt.Println()
-	fmt.Println("═══ explore — 为 Claude Code / AI Agent 设计的浏览器状态查询器 ═══")
-	fmt.Println()
-	fmt.Println("  explore 在一次调用中返回「浏览器 A11y 状态 + 服务端健康/错误」的组合 JSON，")
-	fmt.Println("  消除 AI 需要分别调用 snap + curl /api/health + curl /api/debug/obs/recent 的摩擦。")
-	fmt.Println()
-	fmt.Println("  使用模式 (Claude Code 循环):")
-	fmt.Println("    1. dw-browser explore <url>                       → 观察: 获取页面状态")
-	fmt.Println("    2. AI 分析 JSON 输出，决定下一步操作")
-	fmt.Println("    3. dw-browser explore <url> --act \"click button:'提交'\"  → 行动: 执行+观察")
-	fmt.Println("    4. 重复 2-3 直到目标达成或发现问题")
-	fmt.Println("    5. dw-browser explore <url> --report              → 诊断: 全量证据采集")
-	fmt.Println()
-	fmt.Println("  输出 JSON 结构:")
-	fmt.Println("    {")
-	fmt.Println("      \"command\": \"explore\",")
-	fmt.Println("      \"url\": \"...\",")
-	fmt.Println("      \"browser\": { \"url\", \"title\", \"refs_count\", \"refs\": [{ref,role,name,locator}...] },")
-	fmt.Println("      \"server\":  { \"health\": {build,runtime}, \"recent_errors\": {entries} },")
-	fmt.Println("      \"action\": \"...\",        // 仅 --act 时")
-	fmt.Println("      \"screenshot\": \"path\"    // 仅 --report 时")
-	fmt.Println("    }")
-	fmt.Println()
-	fmt.Println("  Explore flags:")
-	fmt.Println("    --act <action>     执行操作后再快照 (语义选择器，同 act 命令)")
-	fmt.Println("    --report           追加截图 + 完整 health 诊断")
-	fmt.Println()
-	fmt.Println("通用 flags (所有子命令):")
-	fmt.Println("  --session <id>       会话 ID（session 模式必须）")
-	fmt.Println("  --viewport WxH       视口大小 (默认: 1920x1080, 例: 390x844)")
-	fmt.Println("  --device <preset>    Chrome/CDP 设备表观模拟 (viewport + UA + touch；非真实 Safari/WebKit)")
-	fmt.Println("  --user-agent <ua>    自定义 User-Agent (覆盖 --device 的 UA)")
-	fmt.Println("  --mode {headless|headed|visible}  浏览器模式 (CLI 默认 visible; human 兼容为 visible)")
-	fmt.Println("  --headless           等价于 --mode headless (兼容老 flag)")
-	fmt.Println()
-	fmt.Println("  Mode 默认值优先级: --mode > --headless > env DW_BROWSER_DEFAULT_MODE > visible")
-	fmt.Println("  CI/测试环境建议: export DW_BROWSER_DEFAULT_MODE=headless (Makefile 已默认设置)")
-	fmt.Println("  --profile <name>     使用指定 profile 目录 (与 --ephemeral 互斥)")
-	fmt.Println("  --ephemeral          自动生成临时 profile，命令结束后删除 (与 --profile 互斥)")
-	fmt.Println()
-	fmt.Println("定位器语法:")
-	fmt.Println("  @r7                             Session ref（仅 session 模式）")
-	fmt.Println("  #<testid>                       按 data-testid")
-	fmt.Println("  role=button[name*=\"创建\"]        Canonical DSL")
-	fmt.Println("  role=button[name=\"删除\"][nth=3]  带 nth 消歧")
-	fmt.Println("  dialog:'创建' >> button='确认'    Scoped selector")
-	fmt.Println("  button:'<名称>'                  按 ARIA role + name（contains）")
-	fmt.Println("  button=\"<名称>\"                  按 ARIA role + name（exact）")
-	fmt.Println("  css=.toolbar .btn                CSS 选择器（低稳定性）")
-	fmt.Println()
-	fmt.Println("act 支持的操作:")
-	fmt.Println("  click <locator>                 点击")
-	fmt.Println("  clickat <locator> <x> <y>       相对坐标真实点击（0.92/92% 形式）")
-	fmt.Println("  tap <locator>                   触控点击（iOS/Android/coarse pointer）")
-	fmt.Println("  tapat <locator> <x> <y>         相对坐标真实触控点击（0.92/92% 形式）")
-	fmt.Println("  fill <locator> '<text>'         清空后输入")
-	fmt.Println("  type <locator> '<text>'         输入（不清空）")
-	fmt.Println("  press <key> | press <locator> <key>  按键（Ctrl+A, Enter 等）")
-	fmt.Println("  hover <locator>                 鼠标悬停")
-	fmt.Println("  scroll down|up                  滚动")
-	fmt.Println("  select <locator> '<value>'      下拉选择")
-	fmt.Println("  back | forward                  导航历史")
-	fmt.Println("  focus <locator>                 聚焦")
-	fmt.Println("  scrollinto <locator>            滚动到可见")
-	fmt.Println("  check <locator>                 勾选复选框")
-	fmt.Println("  uncheck <locator>               取消勾选")
-	fmt.Println()
-	fmt.Println("wait 条件语法:")
-	fmt.Println("  dw-browser wait --session <id> 2000          等待 2000ms")
-	fmt.Println("  dw-browser wait --session <id> 'visible #btn' 等待元素可见")
-	fmt.Println("  dw-browser wait --session <id> 'gone #mask'   等待元素消失")
-	fmt.Println("  dw-browser wait --session <id> 'text 创建成功'  等待文本出现")
-	fmt.Println()
-	fmt.Println("示例 (Session 模式):")
-	fmt.Println("  dw-browser open http://localhost:8080/ws --session ws1 --ephemeral")
-	fmt.Println("  dw-browser snap --session ws1")
-	fmt.Println("  dw-browser act --session ws1 \"click @r7\"")
-	fmt.Println("  dw-browser act --session ws1 \"fill #ws-name 'my workspace'\"")
-	fmt.Println("  dw-browser close --session ws1")
-	fmt.Println()
-	fmt.Println("示例 (One-shot 模式):")
-	fmt.Println("  dw-browser snap http://localhost:8080/ --device iphone-14 --ephemeral")
-	fmt.Println("  dw-browser act http://localhost:8080/ws \"click button:'New Workspace'\" --ephemeral")
-	fmt.Println("  dw-browser act http://localhost:8080/ws \"click #ws-create-btn\" --ephemeral")
-	fmt.Println("  dw-browser screenshot http://localhost:8080/ out.png --device pixel-7")
-	fmt.Println()
-	fmt.Println("act 选择器语法 (语义选择器，不用位置编码 e{N}):")
-	fmt.Println("  click #<testid>           按 data-testid 点击")
-	fmt.Println("  clickat #canvas 92% 8%    点击元素内部相对坐标")
-	fmt.Println("  tap button:'接管'          触控点击元素")
-	fmt.Println("  tapat #browser-liveview 92% 8%  触控点击元素内部相对坐标")
-	fmt.Println("  click button:'<名称>'      按 ARIA role + name 点击")
-	fmt.Println("  type textbox:'<名称>' '<text>'  按 role + name 输入")
-	fmt.Println("  click link                按 role 点击第一个匹配")
-	fmt.Println()
-	printDevicePresets()
-	fmt.Println()
-	fmt.Println("示例:")
-	fmt.Println("  dw-browser snap http://localhost:8080/ --device iphone-14 --ephemeral")
-	fmt.Println("  dw-browser act http://localhost:8080/ws \"click button:'New Workspace'\" --ephemeral")
-	fmt.Println("  dw-browser act http://localhost:8080/ws \"click #ws-create-btn\" --ephemeral")
-	fmt.Println("  dw-browser screenshot http://localhost:8080/ out.png --device pixel-7")
+	p("")
+	p("─── 定位器 (act / check 用) ────────────────────────────────")
+	p("  @r7                              上次 observe 的 ref (最稳)")
+	p("  #<testid>                        按 data-testid")
+	p("  button:'<名称>'                  按 ARIA role + name (contains)    button=\"<名称>\" (exact)")
+	p("  role=button[name*=\"创建\"]         Canonical DSL    role=button[name=\"删除\"][nth=3] (nth 消歧)")
+	p("  dialog:'创建' >> button='确认'    Scoped selector")
+	p("  css=.toolbar .btn                CSS (低稳定性; canvas 容器用 css=#id)")
+	p("")
+	p("─── act 操作 ───────────────────────────────────────────────")
+	p("  click/tap <loc>                  点击 / 触控点击")
+	p("  fill <loc> '<text>'              清空后输入      type <loc> '<text>'   不清空输入")
+	p("  press <key> | press <loc> <key>  按键 (Ctrl+A, Enter)")
+	p("  select <loc> '<value>'           下拉选择        hover <loc>           悬停")
+	p("  scroll down|up                   滚动            scrollinto <loc>      滚动到可见")
+	p("  focus/check/uncheck <loc>        聚焦/勾选/取消   back | forward        导航历史")
+	p("  坐标动作 (canvas 图表无子 DOM, 用坐标命中图元):")
+	p("    tapxy <xf> <yf>                视口比例坐标真实点击 (不进 a11y 树的控件最通用解)")
+	p("    typetext <text>                向当前焦点插文本 (配合 tapxy 聚焦自定义 input)")
+	p("    clickat/dblclickat/rclickat css=#chart <x%> <y%>   元素内相对坐标点击/双击/右键")
+	p("    hoverat css=#chart 50% 40%     悬停触发 tooltip/十字线")
+	p("    dragat css=#chart 20% 50% 80% 50%   brush 框选 / dataZoom 拖拽")
+	p("    wheelat css=#chart 50% 50% -240     滚轮缩放 (dy<0 放大)")
+	p("    tapat/swipeat <loc> <coords>   移动端真实触控点击/滑动")
+	p("")
+	p("─── 高级 / 运维 (非核心循环) ───────────────────────────────")
+	p("  tabs list|new|select|close --id X    同会话多标签")
+	p("  htr attach|takeover|yield|share --id X   Human Trust Runtime 接管")
+	p("  muxhost ensure|status|release|shutdown   全局 BrowserMuxHost 运维")
+	p("  profile list|import|prune            CLI profile 管理")
+	p("  skills list|read|write               站点操作知识库")
+	p("  record start|stop|export --id X      录制操作轨迹 → 提炼 skill")
+	p("  layout <url> · test <spec.yaml> · eval --id X \"<js>\" · cookie-import · audit")
+	p("  各高级命令: dw-browser <cmd> --help")
+	p("")
+	p("─── 示例 ───────────────────────────────────────────────────")
+	p("  dw-browser open http://localhost:8080/ws --id ws1 --mode headed")
+	p("  dw-browser observe --id ws1 --out /tmp/ws1.png --health")
+	p("  dw-browser act --id ws1 \"click @r7\"")
+	p("  dw-browser act --id ws1 \"fill #ws-name 'my workspace'\"")
+	p("  dw-browser check --id ws1 --assert \"exists(role='button', name='创建')\"")
+	p("  dw-browser close --id ws1")
+	p("  dw-browser journey --file tests/bdd/portal.yaml --evidence evidence/run-001")
 }
 
 func printCommandUsage(command string) {
@@ -1413,41 +1171,22 @@ func printCommandUsage(command string) {
 		fmt.Println("  --url <url>            初始页面")
 		fmt.Println("  --goal <text>          场景目标，会写入 session contract")
 		fmt.Println("  --viewport WxH         视口大小")
-	case "view", "view reading", "view state", "view evidence", "get", "screenshot":
-		fmt.Println("dw-browser view — 读取当前会话状态")
-		fmt.Println()
-		fmt.Println("用法:")
-		fmt.Println("  dw-browser view action --id <id> [--selector <selector>] [--compact]")
-		fmt.Println("  dw-browser view reading --id <id> [locator]")
-		fmt.Println("  dw-browser view state --id <id>")
-		fmt.Println("  dw-browser view evidence --id <id> [out.png|--out <path>]")
-	case "snap", "view action":
-		fmt.Println("dw-browser view action — 获取可操作 A11y 快照")
-		fmt.Println()
-		fmt.Println("用法:")
-		fmt.Println("  dw-browser view action --id <id> [--selector <selector>] [--compact] [--max-depth <n>]")
-		fmt.Println("  dw-browser snap --id <id> [同等参数]")
+	case "observe":
+		printObserveHelp()
 	case "act":
 		fmt.Println("dw-browser act — 对当前会话执行语义操作")
 		fmt.Println()
 		fmt.Println("用法:")
-		fmt.Println("  dw-browser act --id <id> \"click button:'登录'\" [--await] [--snap]")
-		fmt.Println("  dw-browser act --id <id> \"fill searchbox:'搜索' 'deepwork'\" --snap")
-		fmt.Println("  dw-browser act --id <id> \"press Enter\" --await --snap")
+		fmt.Println("  dw-browser act --id <id> \"click @r7\"                     # 默认瘦: {success, user_state}")
+		fmt.Println("  dw-browser act --id <id> \"fill searchbox:'搜索' 'deepwork'\" --snap  # --snap 才附 a11y 全树")
+		fmt.Println("  dw-browser act --id <id> \"press Enter\" --await --snap   # --await 等页面稳定后再快照")
 		fmt.Println()
 		fmt.Println("常用操作:")
 		fmt.Println("  click/fill/type/press/scroll/hover/select/back/forward/focus/scrollinto/check/uncheck")
-	case "observe", "diff", "check", "journey", "plan", "do", "test-help":
+		fmt.Println("  坐标动作(canvas 图表): clickat/dblclickat/rclickat/hoverat/wheelat/dragat/tapat/swipeat")
+		fmt.Println("  @rN 取自上次 observe; 详细定位器/动作见 dw-browser --help")
+	case "check", "journey", "diff":
 		printTestingHelp()
-	case "batch":
-		fmt.Println("dw-browser batch — 在同一连接里顺序执行多步操作")
-		fmt.Println()
-		fmt.Println("用法:")
-		fmt.Println("  dw-browser batch --id <id> --file actions.jsonl [--snap]")
-		fmt.Println("  dw-browser batch --id <id> \"fill searchbox 'deepwork'\" \"press Enter\" --snap")
-		fmt.Println()
-		fmt.Println("JSONL step:")
-		fmt.Println("  {\"action\":\"click button:'Open details'\",\"await\":true,\"snap\":true}")
 	case "tabs", "tabs list", "tabs new", "tabs select", "tabs close":
 		fmt.Println("dw-browser tabs — 管理同一 BrowserSession 内的多标签页")
 		fmt.Println()
@@ -1490,6 +1229,13 @@ func printCommandUsage(command string) {
 		fmt.Println()
 		fmt.Println("目录:")
 		fmt.Println("  ~/.deepwork/browser-skills/<name>/SKILL.md")
+	case "profile":
+		fmt.Println("dw-browser profile — 管理 CLI browser profile")
+		fmt.Println()
+		fmt.Println("用法:")
+		fmt.Println("  dw-browser profile list")
+		fmt.Println("  dw-browser profile import <source-path> [--name <name>]")
+		fmt.Println("  dw-browser profile prune --ephemeral [--dry-run] [--min-age 30m]")
 	default:
 		printUsage()
 	}
@@ -1924,6 +1670,140 @@ func buildRefsOutput(refs []browser.ElementRef) []map[string]interface{} {
 	return out
 }
 
+// ============================================================
+// § Agent-First 瘦输出 (CHG-DWB-AGENT-CLI)
+// 设计: deepwork-pro/docs/changes/CHG-DWB-AGENT-CLI/DESIGN.md
+//
+// 实测 (■): SPA-scale `snap` 全量=89KB,其中 elements 数组(223 元素 ×
+// 6-8 字段 pretty)=65KB(73%),a11y 树仅 8KB(9%)。瘦身正解 =
+// top-N 元素 + 每元素精简字段 + 默认丢树,而非单纯丢树。
+// ============================================================
+
+const (
+	defaultBriefTopN   = 20   // view --as brief 默认返回的可操作元素数
+	defaultBriefBudget = 4096 // 瘦输出字节硬上限,超出截断
+)
+
+// isStructuralRole 判断是否为非操作性的结构容器 role (brief 模式跳过)。
+func isStructuralRole(role string) bool {
+	switch role {
+	case "RootWebArea", "generic", "none", "presentation", "":
+		return true
+	default:
+		return false
+	}
+}
+
+// leanElement 把 ElementRef 序列化为最小可操作 JSON:
+// 只留 ref/role/name/locator;name_full 仅当被截断时带,match 仅当 >1 时带。
+// 去掉 buildRefsOutput 的 name_short==name_full 重复 + alternatives 复制 locator。
+func leanElement(ref browser.ElementRef) map[string]interface{} {
+	name := ref.NameShort
+	if name == "" {
+		name = ref.Name
+	}
+	locator := ref.RecommendedLocator
+	if locator == "" && ref.TestID != "" {
+		locator = "testid:" + ref.TestID
+	}
+	el := map[string]interface{}{
+		"ref":     ref.Ref,
+		"role":    ref.Role,
+		"name":    name,
+		"locator": locator,
+	}
+	if ref.NameFull != "" && ref.NameFull != name {
+		el["name_full"] = ref.NameFull
+	}
+	if ref.MatchCount > 1 {
+		el["match"] = ref.MatchCount
+	}
+	return el
+}
+
+// briefElements 返回 top-N 可操作元素(优先 Interactable),并在 budget 内截断。
+// 返回 (元素切片, 总可操作数, 是否截断)。
+func briefElements(refs []browser.ElementRef, topN, budget int) ([]map[string]interface{}, int, bool) {
+	if topN <= 0 {
+		topN = defaultBriefTopN
+	}
+	if budget <= 0 {
+		budget = defaultBriefBudget
+	}
+	interactable := make([]browser.ElementRef, 0, len(refs))
+	for _, r := range refs {
+		if r.Interactable && !isStructuralRole(r.Role) {
+			interactable = append(interactable, r)
+		}
+	}
+	pool := interactable
+	if len(pool) == 0 {
+		for _, r := range refs {
+			if !isStructuralRole(r.Role) {
+				pool = append(pool, r)
+			}
+		}
+		if len(pool) == 0 {
+			pool = refs
+		}
+	}
+	total := len(pool)
+	out := make([]map[string]interface{}, 0, topN)
+	running := 0
+	truncated := false
+	for i, r := range pool {
+		if i >= topN {
+			truncated = true
+			break
+		}
+		el := leanElement(r)
+		b, _ := json.Marshal(el)
+		if running+len(b) > budget && len(out) > 0 {
+			truncated = true
+			break
+		}
+		running += len(b)
+		out = append(out, el)
+	}
+	if len(out) < total {
+		truncated = true
+	}
+	return out, total, truncated
+}
+
+// sessionRunID 从 session 派生稳定的证据 run_id (CLI 表现层概念,不落引擎 schema)。
+func sessionRunID(s *browser.SessionInfo) string {
+	if s.BrowserSessionID != "" {
+		return s.BrowserSessionID
+	}
+	return "run-" + s.SessionID
+}
+
+// injectEvidenceID 给输出戳上 (run_id, step) 证据关联原语。step = SnapEpoch。
+func injectEvidenceID(output map[string]interface{}, s *browser.SessionInfo) {
+	output["run_id"] = sessionRunID(s)
+	output["step"] = s.SnapEpoch
+}
+
+// evidenceOutPath 在未显式 --out 时,把证据落盘到 runs/<run_id>/<step>-<kind>.png。
+func evidenceOutPath(s *browser.SessionInfo, kind string) string {
+	dir := filepath.Join(deepworkHome(), "runs", sessionRunID(s))
+	_ = os.MkdirAll(dir, 0o755)
+	return filepath.Join(dir, fmt.Sprintf("%04d-%s.png", s.SnapEpoch, kind))
+}
+
+// deepworkHome 返回 ~/.deepwork (证据落盘根)。
+func deepworkHome() string {
+	if h := os.Getenv("DEEPWORK_HOME"); h != "" {
+		return h
+	}
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return filepath.Join(os.TempDir(), "deepwork")
+	}
+	return filepath.Join(home, ".deepwork")
+}
+
 func injectSnapshotState(output map[string]interface{}, snap *browser.Snapshot) {
 	if snap == nil {
 		return
@@ -1946,281 +1826,58 @@ func injectSnapshotState(output map[string]interface{}, snap *browser.Snapshot) 
 	}
 }
 
+// buildUserState — CHG-DWB-AGENT-CLI: 结构化 UX 状态 (SSOT)。
+// 让 Agent 判断"用户能否继续交互"而非只看日志事件。act/view 共用。
+func buildUserState(snap *browser.Snapshot, activeTabURL string) map[string]interface{} {
+	userState := map[string]interface{}{
+		"url":   snap.URL,
+		"title": snap.PageTitle,
+	}
+	roleCounts := map[string]int{}
+	inputReady := false
+	clickableCount := 0
+	for _, ref := range snap.Refs {
+		roleCounts[ref.Role]++
+		switch ref.Role {
+		case "textbox", "searchbox", "combobox", "textarea":
+			inputReady = true
+		case "button", "link", "menuitem", "tab", "checkbox", "radio", "switch":
+			clickableCount++
+		}
+		if ref.Role == "clickable" {
+			clickableCount++
+		}
+	}
+	userState["interactable_count"] = len(snap.Refs)
+	userState["input_ready"] = inputReady
+	userState["page_interactive"] = len(snap.Refs) >= 3
+	if snap.Progressive {
+		userState["page_interactive"] = false
+		userState["input_ready"] = false
+		userState["progressive"] = true
+		userState["load_state"] = snap.LoadState
+		userState["retry_after_ms"] = snap.RetryAfterMillis
+		if snap.ReadyState != "" {
+			userState["ready_state"] = snap.ReadyState
+		}
+		if snap.ProgressReason != "" {
+			userState["progress_reason"] = snap.ProgressReason
+		}
+	}
+	userState["clickable_count"] = clickableCount
+	var parts []string
+	for role, count := range roleCounts {
+		parts = append(parts, fmt.Sprintf("%d %s", count, role))
+	}
+	sort.Strings(parts)
+	userState["interactable_summary"] = strings.Join(parts, ", ")
+	userState["active_tab_url"] = activeTabURL
+	return userState
+}
+
 // runSnap 执行 snap 子命令: 导航到 URL 并输出 A11y 快照。
 // Session 模式: dw-browser snap --session <id>
 // One-shot 模式: dw-browser snap <url> [flags]
-func runSnap(args []string) {
-	// Parse r2 flags: --selector, --compact, --max-depth before common flags
-	snapSelector, snapCompact, snapMaxDepth, cleanArgs := parseSnapFlags(args)
-
-	positional, flags := parseCommonFlags(cleanArgs, "snap")
-
-	// Session 模式
-	if flags.sessionID != "" {
-		runSnapSession(flags, snapSelector, snapCompact, snapMaxDepth)
-		return
-	}
-
-	// One-shot 模式（向后兼容）
-	if len(positional) < 1 {
-		fmt.Fprintln(os.Stderr, "dw-browser snap: requires <url> or --session <id>")
-		os.Exit(exitRunErr)
-	}
-	url := positional[0]
-	profileID := resolveProfileID(flags, "default")
-	browserOpts := browserOptionsFromFlags(flags)
-
-	bc := newBrowserCore(profileID, browserOpts...)
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
-	defer func() {
-		bc.Close(ctx)
-		if flags.ephemeral {
-			cleanupEphemeral(profileID)
-		}
-	}()
-
-	// Harness warmup: chromedp ExecAllocator 在 CLI test 模式下存在首个 target
-	// 刚就绪时的瞬时 attach race。给浏览器一个极短 settle 窗口，避免首步 navigate
-	// 被误判成产品失败。
-	time.Sleep(600 * time.Millisecond)
-
-	snap, err := navigateWithRetry(ctx, bc, url)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "dw-browser: navigate failed: %v\n", err)
-		os.Exit(exitRunErr)
-	}
-
-	// Apply SnapOptions filters (one-shot mode: no session remapping)
-	if snapSelector != "" || snapCompact || snapMaxDepth > 0 {
-		// For one-shot mode, re-use the already-navigated bc; cast to SessionCore
-		if sc, ok := bc.(browser.SessionCore); ok {
-			opts := browser.SnapOptions{
-				Selector:    snapSelector,
-				Compact:     snapCompact,
-				MaxDepth:    snapMaxDepth,
-				SessionMode: false,
-			}
-			snap2, err2 := sc.SnapWithOptions(ctx, opts)
-			if err2 != nil {
-				fmt.Fprintf(os.Stderr, "dw-browser snap: %v\n", err2)
-				os.Exit(exitRunErr)
-			}
-			snap = snap2
-		}
-	}
-
-	output := map[string]interface{}{
-		"snap":       snap.Text,
-		"url":        snap.URL,
-		"title":      snap.PageTitle,
-		"refs_count": len(snap.Refs),
-		"token_est":  snap.TokenEst,
-		"type":       snap.SnapshotType,
-		"refs":       buildRefsOutput(snap.Refs),
-	}
-	injectSnapshotState(output, snap)
-	if snapSelector != "" {
-		output["scope"] = snapSelector
-	}
-	if hint := formatSkillHint(snap.URL); hint != "" {
-		output["skill_hint"] = hint
-	}
-	enc, _ := json.MarshalIndent(output, "", "  ")
-	fmt.Println(string(enc))
-	os.Exit(exitOK)
-}
-
-// parseSnapFlags 从 args 中提取 snap 专用 flags (--selector, --compact, --max-depth)。
-// 返回: selector string, compact bool, maxDepth int, 剩余 args（去掉已解析的 flags）。
-func parseSnapFlags(args []string) (selector string, compact bool, maxDepth int, rest []string) {
-	i := 0
-	for i < len(args) {
-		arg := args[i]
-		switch {
-		case arg == "--selector" && i+1 < len(args):
-			selector = args[i+1]
-			i += 2
-		case strings.HasPrefix(arg, "--selector="):
-			selector = arg[len("--selector="):]
-			i++
-		case arg == "--compact":
-			compact = true
-			i++
-		case arg == "--max-depth" && i+1 < len(args):
-			n, err := strconv.Atoi(args[i+1])
-			if err == nil && n > 0 {
-				maxDepth = n
-			}
-			i += 2
-		case strings.HasPrefix(arg, "--max-depth="):
-			n, err := strconv.Atoi(arg[len("--max-depth="):])
-			if err == nil && n > 0 {
-				maxDepth = n
-			}
-			i++
-		default:
-			rest = append(rest, arg)
-			i++
-		}
-	}
-	return
-}
-
-// runSnapSession 执行 session 模式 snap（不导航，连接已有 Chrome）。
-// selector/compact/maxDepth 对应 r2 Delta-REQ SC-20/SC-21 新增 flags。
-func runSnapSession(flags commonFlags, selector string, compact bool, maxDepth int) {
-	sessionInfo, err := browser.LoadSession(flags.sessionID)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "dw-browser snap: %v\n", err)
-		os.Exit(exitRunErr)
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	impl := connectSession(ctx, sessionInfo, "snap", flags)
-
-	sessionInfo.SnapEpoch++
-
-	var snap *browser.Snapshot
-	if selector != "" || compact || maxDepth > 0 {
-		// r2: SnapWithOptions path (SC-20/SC-21)
-		opts := browser.SnapOptions{
-			Selector:    selector,
-			Compact:     compact,
-			MaxDepth:    maxDepth,
-			SessionMode: true,
-			SnapEpoch:   sessionInfo.SnapEpoch,
-		}
-		snap, err = impl.SnapWithOptions(ctx, opts)
-	} else {
-		snap, err = impl.SnapWithSessionMode(ctx, sessionInfo.SnapEpoch)
-	}
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "dw-browser snap: %v\n", err)
-		exitSessionCore(impl, exitRunErr)
-	}
-
-	// Build session refs from snap
-	sessionRefs := make([]browser.SessionRef, 0, len(snap.Refs))
-	for _, ref := range snap.Refs {
-		sessionRefs = append(sessionRefs, browser.SessionRef{
-			Ref:           ref.Ref,
-			BackendNodeID: ref.BackendNodeID,
-			Role:          ref.Role,
-			Name:          ref.NameFull,
-			TestID:        ref.TestID,
-			Placeholder:   ref.Placeholder,
-		})
-	}
-	sessionInfo.Refs = sessionRefs
-	sessionInfo.PageURL = snap.URL
-
-	if err := browser.SaveSession(sessionInfo); err != nil {
-		fmt.Fprintf(os.Stderr, "dw-browser snap: save session: %v\n", err)
-	}
-
-	output := map[string]interface{}{
-		"session_id":         sessionInfo.SessionID,
-		"browser_session_id": sessionInfo.BrowserSessionID,
-		"session_kind":       sessionInfo.SessionKind,
-		"snap_epoch":         sessionInfo.SnapEpoch,
-		"summary":            snap.Text,
-		"url":                snap.URL,
-		"title":              snap.PageTitle,
-		"refs_count":         len(snap.Refs),
-		"token_est":          snap.TokenEst,
-		"type":               snap.SnapshotType,
-		"elements":           buildRefsOutput(snap.Refs),
-	}
-	injectSnapshotState(output, snap)
-	if selector != "" {
-		output["scope"] = selector
-	}
-	if hint := formatSkillHint(snap.URL); hint != "" {
-		output["skill_hint"] = hint
-	}
-	enc, _ := json.MarshalIndent(output, "", "  ")
-	fmt.Println(string(enc))
-	exitSessionCore(impl, exitOK)
-}
-
-// runState outputs only the compact indexed interactive elements for the current
-// session page — the agent-friendly equivalent of BrowserAct's `state` command.
-// Unlike `snap`, it omits the full page text and saves tokens by focusing purely
-// on what the agent can interact with.
-//
-// Usage: dw-browser state --session <id>
-// Output: {"url":..., "state":"[@r1 button 'Nav'] [@r2 input ...]", "refs_count":N}
-// refs are persisted to session state file for subsequent `act "click @r1"` — NOT echoed to stdout.
-func runState(args []string) {
-	_, flags := parseCommonFlags(args, "state")
-	if flags.sessionID == "" {
-		fmt.Fprintln(os.Stderr, "dw-browser state: requires --session <id>")
-		os.Exit(exitRunErr)
-	}
-
-	sessionInfo, err := browser.LoadSession(flags.sessionID)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "dw-browser state: %v\n", err)
-		os.Exit(exitRunErr)
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	impl := connectSession(ctx, sessionInfo, "state", flags)
-
-	sessionInfo.SnapEpoch++
-
-	opts := browser.SnapOptions{
-		Compact:     true,
-		SessionMode: true,
-		SnapEpoch:   sessionInfo.SnapEpoch,
-	}
-	snap, err := impl.SnapWithOptions(ctx, opts)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "dw-browser state: %v\n", err)
-		exitSessionCore(impl, exitRunErr)
-	}
-
-	sessionRefs := make([]browser.SessionRef, 0, len(snap.Refs))
-	for _, ref := range snap.Refs {
-		sessionRefs = append(sessionRefs, browser.SessionRef{
-			Ref:           ref.Ref,
-			BackendNodeID: ref.BackendNodeID,
-			Role:          ref.Role,
-			Name:          ref.NameFull,
-			TestID:        ref.TestID,
-			Placeholder:   ref.Placeholder,
-		})
-	}
-	sessionInfo.Refs = sessionRefs
-	sessionInfo.PageURL = snap.URL
-	if err := browser.SaveSession(sessionInfo); err != nil {
-		fmt.Fprintf(os.Stderr, "dw-browser state: save session: %v\n", err)
-	}
-
-	// refs saved to session state above — omit from stdout to maximize token efficiency.
-	// Agents use @rN refs via stored session state; no need to echo the full array.
-	output := map[string]interface{}{
-		"url":        snap.URL,
-		"title":      snap.PageTitle,
-		"state":      snap.Text,
-		"refs_count": len(snap.Refs),
-	}
-	if hint := formatSkillHint(snap.URL); hint != "" {
-		output["skill_hint"] = hint
-	}
-	enc, _ := json.MarshalIndent(output, "", "  ")
-	fmt.Println(string(enc))
-	exitSessionCore(impl, exitOK)
-}
-
-// runAct 执行 act 子命令。
-// Session 模式: dw-browser act --session <id> "<action>" [--await] [--snap]
-// One-shot 模式: dw-browser act <url> "<action>" [flags]
 func runAct(args []string) {
 	positional, flags := parseCommonFlags(args, "act")
 
@@ -2315,7 +1972,9 @@ func needsPostActionSnapshot(action string) bool {
 	}
 	op := strings.ToLower(fields[0])
 	switch op {
-	case "scroll", "hover", "focus", "scrollinto", "clickat", "tapat":
+	// 纯 canvas/视觉坐标动作的完成证据来自截图，A11y 快照对 canvas 无信息量；
+	// 而 rclickat（右键上下文菜单）会产生真实 DOM 弹层，仍需后置快照。
+	case "scroll", "hover", "hoverat", "focus", "scrollinto", "clickat", "dblclickat", "wheelat", "tapat", "swipeat":
 		return false
 	default:
 		return true
@@ -2329,7 +1988,7 @@ func isPointerAction(action string) bool {
 		return false
 	}
 	switch strings.ToLower(fields[0]) {
-	case "click", "clickat", "tap", "tapat":
+	case "click", "clickat", "dblclickat", "tap", "tapat", "tapxy":
 		return true
 	default:
 		return false
@@ -2444,56 +2103,14 @@ func runActSession(flags commonFlags, action string, awaitStable bool, snapAfter
 		output["snap_requested"] = true
 	}
 	if snap != nil {
-		output["snap"] = snap.Text
+		// CHG-DWB-AGENT-CLI: act 默认瘦 — 只返 user_state。
+		// a11y 全树仅当 --snap (snapAfterAct) 时附带,避免每次 act 烧 token。
+		if snapAfterAct {
+			output["snap"] = snap.Text
+		}
 		injectSnapshotState(output, snap)
-		// [P0-α user_state] 结构化 UX 状态 — 让 Agent 判断"用户能否继续交互"而非只看日志事件。
-		userState := map[string]interface{}{
-			"url":   snap.URL,
-			"title": snap.PageTitle,
-		}
-		roleCounts := map[string]int{}
-		inputReady := false
-		clickableCount := 0
-		for _, ref := range snap.Refs {
-			roleCounts[ref.Role]++
-			switch ref.Role {
-			case "textbox", "searchbox", "combobox", "textarea":
-				inputReady = true
-			case "button", "link", "menuitem", "tab", "checkbox", "radio", "switch":
-				clickableCount++
-			}
-			// "clickable" 等自定义 role 也计入
-			if ref.Role == "clickable" {
-				clickableCount++
-			}
-		}
-		userState["interactable_count"] = len(snap.Refs)
-		userState["input_ready"] = inputReady
-		// page_interactive: 页面有足够的可操作元素(≥3)，用户可以有意义地交互。
-		// 区别于 input_ready(仅限文本输入框)。列表页/仪表盘无 textbox 但 page_interactive=true。
-		userState["page_interactive"] = len(snap.Refs) >= 3
-		if snap.Progressive {
-			userState["page_interactive"] = false
-			userState["input_ready"] = false
-			userState["progressive"] = true
-			userState["load_state"] = snap.LoadState
-			userState["retry_after_ms"] = snap.RetryAfterMillis
-			if snap.ReadyState != "" {
-				userState["ready_state"] = snap.ReadyState
-			}
-			if snap.ProgressReason != "" {
-				userState["progress_reason"] = snap.ProgressReason
-			}
-		}
-		userState["clickable_count"] = clickableCount
-		var parts []string
-		for role, count := range roleCounts {
-			parts = append(parts, fmt.Sprintf("%d %s", count, role))
-		}
-		sort.Strings(parts)
-		userState["interactable_summary"] = strings.Join(parts, ", ")
-		userState["active_tab_url"] = sessionInfo.PageURL
-		output["user_state"] = userState
+		output["user_state"] = buildUserState(snap, sessionInfo.PageURL)
+		injectEvidenceID(output, sessionInfo)
 	}
 
 	// [BUG-FIX CAP-BS09-SESS] Detect newly opened tab after a pointer action.
@@ -2821,10 +2438,18 @@ func runOpen(args []string) {
 		os.Exit(exitRunErr)
 	}
 
-	// Resolve profile dir — ~/.deepwork/browser-cli/{profileID}
+	// Resolve profile dir. Snap Chromium is routed through its writable common dir.
 	profileID := resolveProfileID(flags, defaultProfileID(flags))
-	homeDir, _ := os.UserHomeDir()
-	profileDir := fmt.Sprintf("%s/.deepwork/browser-cli/%s", homeDir, profileID)
+	if pruneResult, pruneErr := browser.PruneBrowserCLIEphemeralProfiles(browser.BrowserCLIEphemeralPruneOptions{
+		ChromePath: chromePath,
+		MinAge:     browser.DefaultCLIEphemeralPruneMinAge,
+	}); pruneErr != nil {
+		fmt.Fprintf(os.Stderr, "dw-browser open: ephemeral profile prune skipped: %v\n", pruneErr)
+	} else if pruneResult.Removed > 0 {
+		fmt.Fprintf(os.Stderr, "dw-browser open: pruned %d stale ephemeral profile(s), freed %.1f MB\n",
+			pruneResult.Removed, float64(pruneResult.Bytes)/(1024*1024))
+	}
+	profileDir := browser.BrowserCLIProfileDir(chromePath, profileID)
 	mode := browser.NormalizeBrowserMode(flags.mode, browser.ModeVisible)
 
 	// Phase_v2_4 startup recovery (CAP-BS09-C4 §3.5) — 与 BrowserPool 共享 4 步协议:
@@ -2941,7 +2566,7 @@ func runOpen(args []string) {
 			ChromePath:   chromePath,
 			Args:         chromeArgs,
 			DebugPort:    port,
-			ReadyTimeout: 30 * time.Second,
+			ReadyTimeout: 120 * time.Second,
 		})
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "dw-browser open: workspace launch chrome: %v\n", err)
@@ -2958,7 +2583,7 @@ func runOpen(args []string) {
 			fmt.Fprintf(os.Stderr, "dw-browser open: %v\n", err)
 			os.Exit(exitRunErr)
 		}
-		wsURL, err = browser.WaitForChromeReady(port, 30*time.Second)
+		wsURL, err = browser.WaitForChromeReady(port, 120*time.Second)
 		if err != nil {
 			if chromePID > 0 {
 				if proc, findErr := os.FindProcess(chromePID); findErr == nil {
@@ -3219,8 +2844,11 @@ func runClose(args []string) {
 	}
 
 	// Clean up profile dir if ephemeral (from session info or close flag)
-	if (sessionInfo.Ephemeral || flags.ephemeral) && sessionInfo.ProfileDir != "" {
-		os.RemoveAll(sessionInfo.ProfileDir)
+	if sessionInfo.Ephemeral || flags.ephemeral {
+		if sessionInfo.ProfileDir != "" && strings.HasPrefix(filepath.Base(sessionInfo.ProfileDir), browser.BrowserCLIEphemeralProfilePrefix) {
+			_ = os.RemoveAll(sessionInfo.ProfileDir)
+		}
+		_ = browser.RemoveBrowserCLIEphemeralProfile(sessionInfo.ProfileID)
 	}
 
 	enc, _ := json.MarshalIndent(map[string]interface{}{
@@ -3233,94 +2861,6 @@ func runClose(args []string) {
 }
 
 // runGet 执行 get 子命令（text/url/title）。
-func runGet(args []string) {
-	if len(args) < 1 {
-		fmt.Fprintln(os.Stderr, "dw-browser get: requires subcommand (text|url|title)")
-		os.Exit(exitRunErr)
-	}
-	subCmd := args[0]
-	positional, flags := parseCommonFlags(args[1:], "get")
-
-	if flags.sessionID == "" {
-		fmt.Fprintln(os.Stderr, "dw-browser get: requires --session <id>")
-		os.Exit(exitRunErr)
-	}
-
-	sessionInfo, err := browser.LoadSession(flags.sessionID)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "dw-browser get: %v\n", err)
-		os.Exit(exitRunErr)
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
-
-	impl := connectSession(ctx, sessionInfo, "get", flags)
-
-	switch subCmd {
-	case "text":
-		var focus *string
-		if len(positional) > 0 {
-			focus = &positional[0]
-		}
-		text, err := impl.Text(ctx, focus)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "dw-browser get text: %v\n", err)
-			exitSessionCore(impl, exitRunErr)
-		}
-		// P2: SPA content retry — if text is very short, wait and retry once
-		if len(text) < 200 {
-			fmt.Fprintln(os.Stderr, "[dw-browser] get text: sparse content, retrying after 2s (SPA render lag)")
-			time.Sleep(2 * time.Second)
-			if retried, retryErr := impl.Text(ctx, focus); retryErr == nil && len(retried) > len(text) {
-				text = retried
-			}
-		}
-		enc, _ := json.MarshalIndent(map[string]interface{}{
-			"session_id":         flags.sessionID,
-			"browser_session_id": sessionInfo.BrowserSessionID,
-			"text":               text,
-		}, "", "  ")
-		fmt.Println(string(enc))
-
-	case "url":
-		var url string
-		impl.EvalJS(ctx, "window.location.href", &url)
-		enc, _ := json.MarshalIndent(map[string]interface{}{
-			"session_id":         flags.sessionID,
-			"browser_session_id": sessionInfo.BrowserSessionID,
-			"url":                url,
-		}, "", "  ")
-		fmt.Println(string(enc))
-
-	case "title":
-		var title string
-		impl.EvalJS(ctx, "document.title", &title)
-		enc, _ := json.MarshalIndent(map[string]interface{}{
-			"session_id":         flags.sessionID,
-			"browser_session_id": sessionInfo.BrowserSessionID,
-			"title":              title,
-		}, "", "  ")
-		fmt.Println(string(enc))
-
-	default:
-		// NL query fallback: treat subCmd as the first word of the query, reconstruct full query
-		// e.g. dw-browser get --id s1 "active tab url"  → subCmd="active", positional=["tab", "url"]
-		// We need to pass all args to runGetNL using the original args slice (before subCmd split).
-		// Close the session first since runGetNL will open a fresh observe connection.
-		closeSessionCore(impl)
-		cancel()
-		runGetNL(args)
-		return
-	}
-	exitSessionCore(impl, exitOK)
-}
-
-// runWait 执行 wait 子命令。
-// dw-browser wait --session <id> 2000           → sleep
-// dw-browser wait --session <id> "visible #btn"  → wait for element visible
-// dw-browser wait --session <id> "gone #mask"    → wait for element to disappear
-// dw-browser wait --session <id> "text 创建成功"  → wait for text to appear
 func runWait(args []string) {
 	positional, flags := parseCommonFlags(args, "wait")
 	if flags.sessionID == "" {
@@ -3492,117 +3032,6 @@ func waitSelectorCountJS(selector string) string {
 // runScreenshot 执行 screenshot 子命令。
 // Session 模式: dw-browser screenshot --session <id> [out.png]
 // One-shot 模式: dw-browser screenshot <url> [out.png]
-func runScreenshot(args []string) {
-	outFileFlag := ""
-	clean := make([]string, 0, len(args))
-	for i := 0; i < len(args); i++ {
-		arg := args[i]
-		switch {
-		case arg == "--out" && i+1 < len(args):
-			outFileFlag = args[i+1]
-			i++
-		case strings.HasPrefix(arg, "--out="):
-			outFileFlag = arg[len("--out="):]
-		default:
-			clean = append(clean, arg)
-		}
-	}
-	positional, flags := parseCommonFlags(clean, "screenshot")
-
-	// Session 模式
-	if flags.sessionID != "" {
-		outFile := "screenshot.png"
-		if outFileFlag != "" {
-			outFile = outFileFlag
-		}
-		if len(positional) >= 1 {
-			outFile = positional[0]
-		}
-		runScreenshotSession(flags, outFile)
-		return
-	}
-
-	// One-shot 模式
-	if len(positional) < 1 {
-		fmt.Fprintln(os.Stderr, "dw-browser screenshot: requires <url> or --session <id>")
-		os.Exit(exitRunErr)
-	}
-	url := positional[0]
-	outFile := "screenshot.png"
-	if outFileFlag != "" {
-		outFile = outFileFlag
-	}
-	if len(positional) >= 2 {
-		outFile = positional[1]
-	}
-	profileID := resolveProfileID(flags, fmt.Sprintf("screenshot-%d", time.Now().UnixNano()))
-	browserOpts := browserOptionsFromFlags(flags)
-
-	bc := newBrowserCore(profileID, browserOpts...)
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
-	// Codex #10: 用 exitCode 追踪错误状态，defer 清理后再 os.Exit
-	// 直接 os.Exit 会跳过 defer（僵尸 Chrome），直接 return 则退出码为 0（CI 误判成功）
-	exitCode := exitOK
-	defer func() {
-		bc.Close(ctx)
-		if flags.ephemeral {
-			cleanupEphemeral(profileID)
-		}
-		if exitCode != exitOK {
-			os.Exit(exitCode)
-		}
-	}()
-
-	if _, err := navigateWithRetry(ctx, bc, url); err != nil {
-		fmt.Fprintf(os.Stderr, "dw-browser: navigate failed: %v\n", err)
-		exitCode = exitRunErr
-		return
-	}
-
-	data, err := screenshotWithRetry(ctx, bc, false)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "dw-browser: screenshot failed: %v\n", err)
-		exitCode = exitRunErr
-		return
-	}
-
-	if err := os.WriteFile(outFile, data, 0644); err != nil {
-		fmt.Fprintf(os.Stderr, "dw-browser: write screenshot: %v\n", err)
-		exitCode = exitRunErr
-		return
-	}
-	fmt.Printf("Screenshot saved to %s (%d bytes)\n", outFile, len(data))
-}
-
-// runScreenshotSession 执行 session 模式 screenshot。
-func runScreenshotSession(flags commonFlags, outFile string) {
-	sessionInfo, err := browser.LoadSession(flags.sessionID)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "dw-browser screenshot: %v\n", err)
-		os.Exit(exitRunErr)
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	impl := connectSession(ctx, sessionInfo, "screenshot", flags)
-
-	data, err := impl.Screenshot(ctx, false)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "dw-browser: screenshot failed: %v\n", err)
-		exitSessionCore(impl, exitRunErr)
-	}
-
-	if err := os.WriteFile(outFile, data, 0644); err != nil {
-		fmt.Fprintf(os.Stderr, "dw-browser: write screenshot: %v\n", err)
-		exitSessionCore(impl, exitRunErr)
-	}
-	fmt.Printf("Screenshot saved to %s (%d bytes)\n", outFile, len(data))
-	exitSessionCore(impl, exitOK)
-}
-
-// runLayout 执行 layout 子命令（L2 布局验证）[TC-09-I-20]。
 func runLayout(args []string) {
 	positional, flags := parseCommonFlags(args, "layout")
 	if len(positional) < 1 {
@@ -3793,334 +3222,6 @@ func collectFailureReport(ctx context.Context, bc browser.BrowserCore, testName 
 	out := map[string]interface{}{"failure_report": report}
 	enc, _ := json.MarshalIndent(out, "", "  ")
 	fmt.Fprintln(os.Stderr, string(enc))
-}
-
-// runExplore 执行 explore 子命令 — 为 Claude Code / AI Agent 设计的浏览器状态查询器。
-//
-// 设计意图: AI Agent 在调试 UI 时需要同时看到浏览器状态和服务端状态。
-// explore 将 snap + /api/health + /api/debug/obs/recent 合并为一次调用，
-// 输出结构化 JSON 供 AI 分析决策。AI 决策循环在 Claude Code 层，不在此命令内。
-//
-// 五种模式:
-//
-//	explore <url>                              — 观察: 导航+快照+服务端状态 (one-shot)
-//	explore <url> --act <act>                  — 行动: 导航+操作+快照+服务端状态 (one-shot)
-//	explore <url> --report                     — 诊断: 导航+快照+截图+服务端状态 (one-shot)
-//	explore --session <id>                     — Session 模式: 连接已有 Chrome，快照当前页+服务端状态
-//	explore --session <id> --learn-baseline    — Baseline 学习: 自动探索页面生成候选基线 YAML
-func runExplore(args []string) {
-	positional, flags := parseCommonFlags(args, "explore")
-
-	// 解析 explore 专用 flags（需要在路由判断前，因为 --learn-baseline 影响路由）
-	var learnBaseline bool
-	var learnBaselineOut string
-	var learnBaselineGoal string
-	for i := 0; i < len(args); i++ {
-		switch {
-		case args[i] == "--learn-baseline":
-			learnBaseline = true
-		case args[i] == "--out" && i+1 < len(args):
-			learnBaselineOut = args[i+1]
-		case strings.HasPrefix(args[i], "--out="):
-			learnBaselineOut = args[i][len("--out="):]
-		case args[i] == "--goal" && i+1 < len(args):
-			learnBaselineGoal = args[i+1]
-		case strings.HasPrefix(args[i], "--goal="):
-			learnBaselineGoal = args[i][len("--goal="):]
-		}
-	}
-
-	// Session 模式: --session <id> 存在时连接已有 Chrome，不需要 URL 参数
-	if flags.sessionID != "" {
-		if learnBaseline {
-			runExploreLearnBaseline(flags, learnBaselineOut, learnBaselineGoal)
-			return
-		}
-		runExploreSession(flags)
-		return
-	}
-
-	// One-shot 模式需要 URL 参数
-	if len(positional) < 1 {
-		fmt.Fprintln(os.Stderr, "dw-browser explore: requires <url> or --session <id>")
-		os.Exit(exitRunErr)
-	}
-	url := positional[0]
-
-	// 解析 explore 专用 flags
-	var actAction string
-	var reportMode bool
-	for i := 0; i < len(positional); i++ {
-		if positional[i] == "--act" && i+1 < len(positional) {
-			actAction = positional[i+1]
-			i++
-		}
-		if positional[i] == "--report" {
-			reportMode = true
-		}
-	}
-	// 也从原始 args 解析（positional 可能已过滤）
-	for i := 0; i < len(args); i++ {
-		if args[i] == "--act" && i+1 < len(args) {
-			actAction = args[i+1]
-		}
-		if args[i] == "--report" {
-			reportMode = true
-		}
-	}
-
-	requireChrome()
-	profileID := resolveProfileID(flags, fmt.Sprintf("explore-%d", time.Now().UnixNano()))
-	browserOpts := browserOptionsFromFlags(flags)
-
-	bc := newBrowserCore(profileID, browserOpts...)
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
-	defer func() {
-		bc.Close(ctx)
-		if flags.ephemeral {
-			cleanupEphemeral(profileID)
-		}
-	}()
-
-	// 推断服务端 base URL (scheme://host[:port])
-	baseURL := extractBaseURLFromString(url)
-
-	result := make(map[string]interface{})
-	result["command"] = "explore"
-	result["url"] = url
-
-	// 执行操作（如有）
-	if actAction != "" {
-		snap, err := navigateWithRetry(ctx, bc, url)
-		if err != nil {
-			result["error"] = fmt.Sprintf("navigate: %v", err)
-		} else {
-			actSnap, actErr := actWithRetry(ctx, bc, actAction, true)
-			if actErr != nil {
-				result["error"] = fmt.Sprintf("act: %v", actErr)
-				result["browser"] = snapToMap(snap)
-			} else {
-				result["browser"] = snapToMap(actSnap)
-			}
-			result["action"] = actAction
-		}
-	} else {
-		// 默认: 导航 + 快照
-		snap, err := navigateWithRetry(ctx, bc, url)
-		if err != nil {
-			result["error"] = fmt.Sprintf("navigate: %v", err)
-		} else {
-			result["browser"] = snapToMap(snap)
-		}
-	}
-
-	// 全量诊断（--report）
-	if reportMode {
-		shotFile := fmt.Sprintf("/tmp/dw-explore-report-%s.png", time.Now().Format("20060102-150405"))
-		shotData, err := screenshotWithRetry(ctx, bc, false)
-		if err == nil {
-			os.WriteFile(shotFile, shotData, 0644)
-			result["screenshot"] = shotFile
-		}
-	}
-
-	// 服务端状态（始终附加）
-	result["server"] = fetchServerState(baseURL)
-
-	enc, _ := json.MarshalIndent(result, "", "  ")
-	fmt.Println(string(enc))
-}
-
-// runExploreSession 执行 session 模式 explore — 连接已有 Chrome 快照当前页 + 服务端状态。
-//
-// 与 one-shot explore 不同: 不创建新 Chrome，不导航，直接连接 session 中的已有 Chrome。
-// session.PageURL 用于推断服务端 base URL（无需用户额外传入）。
-func runExploreSession(flags commonFlags) {
-	sessionInfo, err := browser.LoadSession(flags.sessionID)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "dw-browser explore: %v\n", err)
-		os.Exit(exitRunErr)
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	impl := connectSession(ctx, sessionInfo, "explore", flags)
-
-	// 从当前页面获取快照（不导航）
-	sessionInfo.SnapEpoch++
-	snap, err := impl.SnapWithSessionMode(ctx, sessionInfo.SnapEpoch)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "dw-browser explore: snap failed: %v\n", err)
-		exitSessionCore(impl, exitRunErr)
-	}
-
-	// 更新 session ref 表
-	sessionRefs := make([]browser.SessionRef, 0, len(snap.Refs))
-	for _, ref := range snap.Refs {
-		sessionRefs = append(sessionRefs, browser.SessionRef{
-			Ref:           ref.Ref,
-			BackendNodeID: ref.BackendNodeID,
-			Role:          ref.Role,
-			Name:          ref.NameFull,
-			TestID:        ref.TestID,
-			Placeholder:   ref.Placeholder,
-		})
-	}
-	sessionInfo.Refs = sessionRefs
-	sessionInfo.PageURL = snap.URL
-	_ = browser.SaveSession(sessionInfo)
-
-	// 从 session 页面 URL 推断服务端 base URL
-	baseURL := extractBaseURLFromString(snap.URL)
-
-	result := map[string]interface{}{
-		"command":    "explore",
-		"session_id": sessionInfo.SessionID,
-		"url":        snap.URL,
-		"browser":    snapToMap(snap),
-		"server":     fetchServerState(baseURL),
-	}
-
-	enc, _ := json.MarshalIndent(result, "", "  ")
-	fmt.Println(string(enc))
-	closeSessionCore(impl)
-}
-
-// runExploreLearnBaseline 执行 --learn-baseline 模式：
-// 连接已有 session，自动探索页面，生成候选基线 YAML。
-//
-// dw-browser explore --session <id> --learn-baseline [--out candidate.yaml] [--goal "描述"]
-func runExploreLearnBaseline(flags commonFlags, outFile, goal string) {
-	sessionInfo, err := browser.LoadSession(flags.sessionID)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "dw-browser explore --learn-baseline: %v\n", err)
-		os.Exit(exitRunErr)
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
-	defer cancel()
-
-	impl := connectSession(ctx, sessionInfo, "explore", flags)
-	defer closeSessionCore(impl)
-	impl.RestoreRefsFromSession(sessionInfo.Refs)
-
-	executor := &cliActionExecutor{
-		sessionID:   flags.sessionID,
-		sessionInfo: sessionInfo,
-		impl:        impl,
-		ctx:         ctx,
-	}
-
-	explorer := btest.NewExplorer(executor)
-
-	if goal == "" {
-		goal = "explore baseline for " + sessionInfo.PageURL
-	}
-
-	cb, err := explorer.LearnBaseline(ctx, goal)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "dw-browser explore --learn-baseline: %v\n", err)
-		os.Exit(exitRunErr)
-	}
-
-	if outFile == "" {
-		outFile = fmt.Sprintf("candidate-%s.yaml", cb.ID)
-	}
-
-	if err := btest.SaveCandidate(cb, outFile); err != nil {
-		fmt.Fprintf(os.Stderr, "dw-browser explore --learn-baseline: save: %v\n", err)
-		os.Exit(exitRunErr)
-	}
-
-	// 输出摘要到 stdout
-	summary := map[string]interface{}{
-		"command":       "explore --learn-baseline",
-		"session_id":    flags.sessionID,
-		"url":           cb.URL,
-		"candidate_id":  cb.ID,
-		"out":           outFile,
-		"regions":       len(cb.Regions),
-		"invariants":    len(cb.Invariants),
-		"actions_tried": cb.Metadata.ActionsTried,
-		"duration":      cb.Metadata.Duration,
-		"review_status": cb.ReviewStatus,
-		"note":          "review_status=candidate: requires Human review before use as baseline",
-	}
-	enc, _ := json.MarshalIndent(summary, "", "  ")
-	fmt.Println(string(enc))
-	os.Exit(exitOK)
-}
-
-// extractBaseURLFromString 从完整 URL 字符串提取 scheme://host[:port]，用于服务端 API 调用。
-func extractBaseURLFromString(rawURL string) string {
-	if after := strings.TrimPrefix(rawURL, "http://"); after != rawURL {
-		if idx := strings.Index(after, "/"); idx > 0 {
-			return "http://" + after[:idx]
-		}
-		return "http://" + after
-	}
-	if after := strings.TrimPrefix(rawURL, "https://"); after != rawURL {
-		if idx := strings.Index(after, "/"); idx > 0 {
-			return "https://" + after[:idx]
-		}
-		return "https://" + after
-	}
-	return rawURL
-}
-
-// fetchServerState 拉取服务端健康状态和近期错误，返回统一格式 map。
-func fetchServerState(baseURL string) map[string]interface{} {
-	serverState := make(map[string]interface{})
-	const serverTimeout = 2 * time.Second
-
-	healthResp := fetchJSONWithTimeout(baseURL+"/api/health", serverTimeout)
-	if healthResp != nil {
-		var h interface{}
-		json.Unmarshal(healthResp, &h)
-		serverState["health"] = h
-	} else {
-		serverState["health"] = map[string]string{"error": "unreachable"}
-	}
-
-	recentResp := fetchJSONWithTimeout(baseURL+"/api/debug/obs/recent?limit=10&since=30s", serverTimeout)
-	if recentResp != nil {
-		var r interface{}
-		json.Unmarshal(recentResp, &r)
-		serverState["recent_errors"] = r
-	} else {
-		serverState["recent_errors"] = map[string]string{"error": "unreachable"}
-	}
-	return serverState
-}
-
-// snapToMap 将 Snapshot 转为 map（用于 JSON 输出）。
-func snapToMap(snap *browser.Snapshot) map[string]interface{} {
-	if snap == nil {
-		return map[string]interface{}{"error": "no snapshot"}
-	}
-	refs := make([]map[string]interface{}, 0, len(snap.Refs))
-	for _, ref := range snap.Refs {
-		r := map[string]interface{}{
-			"ref":  ref.Ref,
-			"role": ref.Role,
-			"name": ref.Name,
-		}
-		if ref.Placeholder != "" {
-			r["placeholder"] = ref.Placeholder
-		}
-		if ref.RecommendedLocator != "" {
-			r["locator"] = ref.RecommendedLocator
-		}
-		refs = append(refs, r)
-	}
-	return map[string]interface{}{
-		"url":        snap.URL,
-		"title":      snap.PageTitle,
-		"refs_count": len(snap.Refs),
-		"refs":       refs,
-	}
 }
 
 // TestSpec 测试规格 (YAML/JSON)。

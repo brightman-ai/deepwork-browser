@@ -166,6 +166,15 @@ func TestParseAction_ValidSyntax(t *testing.T) {
 		{"click e3", "click", "e3", ""},
 		{"clickat #browser-liveview 92% 8%", "clickat", "#browser-liveview", ""},
 		{"clickat #browser-takeover-layer 0.5 0.5", "clickat", "#browser-takeover-layer", ""},
+		{"dblclickat css=#cell 30% 40%", "dblclickat", "css=#cell", ""},
+		{"rclickat css=#chart 30% 40%", "rclickat", "css=#chart", ""},
+		{"hoverat #chart 50% 40%", "hoverat", "#chart", ""},
+		{"hoverat #chart 0.5 0.4", "hoverat", "#chart", ""},
+		{"dragat #chart 20% 50% 80% 50%", "dragat", "#chart", ""},
+		{"dragat #chart 0.2 0.5 0.8 0.5", "dragat", "#chart", ""},
+		{"swipeat css=#chart 80% 50% 20% 50%", "swipeat", "css=#chart", ""},
+		{"wheelat css=#chart 50% 50% -240", "wheelat", "css=#chart", ""},
+		{"wheelat css=#chart 50% 50% 120 -30", "wheelat", "css=#chart", ""},
 		{"tap button:'接管'", "tap", "button:'接管'", ""},
 		{"tapat #browser-liveview 92% 8%", "tapat", "#browser-liveview", ""},
 		{"type e5 'hello'", "type", "e5", "hello"},
@@ -194,13 +203,93 @@ func TestParseAction_ValidSyntax(t *testing.T) {
 			if parsed.Value != tc.wantVal {
 				t.Errorf("Value: got %q, want %q", parsed.Value, tc.wantVal)
 			}
-			if tc.wantOp == "clickat" || tc.wantOp == "tapat" {
+			coordOps := map[string]bool{
+				"clickat": true, "dblclickat": true, "rclickat": true, "hoverat": true,
+				"dragat": true, "wheelat": true, "tapat": true, "swipeat": true,
+			}
+			if coordOps[tc.wantOp] {
 				if parsed.CoordX < 0 || parsed.CoordX > 1 || parsed.CoordY < 0 || parsed.CoordY > 1 {
 					t.Errorf("%s coordinates should be normalized, got x=%f y=%f", tc.wantOp, parsed.CoordX, parsed.CoordY)
 				}
 			}
+			if tc.wantOp == "dragat" || tc.wantOp == "swipeat" {
+				if parsed.CoordX2 < 0 || parsed.CoordX2 > 1 || parsed.CoordY2 < 0 || parsed.CoordY2 > 1 {
+					t.Errorf("%s endpoint should be normalized, got x2=%f y2=%f", tc.wantOp, parsed.CoordX2, parsed.CoordY2)
+				}
+			}
 		})
 	}
+}
+
+// TC-09-U-05b: canvas 坐标动作（hoverat/dragat）的坐标解析为精确归一值。
+// 回归: dw-browser 早期只能 DOM 寻址，echarts canvas 命中需真实坐标指针事件。
+func TestParseAction_CanvasCoordinateActions(t *testing.T) {
+	t.Run("hoverat", func(t *testing.T) {
+		parsed, err := ParseAction("hoverat #chart 50% 40%")
+		if err != nil {
+			t.Fatalf("ParseAction hoverat returned error: %v", err)
+		}
+		if parsed.Op != "hoverat" || parsed.Ref != "#chart" {
+			t.Fatalf("hoverat: got op=%q ref=%q", parsed.Op, parsed.Ref)
+		}
+		if parsed.CoordX != 0.5 || parsed.CoordY != 0.4 {
+			t.Errorf("hoverat coords: got x=%v y=%v, want 0.5 0.4", parsed.CoordX, parsed.CoordY)
+		}
+	})
+
+	t.Run("dragat", func(t *testing.T) {
+		parsed, err := ParseAction("dragat #chart 20% 50% 80% 50%")
+		if err != nil {
+			t.Fatalf("ParseAction dragat returned error: %v", err)
+		}
+		if parsed.Op != "dragat" || parsed.Ref != "#chart" {
+			t.Fatalf("dragat: got op=%q ref=%q", parsed.Op, parsed.Ref)
+		}
+		if parsed.CoordX != 0.2 || parsed.CoordY != 0.5 {
+			t.Errorf("dragat start: got x=%v y=%v, want 0.2 0.5", parsed.CoordX, parsed.CoordY)
+		}
+		if parsed.CoordX2 != 0.8 || parsed.CoordY2 != 0.5 {
+			t.Errorf("dragat end: got x2=%v y2=%v, want 0.8 0.5", parsed.CoordX2, parsed.CoordY2)
+		}
+	})
+
+	t.Run("wheelat_deltaY_only", func(t *testing.T) {
+		parsed, err := ParseAction("wheelat css=#chart 50% 50% -240")
+		if err != nil {
+			t.Fatalf("ParseAction wheelat returned error: %v", err)
+		}
+		if parsed.Op != "wheelat" || parsed.Ref != "css=#chart" {
+			t.Fatalf("wheelat: got op=%q ref=%q", parsed.Op, parsed.Ref)
+		}
+		if parsed.CoordX != 0.5 || parsed.CoordY != 0.5 {
+			t.Errorf("wheelat coords: got x=%v y=%v, want 0.5 0.5", parsed.CoordX, parsed.CoordY)
+		}
+		if parsed.DeltaY != -240 || parsed.DeltaX != 0 {
+			t.Errorf("wheelat deltas: got dx=%v dy=%v, want 0 -240", parsed.DeltaX, parsed.DeltaY)
+		}
+	})
+
+	t.Run("wheelat_both_deltas", func(t *testing.T) {
+		parsed, err := ParseAction("wheelat css=#chart 50% 50% 120 -30")
+		if err != nil {
+			t.Fatalf("ParseAction wheelat returned error: %v", err)
+		}
+		if parsed.DeltaY != 120 || parsed.DeltaX != -30 {
+			t.Errorf("wheelat deltas: got dx=%v dy=%v, want -30 120", parsed.DeltaX, parsed.DeltaY)
+		}
+	})
+
+	t.Run("dblclick_rclick_swipe_ops", func(t *testing.T) {
+		for _, in := range []string{
+			"dblclickat css=#cell 30% 40%",
+			"rclickat css=#chart 30% 40%",
+			"swipeat css=#chart 80% 50% 20% 50%",
+		} {
+			if _, err := ParseAction(in); err != nil {
+				t.Errorf("ParseAction(%q) returned error: %v", in, err)
+			}
+		}
+	})
 }
 
 // TC-09-U-06: 非法语法返回 ErrActFailed，不 panic。
@@ -212,6 +301,16 @@ func TestParseAction_InvalidSyntax_ReturnsErrActFailed(t *testing.T) {
 		"click",                           // missing ref
 		"clickat #browser-liveview 92%",   // missing y
 		"clickat #browser-liveview 92 8%", // invalid x format
+		"hoverat #chart 50%",              // missing y
+		"hoverat #chart 50 40%",           // invalid x format
+		"dblclickat #chart 50%",           // missing y
+		"rclickat #chart",                 // missing x y
+		"dragat #chart 20% 50% 80%",       // missing y2
+		"dragat #chart 20% 50%",           // missing endpoint entirely
+		"dragat #chart 20 50 80 50",       // invalid (bare numbers >1)
+		"swipeat #chart 20% 50% 80%",      // missing y2
+		"wheelat #chart 50% 50%",          // missing deltaY
+		"wheelat #chart 50% 50% abc",      // invalid deltaY
 		"tap",                             // missing ref
 		"tapat #browser-liveview 92%",     // missing y
 		"tapat #browser-liveview 92 8%",   // invalid x format
