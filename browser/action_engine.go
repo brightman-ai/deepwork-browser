@@ -1774,9 +1774,126 @@ func (e *actionEngine) executePress(ctx context.Context, ref string, key string)
 		}
 	}
 
-	// Map key name to chromedp SendKeys string
+	// Modifier combos (Ctrl+B, Shift+Enter, Control+Shift+1, ...) must be
+	// dispatched as a real CDP keyDown/keyUp pair carrying the Modifiers
+	// bitmask. chromedp.KeyEvent encodes Selenium-style PUA modifier runes
+	// ( ...) as *unknown printable chars* — Chrome inserts them as text
+	// and never sets ctrlKey/metaKey, so "press Control+b" used to insert a
+	// literal 'b'. We bypass that path entirely for combos.
+	if mods, baseKey, hasMod := parseKeyCombo(key); hasMod {
+		return dispatchModifierCombo(ctx, mods, baseKey)
+	}
+
+	// Map key name to chromedp SendKeys string (single key / plain text path —
+	// behavior unchanged).
 	keyStr := mapKeyName(key)
 	return chromedp.Run(ctx, chromedp.KeyEvent(keyStr))
+}
+
+// parseKeyCombo 解析含修饰符的按键串（如 "Control+b", "Ctrl+Shift+1"）。
+// 返回 CDP Modifiers 位掩码（Alt=1/Ctrl=2/Meta=4/Shift=8）、基础键名、是否含修饰符。
+// 不含 '+' 的单键返回 hasMod=false（走原有 chromedp.KeyEvent 路径，行为不变）。
+func parseKeyCombo(key string) (mods input.Modifier, baseKey string, hasMod bool) {
+	parts := strings.Split(key, "+")
+	if len(parts) < 2 {
+		return 0, "", false
+	}
+	baseKey = canonicalKeyName(parts[len(parts)-1])
+	for _, mod := range parts[:len(parts)-1] {
+		switch strings.ToLower(strings.TrimSpace(mod)) {
+		case "ctrl", "control":
+			mods |= input.ModifierCtrl // 2
+		case "shift":
+			mods |= input.ModifierShift // 8
+		case "alt", "option":
+			mods |= input.ModifierAlt // 1
+		case "meta", "cmd", "command", "win", "super":
+			mods |= input.ModifierMeta // 4
+		default:
+			// Unknown token before the last '+' — not a recognized modifier.
+			// Treat the whole string as a non-combo to avoid silently dropping it.
+			return 0, "", false
+		}
+	}
+	return mods, baseKey, true
+}
+
+// dispatchModifierCombo 派发一个修饰键和弦：keyDown(带 Modifiers + key/code/vk) → keyUp。
+// 关键：组合键不发 keyChar/Text 事件，因此 Ctrl+B 不会向输入框插入字符。
+func dispatchModifierCombo(ctx context.Context, mods input.Modifier, baseKey string) error {
+	keyName := keyEventKeyName(baseKey)
+	code := codeForKey(baseKey)
+	vk := getVirtualKeyCode(keyName)
+
+	return chromedp.Run(ctx, chromedp.ActionFunc(func(ctx context.Context) error {
+		down := input.DispatchKeyEvent(input.KeyDown).
+			WithModifiers(mods).
+			WithKey(keyName).
+			WithCode(code)
+		up := input.DispatchKeyEvent(input.KeyUp).
+			WithModifiers(mods).
+			WithKey(keyName).
+			WithCode(code)
+		if vk != 0 {
+			down = down.WithWindowsVirtualKeyCode(int64(vk)).WithNativeVirtualKeyCode(int64(vk))
+			up = up.WithWindowsVirtualKeyCode(int64(vk)).WithNativeVirtualKeyCode(int64(vk))
+		}
+		if err := down.Do(ctx); err != nil {
+			return fmt.Errorf("%w: dispatch keyDown %q: %v", ErrActFailed, keyName, err)
+		}
+		return up.Do(ctx)
+	}))
+}
+
+// keyEventKeyName 返回 CDP keyDown 的 `key` 字段值（KeyboardEvent.key）。
+// 特殊键用 canonical 名（Enter/Escape/ArrowUp/F5...）；单字母统一用小写
+// （CDP 的 key 字段为不带 shift 的字符值，shift 由 Modifiers 表达）。
+func keyEventKeyName(baseKey string) string {
+	switch baseKey {
+	case "Enter", "Tab", "Escape", "Backspace", "Delete",
+		"ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight",
+		"Home", "End", "PageUp", "PageDown":
+		return baseKey
+	}
+	if len(baseKey) >= 2 && (baseKey[0] == 'F' || baseKey[0] == 'f') {
+		if _, isFn := keyVirtualCodeMap[strings.ToUpper(baseKey)]; isFn {
+			return strings.ToUpper(baseKey)
+		}
+	}
+	if len(baseKey) == 1 {
+		r := baseKey[0]
+		if r >= 'A' && r <= 'Z' {
+			return strings.ToLower(baseKey)
+		}
+	}
+	return baseKey
+}
+
+// codeForKey 返回 CDP keyDown 的 `code` 字段值（KeyboardEvent.code，物理键位）。
+func codeForKey(baseKey string) string {
+	switch baseKey {
+	case "Enter", "Tab", "Escape", "Backspace", "Delete",
+		"ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight",
+		"Home", "End", "PageUp", "PageDown":
+		return baseKey
+	}
+	if len(baseKey) >= 2 && (baseKey[0] == 'F' || baseKey[0] == 'f') {
+		if _, isFn := keyVirtualCodeMap[strings.ToUpper(baseKey)]; isFn {
+			return strings.ToUpper(baseKey)
+		}
+	}
+	if len(baseKey) == 1 {
+		c := baseKey[0]
+		switch {
+		case c >= 'a' && c <= 'z':
+			return "Key" + strings.ToUpper(baseKey)
+		case c >= 'A' && c <= 'Z':
+			return "Key" + baseKey
+		case c >= '0' && c <= '9':
+			return "Digit" + baseKey
+		}
+	}
+	return baseKey
 }
 
 // mapKeyName 将按键名称（如 "Enter", "Ctrl+A"）映射到 chromedp 可用的按键字符串。
