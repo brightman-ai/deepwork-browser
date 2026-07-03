@@ -136,15 +136,10 @@ func parseLLMFlags(args []string) (llmFlags, []string) {
 }
 
 // visionEnabled 判断是否应启用 VisionOracle。
-// 检测：DW_BROWSER_VISION_URL 或 DW_BROWSER_VISION_PROVIDER 已设置，或 usingRaw 含 "visual"。
-// parseLLMFlags 已把 --vision-* CLI flags 写入环境变量，所以这里只需检测 env。
+// ROOT-C: DW_BROWSER_VISION_* env 只是端点 CONFIG（在哪调用），不是激活信号。
+// 激活只来自显式 opt-in——usingRaw 含 "visual"，env 绝不隐式激活，故一次
+// deterministic 运行不会静默调用 LLM oracle。端点由 NewVisionOracle 自行读 env。
 func visionEnabled(usingRaw string) bool {
-	if os.Getenv("DW_BROWSER_VISION_URL") != "" {
-		return true
-	}
-	if os.Getenv("DW_BROWSER_VISION_PROVIDER") != "" {
-		return true
-	}
 	for _, u := range strings.Split(usingRaw, ",") {
 		if strings.TrimSpace(u) == "visual" {
 			return true
@@ -207,6 +202,54 @@ func isNLGoal(action string) bool {
 		return false
 	}
 	return len(lower) > 0
+}
+
+// specHasNLGoal reports whether any journey/recovery step carries a free-form
+// natural-language goal that needs the LLM planner. It reuses isNLGoal — the
+// same step-type judgement used at execution time — so the classification is
+// single-sourced. Activation is spec-driven (ROOT-C: env is CONFIG, not a
+// trigger), so a purely structural spec never spins up the planner.
+func specHasNLGoal(spec *btest.JourneySpec) bool {
+	if spec == nil {
+		return false
+	}
+	for _, steps := range [][]btest.StepSpec{spec.Journey, spec.Recovery} {
+		for _, s := range steps {
+			if isNLGoal(s.Do) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// specHasVisualUsing reports whether any assertion in the spec opts into the
+// visual oracle via using:[visual]. Only explicit per-assertion opt-in counts.
+func specHasVisualUsing(spec *btest.JourneySpec) bool {
+	if spec == nil {
+		return false
+	}
+	stepsHaveVisual := func(steps []btest.StepSpec) bool {
+		for _, s := range steps {
+			for _, a := range s.Check {
+				if cliUsingContainsVisual(a.Using) {
+					return true
+				}
+			}
+		}
+		return false
+	}
+	if stepsHaveVisual(spec.Journey) || stepsHaveVisual(spec.Recovery) {
+		return true
+	}
+	if spec.Baseline != nil {
+		for _, a := range spec.Baseline.Invariants {
+			if cliUsingContainsVisual(a.Using) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // containsHelp returns true if args contains --help or -h.
@@ -679,6 +722,31 @@ func runCheck(args []string) {
 
 	_, flags := parseCommonFlags(clean, "check")
 
+	// Tokenize --using once for consistent visual detection (substring matching
+	// would false-match values like "nonvisual"/"previsual").
+	var usingSlice []string
+	if usingRaw != "" {
+		for _, p := range strings.Split(usingRaw, ",") {
+			usingSlice = append(usingSlice, strings.TrimSpace(p))
+		}
+	}
+
+	// Deterministic hard-lock honors BOTH the CLI flag and the attached session's
+	// persisted Policy.Deterministic (a baseline session locks determinism once at
+	// open). Under deterministic, --using visual is a HARD reject — the vision
+	// oracle is never activated, so a reproducible check can't silently invoke the
+	// internal LLM.
+	deterministic := flags.deterministic
+	if flags.sessionID != "" {
+		if si, err := browser.LoadSession(flags.sessionID); err == nil && si.Policy.Deterministic {
+			deterministic = true
+		}
+	}
+	if deterministic && cliUsingContainsVisual(usingSlice) {
+		fmt.Fprintln(os.Stderr, "dw-browser check: deterministic mode: internal LLM disabled — --using visual rejected (drop --deterministic / session Policy.Deterministic to enable the vision oracle)")
+		os.Exit(exitRunErr)
+	}
+
 	// 1. 获取 Observation
 	var obs *btest.Observation
 	if obsFile != "" {
@@ -697,7 +765,11 @@ func runCheck(args []string) {
 	}
 
 	engine := btest.AssertionEngine{}
-	if visionEnabled(usingRaw) || strings.Contains(strings.ToLower(usingRaw), "visual") {
+	// ROOT-C fix: DW_BROWSER_VISION_* env is CONFIG (where the endpoint is), NOT activation.
+	// Vision activates only on explicit per-call opt-in (--using visual), never from ambient
+	// env, so a deterministic `check` can never silently invoke the LLM oracle. The
+	// !deterministic guard is belt-and-suspenders — deterministic + visual already exited above.
+	if !deterministic && cliUsingContainsVisual(usingSlice) {
 		engine.Vision = btest.NewVisionOracle()
 	}
 	hasFail := false
@@ -719,16 +791,8 @@ func runCheck(args []string) {
 		}
 		writeJSONOrStdout(results, outFile, "check")
 	} else if assertExpr != "" {
-		// 单条断言：解析 --using 并传入，支持 visual oracle
-		var usingSlice []string
-		if usingRaw != "" {
-			parts := strings.Split(usingRaw, ",")
-			usingSlice = make([]string, 0, len(parts))
-			for _, p := range parts {
-				usingSlice = append(usingSlice, strings.TrimSpace(p))
-			}
-		}
-		if engine.Vision == nil && cliUsingContainsVisual(usingSlice) {
+		// 单条断言：--using 已在上方 tokenize，直接复用
+		if !deterministic && engine.Vision == nil && cliUsingContainsVisual(usingSlice) {
 			engine.Vision = btest.NewVisionOracle()
 		}
 		result := engine.EvaluateWithUsing(obs, assertExpr, usingSlice)
@@ -891,9 +955,30 @@ func runJourney(args []string) {
 	}
 
 	// 决定 session：spec 需要 session（通过 --id 提供）或新建 ephemeral session
-	// Build planner once — shared across executor calls. nil when LLM not configured.
+	//
+	// 内部 LLM 激活由 *spec 内容* + 非 deterministic 决定，而非 ambient env
+	// （ROOT-C: env 是端点 CONFIG，不是激活信号）。--deterministic 对需要 LLM 的
+	// spec 硬拒并显式报错，而非静默跳过。
+	//
+	// deterministic 同时认 CLI flag 与 *附着 session 的持久 Policy.Deterministic*：
+	// 一次 baseline session 在 open 时锁定确定性，journey 复用它时硬锁必须仍然生效。
+	deterministic := flags.deterministic
+	if flags.sessionID != "" {
+		if si, err := browser.LoadSession(flags.sessionID); err == nil && si.Policy.Deterministic {
+			deterministic = true
+		}
+	}
+	specNeedsPlanner := specHasNLGoal(spec)
+	specNeedsVision := specHasVisualUsing(spec)
+	if deterministic && (specNeedsPlanner || specNeedsVision) {
+		fmt.Fprintln(os.Stderr, "dw-browser journey: deterministic mode: internal LLM disabled but spec requires NL planner / visual oracle")
+		os.Exit(exitRunErr)
+	}
+	// Build planner once — shared across executor calls (both executors reject NL
+	// goals when this is nil). nil unless the spec has NL goal steps and
+	// determinism is off — so under deterministic the executors' planner is nil too.
 	var journeyPlanner *btest.Planner
-	if os.Getenv("DW_BROWSER_LLM_URL") != "" {
+	if !deterministic && specNeedsPlanner {
 		journeyPlanner = btest.NewPlanner()
 	}
 
@@ -954,10 +1039,17 @@ func runJourney(args []string) {
 		}
 
 		// 导航到入口 URL
-		if _, navErr := bc.Navigate(ctx, entryURL); navErr != nil {
+		navSnap, navErr := bc.Navigate(ctx, entryURL)
+		if navErr != nil {
 			fmt.Fprintf(os.Stderr, "dw-browser journey: navigate to %s: %v\n", entryURL, navErr)
 			os.Exit(exitRunErr)
 		}
+		// 进程内 open→act 路径：以 flags 构建远程写策略（无持久 session，故用 flags）。
+		navURL := entryURL
+		if navSnap != nil && navSnap.URL != "" {
+			navURL = navSnap.URL
+		}
+		bc.SetPolicy(sessionPolicyFromFlags(flags, "journey"), navURL)
 
 		executor = &oneshotActionExecutor{impl: bc, ctx: ctx, telemetry: journeyTelemetry, planner: journeyPlanner}
 	} else {
@@ -970,7 +1062,10 @@ func runJourney(args []string) {
 		fmt.Fprintf(os.Stderr, "dw-browser journey: create runner: %v\n", err)
 		os.Exit(exitRunErr)
 	}
-	if visionEnabled("") {
+	// Vision oracle activates only when the spec explicitly opts in (using:[visual])
+	// and determinism is off (CLI flag OR persisted session policy). Deterministic +
+	// visual specs already errored above.
+	if !deterministic && specNeedsVision {
 		runner.SetVision(btest.NewVisionOracle())
 	}
 
@@ -1030,8 +1125,13 @@ func (e *cliActionExecutor) Execute(ctx context.Context, action string) error {
 		return nil
 	}
 
-	// NL goal — route through LLM planner when configured.
-	if isNLGoal(trimmed) && e.planner != nil {
+	// NL goal — route through LLM planner when configured. In deterministic /
+	// llm-off mode the planner is nil; reject explicitly rather than silently
+	// feeding a natural-language goal to the structural action engine.
+	if isNLGoal(trimmed) {
+		if e.planner == nil {
+			return fmt.Errorf("deterministic/llm-off: NL goal %q rejected, use structural action", trimmed)
+		}
 		return e.executeNLGoal(ctx, trimmed)
 	}
 
@@ -1148,8 +1248,13 @@ func (e *oneshotActionExecutor) Execute(ctx context.Context, action string) erro
 		return nil
 	}
 
-	// NL goal — route through LLM planner when configured.
-	if isNLGoal(trimmed) && e.planner != nil {
+	// NL goal — route through LLM planner when configured. In deterministic /
+	// llm-off mode the planner is nil; reject explicitly rather than silently
+	// feeding a natural-language goal to the structural action engine.
+	if isNLGoal(trimmed) {
+		if e.planner == nil {
+			return fmt.Errorf("deterministic/llm-off: NL goal %q rejected, use structural action", trimmed)
+		}
 		return e.executeNLGoal(ctx, trimmed)
 	}
 

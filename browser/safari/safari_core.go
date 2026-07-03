@@ -50,6 +50,24 @@ type SafariBrowserCore struct {
 	// session ref 存储
 	refs      map[string]browser.ElementRef // ref string → ElementRef
 	snapEpoch int
+
+	// policyMu 独立保护 policy/lastURL（镜像 Chrome 的 policyMu）：不复用 c.mu，
+	// 避免与持有 c.mu 的路径 self-deadlock，以及 per-act 门控对 c.mu 的序列化。
+	policyMu sync.RWMutex
+	// policy 是 per-session 的安全策略（远程写门控）；lastURL 供 per-act origin
+	// 分类。分类逻辑单源于 browser package 的 policy SSOT。
+	policy  browser.SessionPolicy
+	lastURL string
+}
+
+// SetPolicy 设置本 session 的安全策略并（若非空）刷新 origin 分类用的 current URL。
+func (c *SafariBrowserCore) SetPolicy(p browser.SessionPolicy, currentURL string) {
+	c.policyMu.Lock()
+	defer c.policyMu.Unlock()
+	c.policy = p
+	if currentURL != "" {
+		c.lastURL = currentURL
+	}
 }
 
 // NewSafariBrowserCore 创建 SafariBrowserCore。
@@ -133,10 +151,21 @@ func (c *SafariBrowserCore) Navigate(ctx context.Context, url string) (*browser.
 	time.Sleep(wdSettleAfterAction)
 	snap, err := c.snap(ctx, false)
 	if err == nil {
+		// 更新 lastURL，保持后续 act 的 origin 分类新鲜（policy 门控依赖）。
+		if snap != nil && snap.URL != "" {
+			c.policyMu.Lock()
+			c.lastURL = snap.URL
+			c.policyMu.Unlock()
+		}
 		return snap, nil
 	}
 	pageURL, _ := c.wdc.CurrentURL(ctx)
 	pageTitle, _ := c.wdc.Title(ctx)
+	if pageURL != "" {
+		c.policyMu.Lock()
+		c.lastURL = pageURL
+		c.policyMu.Unlock()
+	}
 	return &browser.Snapshot{
 		PageTitle:    pageTitle,
 		URL:          pageURL,
@@ -367,6 +396,29 @@ func (c *SafariBrowserCore) executeAction(ctx context.Context, action string) er
 		return fmt.Errorf("%w: empty action", browser.ErrActFailed)
 	}
 	op := strings.ToLower(parts[0])
+
+	// 远程写门控：分类逻辑单源于 browser policy SSOT。用 dedicated policyMu（非 c.mu）
+	// 读 policy/lastURL，避免序列化 / 与持有 c.mu 的路径 self-deadlock。
+	// 防 fail-open：mutating 时取 *实时* URL（WebDriver /url），页面自导航到远程站也
+	// 能被捕获；取不到才回退 lastURL；两者皆空 → origin "" → 保守阻断。
+	c.policyMu.RLock()
+	pol := c.policy
+	lastURL := c.lastURL
+	c.policyMu.RUnlock()
+	if browser.IsMutatingOp(op) {
+		curURL := lastURL
+		if c.wdc != nil {
+			if live, err := c.wdc.CurrentURL(ctx); err == nil && strings.TrimSpace(live) != "" {
+				curURL = strings.TrimSpace(live)
+				c.policyMu.Lock()
+				c.lastURL = curURL
+				c.policyMu.Unlock()
+			}
+		}
+		if d := pol.EvaluateAct(op, browser.URLOrigin(curURL)); !d.Allowed {
+			return fmt.Errorf("dw-browser: %s", d.Reason)
+		}
+	}
 
 	switch op {
 	case "click":

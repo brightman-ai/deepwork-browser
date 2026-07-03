@@ -60,6 +60,11 @@ type SessionInfo struct {
 	Engine     BrowserEngine `json:"engine,omitempty"`      // 空值 = chrome（向后兼容）
 	DeviceUDID string        `json:"device_udid,omitempty"` // Safari Simulator UDID
 	DeviceName string        `json:"device_name,omitempty"` // Safari 设备名
+
+	// Policy is the domain-neutral safety/determinism policy (remote-write
+	// gating + LLM determinism) declared at open and enforced per-act. See
+	// policy.go. Zero value normalizes to the safe default (deny remote writes).
+	Policy SessionPolicy `json:"policy,omitempty"`
 }
 
 // SessionRef セッション内の要素 ref エントリ。

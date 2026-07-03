@@ -234,6 +234,10 @@ func NormalizeSessionInfo(info *SessionInfo) {
 		info.Mode = defaults.Mode
 	}
 	info.Mode = NormalizeBrowserMode(info.Mode, defaults.Mode)
+	// Backfill safe default policy for sessions written by older builds.
+	if info.Policy.RemoteWrites == "" {
+		info.Policy.RemoteWrites = RemoteWriteDeny
+	}
 	if info.ProfileID == "" && info.ProfileDir != "" {
 		parts := strings.Split(strings.TrimRight(info.ProfileDir, "/"), "/")
 		info.ProfileID = parts[len(parts)-1]

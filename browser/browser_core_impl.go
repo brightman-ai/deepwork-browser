@@ -333,6 +333,83 @@ type browserCoreImpl struct {
 	virtualDisplay     *VirtualDisplayManager
 	workspace          Workspace
 	ownerIdentityKey   IdentityKey
+
+	// policyMu 独立保护 policy/lastURL，与 mu 解耦：Navigate 在持有 mu.RLock
+	// 期间也需刷新 lastURL，若复用 mu 会触发 RWMutex 不可重入的写锁死锁。
+	policyMu sync.RWMutex
+	// policy 是 per-session 的安全/确定性策略（远程写门控）。零值 == deny。
+	// lastURL 追踪 top-level URL，供 per-act origin 分类（EvaluateAct）。
+	policy  SessionPolicy
+	lastURL string
+}
+
+// SetPolicy 设置本 session 的安全策略，并（若给定）刷新用于 origin 分类的
+// current URL。connectSession 在 attach 时以 sessionInfo.PageURL 调用，
+// Navigate 成功后也会更新 lastURL 以保持进程内多 act 的 origin 新鲜。
+func (impl *browserCoreImpl) SetPolicy(p SessionPolicy, currentURL string) {
+	impl.policyMu.Lock()
+	defer impl.policyMu.Unlock()
+	impl.policy = p
+	if currentURL != "" {
+		impl.lastURL = currentURL
+	}
+}
+
+// checkActPolicy 在执行前对单个 action 做远程写门控。它是 policy.go SSOT 的唯一
+// 强制点：解析 op → 用当前 top-level origin 评估。解析失败时返回 nil，交由执行器
+// 报原生错误。takeover-forwarded act 早在 Act/ActWithSessionMode 入口即被 ErrTakeoverActive
+// 拒绝，永不到达此处，故无需坐标/takeover 特判。
+//
+// 关键(防 fail-open): origin 必须取 *实时* top-level URL——页面可能在两次 dw-browser
+// Navigate 之间自导航(JS 重定向 / 点击跳到远程站)，若沿用旧 lastURL(如 localhost)
+// 会把远程写误判为可信。故这里现场 EvalJS(window.location.href) 取实时 URL；取不到
+// 时才回退 lastURL；两者皆空 → origin "" → 保守阻断。
+func (impl *browserCoreImpl) checkActPolicy(ctx context.Context, action string) error {
+	impl.policyMu.RLock()
+	policy := impl.policy
+	lastURL := impl.lastURL
+	impl.policyMu.RUnlock()
+
+	// 不持锁调用 ParseAction/EvaluateAct/EvalJS，避免与 Act 的 RLock 嵌套。
+	parsed, err := ParseAction(action)
+	if err != nil {
+		return nil
+	}
+	// 读操作恒放行——跳过实时 URL 取用，省一次 CDP 往返。
+	if !IsMutatingOp(parsed.Op) {
+		return nil
+	}
+	curURL := impl.liveTopURL(ctx)
+	if strings.TrimSpace(curURL) == "" {
+		curURL = lastURL
+	} else {
+		// 用实时 URL 刷新 lastURL，保持后续分类与回退新鲜。
+		impl.policyMu.Lock()
+		impl.lastURL = curURL
+		impl.policyMu.Unlock()
+	}
+	if d := policy.EvaluateAct(parsed.Op, URLOrigin(curURL)); !d.Allowed {
+		// P3 TODO: RemoteWriteConfirm 命中时（d.NeedsConfirm）应在具备 --commit
+		// arming token 后放行；本轮最小实现——confirm 与 deny 一样阻断（reason 已含
+		// "requires --commit" 提示）。
+		return fmt.Errorf("dw-browser: %s", d.Reason)
+	}
+	return nil
+}
+
+// liveTopURL best-effort 取活跃 target 的实时 top-level URL，供 origin 分类。
+// ctx 为 nil 或 eval 失败/为空时返回 ""，让 checkActPolicy 回退 lastURL（并最终
+// fail-closed）。用活跃 target 的 window.location.href——act 也作用于该 target，
+// 语义一致（新 tab / 自导航都被捕获）。
+func (impl *browserCoreImpl) liveTopURL(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	var href string
+	if err := impl.EvalJS(ctx, "window.location.href", &href); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(href)
 }
 
 // NewBrowserCore 创建并初始化 BrowserCore 实例。
@@ -823,6 +900,13 @@ func (impl *browserCoreImpl) Navigate(ctx context.Context, url string) (*Snapsho
 			"refs_count", refsCount,
 			"snapshot_type", snapshotType)
 	}
+	// 更新 lastURL，保持进程内后续 act 的 origin 分类新鲜（policy 门控依赖）。
+	// 用 policyMu 而非 mu：本函数已持有 mu.RLock，复用会死锁（RWMutex 不可重入）。
+	if snap != nil && snap.URL != "" {
+		impl.policyMu.Lock()
+		impl.lastURL = snap.URL
+		impl.policyMu.Unlock()
+	}
 	return snap, err
 }
 
@@ -918,6 +1002,10 @@ func (impl *browserCoreImpl) Act(ctx context.Context, action string, observe boo
 	}
 	if ctx == nil {
 		ctx = context.Background()
+	}
+	// 用同一 ctx 取实时 origin 做远程写门控（须在 nil 保护之后）。
+	if err := impl.checkActPolicy(ctx, action); err != nil {
+		return nil, err
 	}
 
 	impl.mu.RLock()
@@ -1330,6 +1418,9 @@ func (impl *browserCoreImpl) SnapWithOptions(ctx context.Context, opts SnapOptio
 func (impl *browserCoreImpl) ActWithSessionMode(ctx context.Context, action string, observe bool) (*Snapshot, error) {
 	if impl.takeoverCtrl.IsTakeover() {
 		return nil, ErrTakeoverActive
+	}
+	if err := impl.checkActPolicy(ctx, action); err != nil {
+		return nil, err
 	}
 	impl.mu.RLock()
 	defer impl.mu.RUnlock()

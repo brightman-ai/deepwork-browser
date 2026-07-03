@@ -125,19 +125,19 @@ func NormalizeEngine(e BrowserEngine) BrowserEngine {
 
 // ElementRef 是可交互元素的语义引用（每次 snap 后重建）。
 type ElementRef struct {
-	Ref                string // "e1", "e2", ... 或 session 模式下 "@r1", "@r2", ...
-	BackendNodeID      int64  // CDP BackendNodeID
+	Ref                string      // "e1", "e2", ... 或 session 模式下 "@r1", "@r2", ...
+	BackendNodeID      int64       // CDP BackendNodeID
 	Locator            NodeLocator `json:"-"` // 引擎无关定位器（内部使用，不序列化到 CLI 输出）
 	AXPath             string      `json:"-"` // Safari AX 树路径（便捷别名，Chrome 为空）
-	Role               string // ARIA role
-	Name               string // accessible name
-	Placeholder        string // input placeholder
-	TestID             string // data-testid 属性值
-	Interactable       bool   // 是否可交互（button/input/link/select...）
-	NameFull           string // 完整 accessible name（不截断）
-	NameShort          string // 截断后的 name（≤50 字符，用于显示）
-	RecommendedLocator string // 推荐的 locator（供 Agent 直接使用）
-	MatchCount         int    // 同 role+name 的元素数量
+	Role               string      // ARIA role
+	Name               string      // accessible name
+	Placeholder        string      // input placeholder
+	TestID             string      // data-testid 属性值
+	Interactable       bool        // 是否可交互（button/input/link/select...）
+	NameFull           string      // 完整 accessible name（不截断）
+	NameShort          string      // 截断后的 name（≤50 字符，用于显示）
+	RecommendedLocator string      // 推荐的 locator（供 Agent 直接使用）
+	MatchCount         int         // 同 role+name 的元素数量
 }
 
 // ScreencastFrame 是 Screencast 帧（LiveView 推送）。
@@ -236,6 +236,11 @@ type BrowserCore interface {
 	// GetTargetTracker 返回 TargetTracker（多 Target 自动跟随）[r3]。
 	// 返回 nil 表示不支持（如 session 模式）。
 	GetTargetTracker() *TargetTracker
+
+	// SetPolicy 设置本 session 的安全/确定性策略（远程写门控），并（若非空）
+	// 刷新用于 per-act origin 分类的 current URL。domain-neutral：分类逻辑单源于
+	// policy.go（EvaluateAct/IsMutatingOp/URLOrigin），实现方不重复分类。
+	SetPolicy(policy SessionPolicy, currentURL string)
 }
 
 // LiveViewportSyncer 暴露 LiveView viewport 的跨 target 同步能力。

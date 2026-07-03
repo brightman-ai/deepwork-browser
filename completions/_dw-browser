@@ -1,0 +1,63 @@
+#compdef dw-browser
+# zsh completion for dw-browser (github.com/brightman-ai/deepwork-browser)
+# 覆盖子命令 + 通用/会话策略 flag + enum 值。安装: 置于 fpath 目录 (如 ~/.zsh/completions) 后 compinit。
+
+_dw-browser() {
+  local -a subcmds
+  subcmds=(
+    'open:打开/导航, 建持久会话'
+    'observe:感知当前会话 (a11y locators + 可选截图/health/tree)'
+    'act:执行一个语义操作 (click/fill/press/clickat...)'
+    'close:关闭会话'
+    'once:无状态一次性 (开+看+关, 不留会话)'
+    'wait:等待条件 (ms / visible / gone / text)'
+    'check:硬断言 (exit 0=PASS 1=FAIL 2=ERR)'
+    'journey:跑 BDD 旅程 yaml (确定性 pass/fail)'
+    'diff:对比两份 observe 快照'
+    'session:会话管理 (list/status/start)'
+    'tabs:多标签操作 (list/new/select/close)'
+    'htr:Human Trust Runtime 交接 (attach/takeover/yield/share)'
+    'muxhost:BrowserMuxHost 全局操作'
+    'profile:CLI profile 管理 (list/import/prune)'
+    'skills:站点操作知识库 (list/read/write)'
+    'record:录制动作轨迹 → 蒸馏 skill'
+    'layout:URL 布局探测'
+    'eval:原始 JS 求值'
+    'test:跑 spec.yaml'
+    'audit:a11y 审计'
+  )
+  local -a common_flags
+  common_flags=(
+    '--id[会话句柄 (开一次, 后续复用)]:id:'
+    '--url[目标 URL]:url:'
+    '--mode[渲染模式]:mode:(headless headed visible human)'
+    '--kind[会话类型 (定默认 mode/isolation)]:kind:(task interactive service debug test)'
+    '--ephemeral[临时 profile, 命令结束即删]'
+    '--profile[固定 profile (登录态)]:profile:'
+    '--remote-writes[公网(非 localhost/私网/allow-host)写门控]:policy:(deny confirm allow)'
+    '--allow-host[额外信任主机 (逗号分隔/可重复)]:hosts:'
+    '--deterministic[硬锁内部 LLM (VisionOracle+NL-planner)]'
+    '--commit[确认执行 confirm 策略下的远程写]'
+    '--out[截图输出路径]:file:_files'
+    '--health[附遥测通道 (console/network/visible_errors)]'
+    '--tree[附全 a11y 文本树]'
+    '--snap[act 后附 a11y 全树]'
+    '--using[验收 oracle 类]:class:(structural behavior telemetry visual layout transcript file)'
+    '--file[spec/baseline yaml]:file:_files'
+    '--assert[断言表达式]:expr:'
+    '--observation[静态 observation JSON]:file:_files'
+    '--goal[会话目标]:text:'
+    '--viewport[视口 WxH]:wxh:'
+    '--device[设备预设]:device:'
+    '--engine[浏览器引擎]:engine:(chrome safari)'
+    '--json[JSON 输出]'
+  )
+  _arguments -C \
+    '1:command:->cmds' \
+    '*::options:->opts'
+  case $state in
+    cmds) _describe -t commands 'dw-browser command' subcmds ;;
+    opts) _arguments $common_flags ;;
+  esac
+}
+_dw-browser "$@"

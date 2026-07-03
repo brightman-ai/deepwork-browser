@@ -110,12 +110,37 @@ type commonFlags struct {
 	// Safari 引擎
 	engine       string // --engine: "chrome" (default) | "safari"
 	safariDevice string // --safari-device: Safari Simulator 设备名/UDID
+	// Session policy (安全/确定性；见 browser/policy.go)
+	remoteWrites  string   // --remote-writes deny|confirm|allow (default deny)
+	allowHosts    []string // --allow-host <hosts> (comma-sep / repeatable): 额外信任主机
+	deterministic bool     // --deterministic: 硬锁内部 LLM (vision+planner)
 	// 解析后
 	viewportW   int
 	viewportH   int
 	hasViewport bool
 	hasUA       bool
 	hasDevice   bool
+}
+
+// sessionPolicyFromFlags builds the domain-neutral session policy from parsed
+// flags, validating --remote-writes strictly (fail-closed on unknown values so
+// a typo cannot silently downgrade the safety posture).
+func sessionPolicyFromFlags(flags commonFlags, cmd string) browser.SessionPolicy {
+	rw := browser.RemoteWriteDeny
+	if raw := strings.ToLower(strings.TrimSpace(flags.remoteWrites)); raw != "" {
+		switch browser.RemoteWritePolicy(raw) {
+		case browser.RemoteWriteDeny, browser.RemoteWriteConfirm, browser.RemoteWriteAllow:
+			rw = browser.RemoteWritePolicy(raw)
+		default:
+			fmt.Fprintf(os.Stderr, "dw-browser %s: --remote-writes 值无效 %q (允许: deny/confirm/allow)\n", cmd, flags.remoteWrites)
+			os.Exit(exitRunErr)
+		}
+	}
+	return browser.SessionPolicy{
+		RemoteWrites:  rw,
+		AllowHosts:    flags.allowHosts,
+		Deterministic: flags.deterministic,
+	}
 }
 
 // parseCommonFlags 从 args 中提取通用 flags，返回剩余 positional args。
@@ -171,6 +196,21 @@ func parseCommonFlags(args []string, cmd string) (positional []string, flags com
 				os.Exit(exitRunErr)
 			}
 			flags.sessionKind = kind
+			i++
+		case arg == "--remote-writes" && i+1 < len(args):
+			flags.remoteWrites = args[i+1]
+			i += 2
+		case strings.HasPrefix(arg, "--remote-writes="):
+			flags.remoteWrites = arg[len("--remote-writes="):]
+			i++
+		case arg == "--allow-host" && i+1 < len(args):
+			flags.allowHosts = append(flags.allowHosts, strings.Split(args[i+1], ",")...)
+			i += 2
+		case strings.HasPrefix(arg, "--allow-host="):
+			flags.allowHosts = append(flags.allowHosts, strings.Split(arg[len("--allow-host="):], ",")...)
+			i++
+		case arg == "--deterministic":
+			flags.deterministic = true
 			i++
 		case arg == "--goal" && i+1 < len(args):
 			flags.goal = args[i+1]
@@ -939,6 +979,8 @@ func runOnce(args []string) {
 		fmt.Fprintf(os.Stderr, "dw-browser once: navigate failed: %v\n", err)
 		os.Exit(exitRunErr)
 	}
+	// 进程内 open→act 路径：以 flags 构建 policy，origin 分类用 open 后的 URL。
+	bc.SetPolicy(sessionPolicyFromFlags(flags, "once"), snap.URL)
 
 	switch strings.ToLower(strings.TrimSpace(view)) {
 	case "action":
@@ -1092,6 +1134,12 @@ func printUsage() {
 	p("  --profile <id>       固定 profile (登录态/Human 主浏览器)")
 	p("  --viewport WxH       视口 (默认 1920x1080)   --device <preset>   设备表观模拟   --user-agent <ua>")
 	p("  --goal <text>        本次会话目标 (写入 contract)")
+	p("")
+	p("─── 安全 / 确定性 (open 声明, 贯穿 session, per-act 强制) ──")
+	p("  --remote-writes <p>  deny(默认)|confirm|allow — 公网(非 localhost/私网/allow-host)写门控;")
+	p("                       读 & localhost 写恒放行; 按 target-origin per-act 强制")
+	p("  --allow-host <h>     额外信任主机 (逗号分隔/可重复), 其 origin 视为本地→写放行")
+	p("  --deterministic      硬锁内部 LLM (VisionOracle + NL-planner 拒激活; baseline 复现; 撞 --using visual 即报错)")
 	p("")
 	printDevicePresets()
 	p("")
@@ -1296,6 +1344,10 @@ func connectSession(ctx context.Context, sessionInfo *browser.SessionInfo, cmdNa
 		height = flags.viewportH
 	}
 	replayViewportProfile(impl, presetID, width, height, sessionInfo.Touch, cmdName)
+	// 接线远程写策略：origin 分类的 current URL 用 session 追踪的 PageURL。
+	// 若此处漏传 PageURL，lastURL 为空 → 所有 mutating act 的 origin="" 被判 remote
+	// → localhost 存量行为被误阻断。故必须传 sessionInfo.PageURL。
+	impl.SetPolicy(sessionInfo.Policy, sessionInfo.PageURL)
 	return impl
 }
 
@@ -1318,6 +1370,8 @@ func connectSafariSession(ctx context.Context, sessionInfo *browser.SessionInfo,
 		}
 	}
 	core.RestoreRefsFromSession(sessionInfo.Refs)
+	// 接线远程写策略（同 chrome 分支）：origin 分类 URL 用 session 的 PageURL。
+	core.SetPolicy(sessionInfo.Policy, sessionInfo.PageURL)
 	return core
 }
 
@@ -2348,6 +2402,7 @@ func runOpenSafari(url string, flags commonFlags) {
 		Engine:      browser.EngineSafari,
 		DeviceUDID:  core.DeviceUDID(),
 		DeviceName:  core.DeviceName(),
+		Policy:      sessionPolicyFromFlags(flags, "open"),
 	}
 	if err := browser.SaveSession(sessionInfo); err != nil {
 		closeSafari()
@@ -2701,6 +2756,7 @@ func runOpen(args []string) {
 		PresetID:              sessionPresetID,
 		ProfileDir:            profileDir,
 		PageURL:               currentURL,
+		Policy:                sessionPolicyFromFlags(flags, "open"),
 		CreatedAt:             time.Now().Format(time.RFC3339),
 		ViewportW:             width,
 		ViewportH:             height,

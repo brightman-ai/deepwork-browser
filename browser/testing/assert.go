@@ -171,8 +171,25 @@ func (e *AssertionEngine) EvaluateWithUsing(obs *Observation, expr string, using
 		// overlay below so free-form natural-language assertions can be evaluated by VLM.
 	}
 
-	// 覆盖 using（若调用方显式传入）
+	// 覆盖 using（若调用方显式传入）——但 inferUsing 是内在类的唯一 SSOT，调用者
+	// 只能窄化/一致，不能改类。structural predicate 被标成 acceptance(visual/behavior)
+	// → oracle-class 冲突：a11y 断言不得充当 UX 视觉/行为验收的唯一依据。
 	if len(using) > 0 {
+		if conflict, msg := usingClassConflict(result.Using, using); conflict {
+			result.Using = using
+			result.OracleWarning = msg
+			// Endgame intent (no-compromise): oracle-class conflict is a HARD REJECT
+			// by default — an a11y/structural predicate must never be the sole pass
+			// basis for a visual/behavioral acceptance. Opt-DOWN escape for migration
+			// only: DW_BROWSER_ORACLE_WARN_ONLY=1 downgrades REJECT to a stderr warning.
+			if os.Getenv("DW_BROWSER_ORACLE_WARN_ONLY") == "1" {
+				fmt.Fprintf(os.Stderr, "[dw-browser] oracle-class warning (WARN_ONLY): %s\n", msg)
+			} else {
+				result.Status = StatusBlocked
+				result.Reason = "REJECT oracle-class: " + msg
+				return result
+			}
+		}
 		result.Using = using
 	}
 
@@ -581,6 +598,43 @@ func boolToStatus(passed bool) Status {
 		return StatusPass
 	}
 	return StatusFail
+}
+
+// acceptanceUsingClasses 是"UX 验收"类的 oracle——断言用户*感知到的结果*
+// （visual）或*行为结果*（behavior），而非结构性 DOM 事实。structural predicate
+// （a11y exists/visible/gone/count/text_contains）不得被重标成这些类，否则一个
+// DOM 检查就冒充了视觉/行为验收。
+var acceptanceUsingClasses = map[string]bool{
+	"visual":   true,
+	"behavior": true,
+}
+
+// usingClassConflict 判断调用者传入的 using 是否把 structural/locator predicate
+// 非法改标成 acceptance 类（visual/behavior）。inferUsing 是内在类的唯一 SSOT，
+// 调用者 using 只能"窄化/一致"，不能"改类"。
+//
+// 泛化(不限 inferred 只有一个类)：只要 predicate 的内在类里*含* structural（a11y
+// DOM 事实/locator 断言），且调用者标了 acceptance 类，就冲突——无论 inferUsing
+// 返回几个类。冲突时返回可读原因。
+func usingClassConflict(inferred, callerUsing []string) (bool, string) {
+	structural := false
+	for _, c := range inferred {
+		if strings.EqualFold(strings.TrimSpace(c), "structural") {
+			structural = true
+			break
+		}
+	}
+	if !structural {
+		return false, ""
+	}
+	for _, u := range callerUsing {
+		if acceptanceUsingClasses[strings.ToLower(strings.TrimSpace(u))] {
+			return true, fmt.Sprintf(
+				"structural predicate cannot serve as visual/behavioral acceptance (inferUsing=%s, caller using=%s)",
+				strings.Join(inferred, ","), strings.Join(callerUsing, ","))
+		}
+	}
+	return false, ""
 }
 
 // inferUsing 根据原语名称推断依赖的 Observation 层。
