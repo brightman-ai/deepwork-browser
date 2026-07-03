@@ -30,7 +30,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-const version = "0.1.0"
+const version = "0.3.0"
 
 // exitCodes [IR-08]
 const (
