@@ -61,6 +61,12 @@ type SessionInfo struct {
 	DeviceUDID string        `json:"device_udid,omitempty"` // Safari Simulator UDID
 	DeviceName string        `json:"device_name,omitempty"` // Safari 设备名
 
+	// Scenario is the required business entry chosen at session creation
+	// (app-test-explore | app-test-baseline | webvisit). It is the source the
+	// Policy/render/kind were derived from; persisted for display/audit. See
+	// scenario.go.
+	Scenario string `json:"scenario,omitempty"`
+
 	// Policy is the domain-neutral safety/determinism policy (remote-write
 	// gating + LLM determinism) declared at open and enforced per-act. See
 	// policy.go. Zero value normalizes to the safe default (deny remote writes).

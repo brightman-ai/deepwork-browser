@@ -736,14 +736,16 @@ func runCheck(args []string) {
 	// open). Under deterministic, --using visual is a HARD reject — the vision
 	// oracle is never activated, so a reproducible check can't silently invoke the
 	// internal LLM.
-	deterministic := flags.deterministic
+	// determinism is a property of the attached session's scenario (app-test-baseline
+	// locks it at open); it is no longer a per-command flag.
+	deterministic := false
 	if flags.sessionID != "" {
 		if si, err := browser.LoadSession(flags.sessionID); err == nil && si.Policy.Deterministic {
 			deterministic = true
 		}
 	}
 	if deterministic && cliUsingContainsVisual(usingSlice) {
-		fmt.Fprintln(os.Stderr, "dw-browser check: deterministic mode: internal LLM disabled — --using visual rejected (drop --deterministic / session Policy.Deterministic to enable the vision oracle)")
+		fmt.Fprintln(os.Stderr, "dw-browser check: deterministic mode: internal LLM disabled — --using visual rejected (open the session with --scenario app-test-explore/webvisit to enable the vision oracle)")
 		os.Exit(exitRunErr)
 	}
 
@@ -957,12 +959,12 @@ func runJourney(args []string) {
 	// 决定 session：spec 需要 session（通过 --id 提供）或新建 ephemeral session
 	//
 	// 内部 LLM 激活由 *spec 内容* + 非 deterministic 决定，而非 ambient env
-	// （ROOT-C: env 是端点 CONFIG，不是激活信号）。--deterministic 对需要 LLM 的
+	// （ROOT-C: env 是端点 CONFIG，不是激活信号）。determinism 需要 LLM 的
 	// spec 硬拒并显式报错，而非静默跳过。
 	//
-	// deterministic 同时认 CLI flag 与 *附着 session 的持久 Policy.Deterministic*：
-	// 一次 baseline session 在 open 时锁定确定性，journey 复用它时硬锁必须仍然生效。
-	deterministic := flags.deterministic
+	// determinism 由 *附着 session 的持久 Policy.Deterministic* 决定（不再有 CLI flag）：
+	// 一次 app-test-baseline session 在 open 时锁定确定性，journey 复用它时硬锁必须仍然生效。
+	deterministic := false
 	if flags.sessionID != "" {
 		if si, err := browser.LoadSession(flags.sessionID); err == nil && si.Policy.Deterministic {
 			deterministic = true
@@ -1005,7 +1007,14 @@ func runJourney(args []string) {
 		}
 		defer closeSessionCore(impl)
 	} else if spec.Environment.BaseURL != "" || spec.Environment.EntryURL != "" {
-		// 新建 one-shot session（从 spec 的 entry URL）
+		// 新建 one-shot session（从 spec 的 entry URL）→ 无 --id 继承, 故 --scenario 必选。
+		// 用不改 mode 的 scenarioPolicyOrExit: journey 的 render 仍走 spec.Environment.Mode
+		// / --mode 优先级；仅当二者都未给时, 才落到场景默认 render。
+		_, scenarioPolicy, scenMode := scenarioPolicyOrExit(&flags, "journey")
+		if !flags.modeExplicit && spec.Environment.Mode == "" {
+			flags.mode = scenMode
+			flags.headless = scenMode == browser.ModeHeadless
+		}
 		entryURL := joinURL(spec.Environment.BaseURL, spec.Environment.EntryURL)
 		profileID := fmt.Sprintf("journey-%s-%d", spec.ID, time.Now().UnixMilli())
 		browserOpts := browserOptionsFromFlags(flags)
@@ -1044,12 +1053,12 @@ func runJourney(args []string) {
 			fmt.Fprintf(os.Stderr, "dw-browser journey: navigate to %s: %v\n", entryURL, navErr)
 			os.Exit(exitRunErr)
 		}
-		// 进程内 open→act 路径：以 flags 构建远程写策略（无持久 session，故用 flags）。
+		// 进程内 open→act 路径：policy 由 scenario 导出（无持久 session）。
 		navURL := entryURL
 		if navSnap != nil && navSnap.URL != "" {
 			navURL = navSnap.URL
 		}
-		bc.SetPolicy(sessionPolicyFromFlags(flags, "journey"), navURL)
+		bc.SetPolicy(scenarioPolicy, navURL)
 
 		executor = &oneshotActionExecutor{impl: bc, ctx: ctx, telemetry: journeyTelemetry, planner: journeyPlanner}
 	} else {

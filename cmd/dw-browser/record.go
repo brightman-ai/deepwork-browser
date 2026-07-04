@@ -331,7 +331,7 @@ func loadSessionForRecord(sessionID string) (*sessionInfoForRecord, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, fmt.Errorf("session %q not found — use 'dw-browser open <url> --session %s' first", sessionID, sessionID)
+			return nil, fmt.Errorf("session %q not found — use 'dw-browser open <url> --session %s --scenario app-test-explore' first", sessionID, sessionID)
 		}
 		return nil, fmt.Errorf("read session: %w", err)
 	}

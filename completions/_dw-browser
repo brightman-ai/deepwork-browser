@@ -28,16 +28,13 @@ _dw-browser() {
   )
   local -a common_flags
   common_flags=(
+    '--scenario[★必选业务主入口: 导出 Policy/render/kind]:scenario:(app-test-explore app-test-baseline webvisit)'
     '--id[会话句柄 (开一次, 后续复用)]:id:'
     '--url[目标 URL]:url:'
-    '--mode[渲染模式]:mode:(headless headed visible human)'
-    '--kind[会话类型 (定默认 mode/isolation)]:kind:(task interactive service debug test)'
+    '--mode[渲染模式 (覆盖场景默认 render)]:mode:(headless headed visible human)'
     '--ephemeral[临时 profile, 命令结束即删]'
     '--profile[固定 profile (登录态)]:profile:'
-    '--remote-writes[公网(非 localhost/私网/allow-host)写门控]:policy:(deny confirm allow)'
-    '--allow-host[额外信任主机 (逗号分隔/可重复)]:hosts:'
-    '--deterministic[硬锁内部 LLM (VisionOracle+NL-planner)]'
-    '--commit[确认执行 confirm 策略下的远程写]'
+    '--allow-host[webvisit 信任放行主机 (逗号分隔/可重复)]:hosts:'
     '--out[截图输出路径]:file:_files'
     '--health[附遥测通道 (console/network/visible_errors)]'
     '--tree[附全 a11y 文本树]'

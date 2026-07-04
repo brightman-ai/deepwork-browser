@@ -30,7 +30,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-const version = "0.3.0"
+const version = "0.4.0"
 
 // exitCodes [IR-08]
 const (
@@ -110,10 +110,11 @@ type commonFlags struct {
 	// Safari 引擎
 	engine       string // --engine: "chrome" (default) | "safari"
 	safariDevice string // --safari-device: Safari Simulator 设备名/UDID
-	// Session policy (安全/确定性；见 browser/policy.go)
-	remoteWrites  string   // --remote-writes deny|confirm|allow (default deny)
-	allowHosts    []string // --allow-host <hosts> (comma-sep / repeatable): 额外信任主机
-	deterministic bool     // --deterministic: 硬锁内部 LLM (vision+planner)
+	// Scenario (业务主入口, session-creating 命令必选；见 browser/scenario.go)。
+	// Policy/render/kind 由 scenario 导出，不再有裸技术开关。
+	scenario string // --scenario app-test-explore | app-test-baseline | webvisit
+	// allowHosts 仍保留 (webvisit 的信任放行参数；非绕过旁路)。
+	allowHosts []string // --allow-host <hosts> (comma-sep / repeatable): 额外信任主机
 	// 解析后
 	viewportW   int
 	viewportH   int
@@ -122,25 +123,44 @@ type commonFlags struct {
 	hasDevice   bool
 }
 
-// sessionPolicyFromFlags builds the domain-neutral session policy from parsed
-// flags, validating --remote-writes strictly (fail-closed on unknown values so
-// a typo cannot silently downgrade the safety posture).
-func sessionPolicyFromFlags(flags commonFlags, cmd string) browser.SessionPolicy {
-	rw := browser.RemoteWriteDeny
-	if raw := strings.ToLower(strings.TrimSpace(flags.remoteWrites)); raw != "" {
-		switch browser.RemoteWritePolicy(raw) {
-		case browser.RemoteWriteDeny, browser.RemoteWriteConfirm, browser.RemoteWriteAllow:
-			rw = browser.RemoteWritePolicy(raw)
-		default:
-			fmt.Fprintf(os.Stderr, "dw-browser %s: --remote-writes 值无效 %q (允许: deny/confirm/allow)\n", cmd, flags.remoteWrites)
-			os.Exit(exitRunErr)
-		}
+// scenarioPolicyOrExit enforces the REQUIRED --scenario on every session-creating
+// command. It normalizes the flag — erroring with the three legal values when
+// missing/unknown (fail-closed) — then derives the SessionPolicy + internal
+// session kind. --allow-host is webvisit's safelist ONLY: it is merged into the
+// policy for webvisit and rejected for the local-app scenarios (a stray safelist
+// on a local scenario is a mis-use, not a silent no-op). It does NOT mutate the
+// render mode; callers apply the scenario's default mode themselves (some, like
+// journey, have their own mode precedence). Returns scenario, policy, and the
+// scenario's default render mode.
+func scenarioPolicyOrExit(flags *commonFlags, cmd string) (browser.Scenario, browser.SessionPolicy, browser.BrowserMode) {
+	scenario, err := browser.NormalizeScenario(flags.scenario)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "dw-browser %s: %v\n", cmd, err)
+		os.Exit(exitRunErr)
 	}
-	return browser.SessionPolicy{
-		RemoteWrites:  rw,
-		AllowHosts:    flags.allowHosts,
-		Deterministic: flags.deterministic,
+	if len(flags.allowHosts) > 0 && scenario != browser.ScenarioWebVisit {
+		fmt.Fprintf(os.Stderr, "dw-browser %s: --allow-host is only valid with --scenario webvisit\n", cmd)
+		os.Exit(exitRunErr)
 	}
+	policy, mode, kind := browser.ScenarioPolicy(scenario)
+	if scenario == browser.ScenarioWebVisit {
+		policy.AllowHosts = flags.allowHosts
+	}
+	flags.sessionKind = kind
+	flags.scenario = string(scenario)
+	return scenario, policy, mode
+}
+
+// resolveScenario is scenarioPolicyOrExit plus applying the scenario's default
+// render mode onto flags (only when the caller did not pass an explicit --mode).
+// Used by open / once / act(one-shot) / test / layout.
+func resolveScenario(flags *commonFlags, cmd string) (browser.Scenario, browser.SessionPolicy) {
+	scenario, policy, mode := scenarioPolicyOrExit(flags, cmd)
+	if !flags.modeExplicit {
+		flags.mode = mode
+		flags.headless = mode == browser.ModeHeadless
+	}
+	return scenario, policy
 }
 
 // parseCommonFlags 从 args 中提取通用 flags，返回剩余 positional args。
@@ -180,37 +200,17 @@ func parseCommonFlags(args []string, cmd string) (positional []string, flags com
 		case strings.HasPrefix(arg, "--id="):
 			flags.sessionID = arg[len("--id="):]
 			i++
-		case arg == "--kind" && i+1 < len(args):
-			kind, ok := parseBrowserSessionKind(args[i+1])
-			if !ok {
-				fmt.Fprintf(os.Stderr, "dw-browser %s: --kind 值无效 %q (允许: task/interactive/service/debug/test)\n", cmd, args[i+1])
-				os.Exit(exitRunErr)
-			}
-			flags.sessionKind = kind
+		case arg == "--scenario" && i+1 < len(args):
+			flags.scenario = args[i+1]
 			i += 2
-		case strings.HasPrefix(arg, "--kind="):
-			val := arg[len("--kind="):]
-			kind, ok := parseBrowserSessionKind(val)
-			if !ok {
-				fmt.Fprintf(os.Stderr, "dw-browser %s: --kind 值无效 %q (允许: task/interactive/service/debug/test)\n", cmd, val)
-				os.Exit(exitRunErr)
-			}
-			flags.sessionKind = kind
-			i++
-		case arg == "--remote-writes" && i+1 < len(args):
-			flags.remoteWrites = args[i+1]
-			i += 2
-		case strings.HasPrefix(arg, "--remote-writes="):
-			flags.remoteWrites = arg[len("--remote-writes="):]
+		case strings.HasPrefix(arg, "--scenario="):
+			flags.scenario = arg[len("--scenario="):]
 			i++
 		case arg == "--allow-host" && i+1 < len(args):
 			flags.allowHosts = append(flags.allowHosts, strings.Split(args[i+1], ",")...)
 			i += 2
 		case strings.HasPrefix(arg, "--allow-host="):
 			flags.allowHosts = append(flags.allowHosts, strings.Split(arg[len("--allow-host="):], ",")...)
-			i++
-		case arg == "--deterministic":
-			flags.deterministic = true
 			i++
 		case arg == "--goal" && i+1 < len(args):
 			flags.goal = args[i+1]
@@ -326,6 +326,19 @@ func parseCommonFlags(args []string, cmd string) (positional []string, flags com
 		case strings.HasPrefix(arg, "--safari-device="):
 			flags.safariDevice = arg[len("--safari-device="):]
 			i++
+		case arg == "--remote-writes" || strings.HasPrefix(arg, "--remote-writes=") ||
+			arg == "--deterministic" || strings.HasPrefix(arg, "--deterministic=") ||
+			arg == "--kind" || strings.HasPrefix(arg, "--kind=") ||
+			arg == "--commit" || strings.HasPrefix(arg, "--commit="):
+			// Removed in v0.4.0: session behavior is now derived from --scenario.
+			// Reject explicitly (fail-closed) rather than let a stale flag fall
+			// through to a positional arg and silently change nothing.
+			name := arg
+			if idx := strings.IndexByte(name, '='); idx >= 0 {
+				name = name[:idx]
+			}
+			fmt.Fprintf(os.Stderr, "dw-browser %s: flag %s removed; session behavior is now set by --scenario (see --help)\n", cmd, name)
+			os.Exit(exitRunErr)
 		case arg == "--help" || arg == "-h":
 			printCommandUsage(cmd)
 			os.Exit(exitOK)
@@ -951,6 +964,8 @@ func runOnce(args []string) {
 	}
 
 	positional, flags := parseCommonFlags(clean, "once")
+	// --scenario 必选: once 也创建会话(即用即弃), Policy/render 由场景导出。
+	_, scenarioPolicy := resolveScenario(&flags, "once")
 	if url == "" && len(positional) > 0 {
 		url = positional[0]
 		positional = positional[1:]
@@ -979,8 +994,8 @@ func runOnce(args []string) {
 		fmt.Fprintf(os.Stderr, "dw-browser once: navigate failed: %v\n", err)
 		os.Exit(exitRunErr)
 	}
-	// 进程内 open→act 路径：以 flags 构建 policy，origin 分类用 open 后的 URL。
-	bc.SetPolicy(sessionPolicyFromFlags(flags, "once"), snap.URL)
+	// 进程内 open→act 路径：policy 由 scenario 导出，origin 分类用 open 后的 URL。
+	bc.SetPolicy(scenarioPolicy, snap.URL)
 
 	switch strings.ToLower(strings.TrimSpace(view)) {
 	case "action":
@@ -1098,8 +1113,14 @@ func printUsage() {
 	p("  A 探索发现 (Claude agent 调): 瘦感知 + act 循环, 撞体验问题。")
 	p("  B 基线回归 (测试脚本/CI 调): 确定性 pass/fail + 证据, 无 LLM。")
 	p("")
+	p("─── --scenario <必选> · 业务主入口 (open/once/session start 必带) ──")
+	p("  Policy(公网写门控)+render(默认视图)+kind 全由场景自动导出, 不再有裸技术开关:")
+	p("  app-test-explore    Claude 探索本地 App: 本地写放行/公网写拦, 允许内部 LLM, headless")
+	p("  app-test-baseline   本地 App 确定性回归: 同上写门控 + 硬锁内部 LLM(复现), headless")
+	p("  webvisit            访问真实公网站: 全站写默认拦, 仅 --allow-host 放行, headed")
+	p("")
 	p("─── A 探索循环 ─────────────────────────────────────────────")
-	p("  open <url> --id X                   打开/导航 (默认 headless 即可截图供 AI 判断; headed/visible 仅 Human 看窗)")
+	p("  open <url> --id X --scenario <场景>  打开/导航 (--scenario 必选; render 由场景定, --mode 可覆盖)")
 	p("  observe --id X                      ★感知: 瘦默认 {elements@rN, user_state, run_id, step} ~3K")
 	p("      --out shot.png                  + 存截图, 返回 {screenshot:\"<path>\"} (Read 图判 UX)")
 	p("      --health                        + {telemetry:{console_errors,network_failures,visible_errors}}")
@@ -1127,19 +1148,14 @@ func printUsage() {
 	p("  wait --id X \"<cond>\"                  等条件: 2000(ms) / 'visible #btn' / 'gone #mask' / 'text 成功'")
 	p("")
 	p("─── 核心参数 ───────────────────────────────────────────────")
+	p("  --scenario <场景>    ★必选 (open/once/session start): app-test-explore|app-test-baseline|webvisit")
 	p("  --id <id>            会话句柄 (开一次, 后续命令全程复用)")
-	p("  --mode <mode>        headless(默认·可截图) | headed | visible (后两者给 Human 看窗调试; CI 锁 DW_BROWSER_DEFAULT_MODE=headless)")
-	p("  --kind <kind>        task | interactive | service | debug | test (决定默认 mode/isolation)")
+	p("  --mode <mode>        headless | headed | visible — 覆盖场景默认 render (CI 锁 DW_BROWSER_DEFAULT_MODE=headless)")
+	p("  --allow-host <h>     webvisit 信任放行主机 (逗号分隔/可重复), 其 origin 视为本地→写放行")
 	p("  --ephemeral          临时 profile, 命令结束即删 (与 --profile 互斥)")
 	p("  --profile <id>       固定 profile (登录态/Human 主浏览器)")
 	p("  --viewport WxH       视口 (默认 1920x1080)   --device <preset>   设备表观模拟   --user-agent <ua>")
 	p("  --goal <text>        本次会话目标 (写入 contract)")
-	p("")
-	p("─── 安全 / 确定性 (open 声明, 贯穿 session, per-act 强制) ──")
-	p("  --remote-writes <p>  deny(默认)|confirm|allow — 公网(非 localhost/私网/allow-host)写门控;")
-	p("                       读 & localhost 写恒放行; 按 target-origin per-act 强制")
-	p("  --allow-host <h>     额外信任主机 (逗号分隔/可重复), 其 origin 视为本地→写放行")
-	p("  --deterministic      硬锁内部 LLM (VisionOracle + NL-planner 拒激活; baseline 复现; 撞 --using visual 即报错)")
 	p("")
 	printDevicePresets()
 	p("")
@@ -1178,7 +1194,7 @@ func printUsage() {
 	p("  各高级命令: dw-browser <cmd> --help")
 	p("")
 	p("─── 示例 ───────────────────────────────────────────────────")
-	p("  dw-browser open http://localhost:8080/ws --id ws1 --mode headed")
+	p("  dw-browser open http://localhost:8080/ws --id ws1 --scenario app-test-explore")
 	p("  dw-browser observe --id ws1 --out /tmp/ws1.png --health")
 	p("  dw-browser act --id ws1 \"click @r7\"")
 	p("  dw-browser act --id ws1 \"fill #ws-name 'my workspace'\"")
@@ -1195,25 +1211,27 @@ func printCommandUsage(command string) {
 		fmt.Println("dw-browser session — 管理 BrowserSession 生命周期")
 		fmt.Println()
 		fmt.Println("用法:")
-		fmt.Println("  dw-browser session start --id <id> --kind interactive --mode headed --url <url>")
+		fmt.Println("  dw-browser session start --id <id> --scenario webvisit --url <url>")
 		fmt.Println("  dw-browser session status --id <id>")
 		fmt.Println("  dw-browser session list")
 		fmt.Println("  dw-browser session close --id <id>")
 		fmt.Println()
 		fmt.Println("说明:")
-		fmt.Println("  interactive 默认 headed + dedicated + human，macOS 下由 BrowserMuxHost 持有 CGVirtualDisplay。")
+		fmt.Println("  session start 必带 --scenario；render/kind/policy 由场景导出 (webvisit → headed)。")
 	case "session start", "open":
 		fmt.Println("dw-browser session start — 启动或恢复一个浏览器会话")
 		fmt.Println()
 		fmt.Println("用法:")
-		fmt.Println("  dw-browser session start --id <id> --kind interactive --mode headed --profile <profile> --url <url>")
-		fmt.Println("  dw-browser session start --id <id> --kind task --url <url>")
-		fmt.Println("  dw-browser open <url> --id <id> [同等参数]")
+		fmt.Println("  dw-browser session start --id <id> --scenario webvisit --profile <profile> --url <url>")
+		fmt.Println("  dw-browser session start --id <id> --scenario app-test-explore --url <url>")
+		fmt.Println("  dw-browser open <url> --id <id> --scenario <场景> [同等参数]")
 		fmt.Println()
 		fmt.Println("关键参数:")
+		fmt.Println("  --scenario <场景>      ★必选: app-test-explore | app-test-baseline | webvisit")
+		fmt.Println("                         Policy(公网写门控)+render+内部 kind 全由场景导出")
 		fmt.Println("  --id <id>              本地 BrowserSession 句柄")
-		fmt.Println("  --kind <kind>          task/interactive/service/debug/test")
-		fmt.Println("  --mode <mode>          headless/headed/visible")
+		fmt.Println("  --mode <mode>          headless/headed/visible (覆盖场景默认 render)")
+		fmt.Println("  --allow-host <h>       webvisit 信任放行主机 (逗号分隔/可重复)")
 		fmt.Println("  --profile <id>         dedicated profile；适合 Human 主浏览器和登录态")
 		fmt.Println("  --isolation <mode>     ephemeral/dedicated/profile-pool")
 		fmt.Println("  --url <url>            初始页面")
@@ -1966,11 +1984,12 @@ func runAct(args []string) {
 		return
 	}
 
-	// One-shot 模式（向后兼容）
+	// One-shot 模式（向后兼容）: 无 --id → 新建一次性会话, 故 --scenario 必选。
 	if len(positional) < 2 {
 		fmt.Fprintln(os.Stderr, "dw-browser act: requires <url> <action>")
 		os.Exit(exitRunErr)
 	}
+	_, scenarioPolicy := resolveScenario(&flags, "act")
 	url := positional[0]
 	action := positional[1]
 	profileID := resolveProfileID(flags, fmt.Sprintf("act-%d", time.Now().UnixNano()))
@@ -1986,10 +2005,17 @@ func runAct(args []string) {
 		}
 	}()
 
-	if _, err := navigateWithRetry(ctx, bc, url); err != nil {
+	navSnap, err := navigateWithRetry(ctx, bc, url)
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "dw-browser: navigate failed: %v\n", err)
 		os.Exit(exitRunErr)
 	}
+	// 进程内 navigate→act 路径：policy 由 scenario 导出，origin 分类用导航后的 URL。
+	navURL := url
+	if navSnap != nil && navSnap.URL != "" {
+		navURL = navSnap.URL
+	}
+	bc.SetPolicy(scenarioPolicy, navURL)
 
 	observe := needsPostActionSnapshot(action)
 	snap, err := actWithRetry(ctx, bc, action, observe)
@@ -2335,7 +2361,7 @@ func runCookieImport(args []string) {
 
 // runOpenSafari 使用 Safari 引擎打开 URL，持久化 session。
 // 由 runOpen 在 --engine safari 时调用。
-func runOpenSafari(url string, flags commonFlags) {
+func runOpenSafari(url string, flags commonFlags, scenarioPolicy browser.SessionPolicy) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
@@ -2402,7 +2428,8 @@ func runOpenSafari(url string, flags commonFlags) {
 		Engine:      browser.EngineSafari,
 		DeviceUDID:  core.DeviceUDID(),
 		DeviceName:  core.DeviceName(),
-		Policy:      sessionPolicyFromFlags(flags, "open"),
+		Scenario:    flags.scenario,
+		Policy:      scenarioPolicy,
 	}
 	if err := browser.SaveSession(sessionInfo); err != nil {
 		closeSafari()
@@ -2460,6 +2487,8 @@ func runOpen(args []string) {
 		fmt.Fprintln(os.Stderr, "dw-browser open: requires --session <id>")
 		os.Exit(exitRunErr)
 	}
+	// --scenario 是 session-creating 命令的必选业务主入口: Policy/render/kind 全由它导出。
+	_, scenarioPolicy := resolveScenario(&flags, "open")
 	if flags.url != "" {
 		positional = append([]string{flags.url}, positional...)
 	}
@@ -2471,7 +2500,7 @@ func runOpen(args []string) {
 
 	// Safari 引擎分支：完全绕开 Chrome/CDP 路径
 	if flags.engine == "safari" {
-		runOpenSafari(url, flags)
+		runOpenSafari(url, flags, scenarioPolicy)
 		return
 	}
 
@@ -2756,7 +2785,8 @@ func runOpen(args []string) {
 		PresetID:              sessionPresetID,
 		ProfileDir:            profileDir,
 		PageURL:               currentURL,
-		Policy:                sessionPolicyFromFlags(flags, "open"),
+		Scenario:              flags.scenario,
+		Policy:                scenarioPolicy,
 		CreatedAt:             time.Now().Format(time.RFC3339),
 		ViewportW:             width,
 		ViewportH:             height,
@@ -3094,6 +3124,8 @@ func runLayout(args []string) {
 		fmt.Fprintln(os.Stderr, "dw-browser layout: requires <url>")
 		os.Exit(exitRunErr)
 	}
+	// layout 新建一次性会话（无 --id 继承）→ --scenario 必选。
+	_, scenarioPolicy := resolveScenario(&flags, "layout")
 	url := positional[0]
 	profileID := resolveProfileID(flags, "default")
 	browserOpts := browserOptionsFromFlags(flags)
@@ -3113,6 +3145,7 @@ func runLayout(args []string) {
 		fmt.Fprintf(os.Stderr, "dw-browser: navigate failed: %v\n", err)
 		os.Exit(exitRunErr)
 	}
+	bc.SetPolicy(scenarioPolicy, snap.URL)
 
 	// L2 布局断言: 验证页面有可交互元素（基本布局完整性）
 	if len(snap.Refs) == 0 && snap.SnapshotType == "screenshot_fallback" {
@@ -3337,6 +3370,8 @@ func runTest(args []string) {
 		fmt.Fprintln(os.Stderr, "dw-browser test: requires <spec.yaml>")
 		os.Exit(exitRunErr)
 	}
+	// test 新建一次性会话（无 --id 继承）→ --scenario 必选。
+	_, scenarioPolicy := resolveScenario(&flags, "test")
 	specFile := positional[0]
 
 	data, err := os.ReadFile(specFile)
@@ -3360,6 +3395,8 @@ func runTest(args []string) {
 	browserOpts := browserOptionsFromFlags(flags)
 
 	bc := newBrowserCore(profileID, browserOpts...)
+	// scenario 导出的 policy 贯穿本次 test 会话（per-act origin 现场分类，故初始 origin 留空）。
+	bc.SetPolicy(scenarioPolicy, "")
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 	defer func() {

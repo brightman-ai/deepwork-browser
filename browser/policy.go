@@ -192,12 +192,12 @@ func (p SessionPolicy) EvaluateAct(op, currentOrigin string) ActDecision {
 		return ActDecision{
 			Allowed:      false,
 			NeedsConfirm: true,
-			Reason:       "remote write to " + target + " requires --commit (remote-writes=confirm)",
+			Reason:       "remote write to " + target + " blocked: session policy requires explicit confirmation",
 		}
 	default: // deny
 		return ActDecision{
 			Allowed: false,
-			Reason:  "remote write to " + target + " blocked (remote-writes=deny; pass --remote-writes allow|confirm or --allow-host to permit)",
+			Reason:  "remote write to " + target + " denied by session policy (open with --scenario webvisit --allow-host <host> to operate this site)",
 		}
 	}
 }

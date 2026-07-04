@@ -389,9 +389,8 @@ func (impl *browserCoreImpl) checkActPolicy(ctx context.Context, action string) 
 		impl.policyMu.Unlock()
 	}
 	if d := policy.EvaluateAct(parsed.Op, URLOrigin(curURL)); !d.Allowed {
-		// P3 TODO: RemoteWriteConfirm 命中时（d.NeedsConfirm）应在具备 --commit
-		// arming token 后放行；本轮最小实现——confirm 与 deny 一样阻断（reason 已含
-		// "requires --commit" 提示）。
+		// P3 TODO: RemoteWriteConfirm 命中时（d.NeedsConfirm）本轮最小实现——
+		// confirm 与 deny 一样阻断（无 scenario 会映射到 confirm, 故此分支当前不可达）。
 		return fmt.Errorf("dw-browser: %s", d.Reason)
 	}
 	return nil

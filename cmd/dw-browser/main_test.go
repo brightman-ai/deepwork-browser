@@ -280,25 +280,29 @@ func TestResolveSessionPresetID(t *testing.T) {
 	}
 }
 
-func TestParseCommonFlagsUsesKindDefaults(t *testing.T) {
+func TestParseCommonFlagsParsesScenario(t *testing.T) {
 	positional, flags := parseCommonFlags([]string{
 		"--id", "svc1",
-		"--kind", "service",
-		"--service", "webchat/chatgpt",
-		"--account", "acct-1",
+		"--scenario", "webvisit",
+		"--allow-host", "example.com",
 		"--url", "https://example.com",
 	}, "test")
 	if len(positional) != 0 {
 		t.Fatalf("positional=%v, want empty", positional)
 	}
-	if flags.sessionID != "svc1" || flags.sessionKind != browser.SessionKindService {
-		t.Fatalf("unexpected identity flags: %+v", flags)
+	if flags.sessionID != "svc1" {
+		t.Fatalf("sessionID=%q, want svc1", flags.sessionID)
 	}
-	if flags.mode != browser.ModeHeaded || flags.owner != browser.SessionOwnerService || flags.isolation != browser.SessionIsolationDedicated {
-		t.Fatalf("unexpected service defaults: %+v", flags)
+	if flags.scenario != "webvisit" {
+		t.Fatalf("scenario=%q, want webvisit", flags.scenario)
 	}
-	if flags.serviceName != "webchat/chatgpt" || flags.accountID != "acct-1" {
-		t.Fatalf("service/account not parsed: %+v", flags)
+	if len(flags.allowHosts) != 1 || flags.allowHosts[0] != "example.com" {
+		t.Fatalf("allowHosts=%v, want [example.com]", flags.allowHosts)
+	}
+	// --kind is removed; parseCommonFlags leaves kind at the task default.
+	// Scenario → kind/policy/render derivation happens in the command handler.
+	if flags.sessionKind != browser.SessionKindTask {
+		t.Fatalf("sessionKind=%q, want task", flags.sessionKind)
 	}
 	if flags.url != "https://example.com" {
 		t.Fatalf("url=%q", flags.url)

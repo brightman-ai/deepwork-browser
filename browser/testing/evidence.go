@@ -105,7 +105,7 @@ func (e *EvidenceStore) GenerateReplay(sessionID string) error {
 	fmt.Fprintf(&b, "# Generated: %s\n", time.Now().UTC().Format(time.RFC3339))
 	b.WriteString("set -e\n\n")
 	b.WriteString(`SESSION_ID="${1:-replay-$(date +%s)}"` + "\n")
-	b.WriteString(`dw-browser session start --id "$SESSION_ID" --kind test --mode headless` + "\n")
+	b.WriteString(`dw-browser session start --id "$SESSION_ID" --scenario app-test-baseline` + "\n")
 
 	for _, a := range e.actions {
 		fmt.Fprintf(&b, "\n# Step: %s\n", a.StepID)
