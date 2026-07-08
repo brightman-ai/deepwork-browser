@@ -1156,6 +1156,7 @@ func printUsage() {
 	p("─── act 操作 ───────────────────────────────────────────────")
 	p("  click/tap <loc>                  点击 / 触控点击")
 	p("  fill <loc> '<text>'              清空后输入      type <loc> '<text>'   不清空输入")
+	p("  fillsecret <loc> '<text>'        password/敏感字段的显式安全填充(CDP insertText,穿透Vue/React受控输入;值不回显)")
 	p("  press <key> | press <loc> <key>  按键 (Ctrl+A, Enter)")
 	p("  select <loc> '<value>'           下拉选择        hover <loc>           悬停")
 	p("  scroll down|up                   滚动            scrollinto <loc>      滚动到可见")

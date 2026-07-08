@@ -469,6 +469,19 @@ func ParseAction(action string) (*ParsedAction, error) {
 		}
 		return &ParsedAction{Op: "type", Ref: parts[1], Value: value}, nil
 
+	case "fillsecret":
+		// fillsecret <selector> '<value>' — 对 password/敏感字段的显式 opt-in 安全填充。
+		// 默认 fill/type 仍拒绝 password [IR-03]；只有调用方明确用 fillsecret 才经安全 CDP
+		// Input.insertText 通道注入（可信输入事件，穿透 Vue/React 受控输入）。值不回显、不入结果。
+		if len(parts) < 3 {
+			return nil, fmt.Errorf("%w: fillsecret requires selector and value", ErrActFailed)
+		}
+		value, quoted := extractQuotedValue(action, parts[1])
+		if !quoted {
+			value = strings.Join(parts[2:], " ")
+		}
+		return &ParsedAction{Op: "fillsecret", Ref: parts[1], Value: value}, nil
+
 	case "press":
 		// press <key>  OR  press <selector> <key>
 		if len(parts) < 2 {
@@ -692,6 +705,10 @@ func (e *actionEngine) ExecuteWithSessionMode(ctx context.Context, action string
 		if err := e.executeFill(ctx, resolvedRef, parsed.Value); err != nil {
 			return nil, err
 		}
+	case "fillsecret":
+		if err := e.executeFillSecret(ctx, resolvedRef, parsed.Value); err != nil {
+			return nil, err
+		}
 	case "type":
 		if err := e.executeType(ctx, resolvedRef, parsed.Value); err != nil {
 			return nil, err
@@ -747,7 +764,7 @@ func (e *actionEngine) ExecuteWithSessionMode(ctx context.Context, action string
 	// clickat/tapat 是坐标式 Human pointer 输入，主要服务 LiveView/takeover。
 	// Browser Portal 会持续更新 frame/blob URL，宿主 DOM 并不会像普通页面点击那样稳定；
 	// 坐标输入的完成条件应由 input-ack/后续截图证明，而不是在宿主页等待 DOM settle。
-	domSettleOps := map[string]bool{"click": true, "tap": true, "type": true, "fill": true, "select": true, "check": true, "uncheck": true}
+	domSettleOps := map[string]bool{"click": true, "tap": true, "type": true, "fill": true, "fillsecret": true, "select": true, "check": true, "uncheck": true}
 	if domSettleOps[parsed.Op] {
 		_ = waitForDOMSettle(ctx, 500, 5000)
 	}
@@ -1493,6 +1510,69 @@ func (e *actionEngine) executeType(ctx context.Context, ref string, value string
 		return chromedp.Run(ctx,
 			chromedp.Focus([]cdp.NodeID{nodeIDs[0]}, chromedp.ByNodeID),
 			chromedp.SendKeys([]cdp.NodeID{nodeIDs[0]}, value, chromedp.ByNodeID),
+		)
+	}))
+}
+
+// executeFillSecret 安全填充：focus + 清空 + CDP Input.insertText（可信输入事件）。
+// 这是对 password/敏感字段的**显式 opt-in 安全路径** —— 默认 fill/type 仍拒绝 password
+// 字段 [IR-03]（防 AI 误入密码经明文通道），只有调用方明确选用 fillsecret 才放行。
+// 相比 fill 的 JS 合成事件（isTrusted:false），CDP Input.insertText 产生**可信输入事件**，
+// 穿透 Vue3/React 受控输入的响应式（合成 input 事件会被受控输入在重渲染时重置回旧 ref 值）。
+// 值经安全输入通道注入，不回显、不写入动作结果（IR-03 secure input channel）。
+func (e *actionEngine) executeFillSecret(ctx context.Context, ref string, value string) error {
+	if isCSSSelector(ref) {
+		// 先经 native setter 清空并触发 input（让受控 v-model 归零），再聚焦。
+		clearJS := fmt.Sprintf(`(() => {
+			const el = document.querySelector(%q);
+			if (!el) return false;
+			const tag = (el.tagName || '').toUpperCase();
+			if (tag !== 'INPUT' && tag !== 'TEXTAREA') return false;
+			el.focus();
+			const proto = tag === 'TEXTAREA'
+				? window.HTMLTextAreaElement.prototype
+				: window.HTMLInputElement.prototype;
+			const desc = Object.getOwnPropertyDescriptor(proto, 'value');
+			if (desc && desc.set) { desc.set.call(el, ''); } else { el.value = ''; }
+			el.dispatchEvent(new Event('input', { bubbles: true }));
+			return true;
+		})()`, ref)
+		var editable bool
+		if err := chromedp.Run(ctx,
+			chromedp.WaitVisible(ref, chromedp.ByQuery),
+			chromedp.Evaluate(clearJS, &editable),
+		); err != nil {
+			return err
+		}
+		if !editable {
+			return fmt.Errorf("%w: element %q not found or not an editable INPUT/TEXTAREA", ErrRefNotFound, ref)
+		}
+		// CDP Input.insertText：可信输入事件，穿透 Vue/React 受控输入与 password 保护。
+		if err := chromedp.Run(ctx, chromedp.ActionFunc(func(ctx context.Context) error {
+			return input.InsertText(value).Do(ctx)
+		})); err != nil {
+			return err
+		}
+		// 补 change 事件（lazy v-model / 校验）。
+		var changed bool
+		changeJS := fmt.Sprintf(`(() => { const el = document.querySelector(%q); if (!el) return false; el.dispatchEvent(new Event('change', { bubbles: true })); return true; })()`, ref)
+		return chromedp.Run(ctx, chromedp.Evaluate(changeJS, &changed))
+	}
+
+	nodeID, err := e.resolveBackendNodeID(ref)
+	if err != nil {
+		return err
+	}
+	return chromedp.Run(ctx, chromedp.ActionFunc(func(ctx context.Context) error {
+		nodeIDs, err := dom.PushNodesByBackendIDsToFrontend([]cdp.BackendNodeID{cdp.BackendNodeID(nodeID)}).Do(ctx)
+		if err != nil || len(nodeIDs) == 0 {
+			return fmt.Errorf("%w: node not found for ref %q", ErrRefNotFound, ref)
+		}
+		return chromedp.Run(ctx,
+			chromedp.Focus([]cdp.NodeID{nodeIDs[0]}, chromedp.ByNodeID),
+			chromedp.ActionFunc(func(ctx context.Context) error {
+				return input.InsertText(value).Do(ctx)
+			}),
 		)
 	}))
 }

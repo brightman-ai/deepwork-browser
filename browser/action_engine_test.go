@@ -26,6 +26,33 @@ func TestMapKeyNameIsCaseInsensitiveForCommonKeys(t *testing.T) {
 	}
 }
 
+// TestParseFillSecret 验证 fillsecret 的解析契约（password/敏感字段的显式 opt-in 安全填充）。
+// 执行层走 CDP Input.insertText（可信输入事件，穿透 Vue/React 受控输入 + password），
+// 默认 fill/type 仍拒绝 password [IR-03] —— 见 TestParseFillSecret 不改变那条不变量。
+func TestParseFillSecret(t *testing.T) {
+	pa, err := ParseAction("fillsecret #share-code-input 'my-secret-code'")
+	if err != nil {
+		t.Fatalf("fillsecret parse error: %v", err)
+	}
+	if pa.Op != "fillsecret" {
+		t.Errorf("Op = %q, want fillsecret", pa.Op)
+	}
+	if pa.Ref != "#share-code-input" {
+		t.Errorf("Ref = %q, want #share-code-input", pa.Ref)
+	}
+	if pa.Value != "my-secret-code" {
+		t.Errorf("Value = %q, want my-secret-code", pa.Value)
+	}
+	// 多词带空格的值（引号内）应完整保留
+	if pa2, err := ParseAction("fillsecret @r2 'a b c'"); err != nil || pa2.Value != "a b c" {
+		t.Errorf("fillsecret quoted multi-word Value = %q err=%v, want 'a b c'", pa2.Value, err)
+	}
+	// 缺值 → 报错
+	if _, err := ParseAction("fillsecret #x"); err == nil {
+		t.Error("fillsecret without value should error")
+	}
+}
+
 func TestParseKeyCombo(t *testing.T) {
 	cases := []struct {
 		in       string
