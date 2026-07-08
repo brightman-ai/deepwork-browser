@@ -12,8 +12,9 @@ bin/
 *.pem
 credentials.*
 
-# Private docs (real content in deepwork-pro; symlinked here, not committed)
-docs/
+# Private docs (real content in deepwork-pro; symlinked here, not committed).
+# 用 `docs`(不带斜杠)—— docs 是符号链接,`docs/` 只匹配目录、抓不到符号链接。
+docs
 evolve_history
 
 # Editor
