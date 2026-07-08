@@ -1,0 +1,40 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>persona-selfcheck</title>
+<style>body{font:14px/1.5 monospace;padding:16px}pre{white-space:pre-wrap;word-break:break-all}</style>
+</head>
+<body>
+<h1>dw-browser persona self-check</h1>
+<p>被测 persona 的运行时"实现事实"信号 dump(供 selfcheck 断言 + Witness 目视)。</p>
+<pre id="dump">collecting…</pre>
+<script>
+// PERSONA_SELFCHECK_SIGNALS — 与 Go 侧 PersonaSelfCheckJS 常量保持同一份信号定义。
+function dwPersonaSignals() {
+  var uad = navigator.userAgentData;
+  return {
+    userAgent: navigator.userAgent,
+    uaData: uad ? {
+      mobile: uad.mobile,
+      platform: uad.platform,
+      brands: (uad.brands || []).map(function (b) { return b.brand; })
+    } : null,
+    screen: { w: screen.width, h: screen.height, dpr: window.devicePixelRatio },
+    media: {
+      hoverNone: matchMedia('(hover: none)').matches,
+      pointerCoarse: matchMedia('(pointer: coarse)').matches,
+      dark: matchMedia('(prefers-color-scheme: dark)').matches
+    },
+    serviceWorker: ('serviceWorker' in navigator),
+    clipboard: !!(navigator.clipboard && navigator.clipboard.writeText),
+    notification: (typeof Notification !== 'undefined') ? Notification.permission : 'absent',
+    tz: Intl.DateTimeFormat().resolvedOptions().timeZone,
+    locale: Intl.DateTimeFormat().resolvedOptions().locale,
+    maxTouchPoints: navigator.maxTouchPoints,
+    weixinJSBridge: (typeof WeixinJSBridge !== 'undefined'),
+    wxEnv: (typeof __wxjs_environment !== 'undefined') ? __wxjs_environment : null
+  };
+}
+document.getElementById('dump').textContent = JSON.stringify(dwPersonaSignals(), null, 2);
+</script>
+</body>
+</html>

@@ -75,6 +75,7 @@ type PoolConfig struct {
 	MaxTabs     int           // Tab 上限 (default 10) — 全局, 跨所有 identity entry
 	IdleTimeout time.Duration // Tab 空闲回收时间 (default 5min)
 	PresetID    string        // 默认 preset (legacy 入口生效)
+	PersonaID   string        // 默认 persona (可选;与 PresetID 同源 rails)
 	ProfileID   string        // 默认 profile (legacy 入口生效)
 	Mode        BrowserMode   // "headed"(默认) / "headless" / "visible"
 }
@@ -269,6 +270,7 @@ type chromePoolEntry struct {
 	chromePath    string
 	profileDir    string
 	presetID      string // resolved preset ID for this identity (default = config.PresetID)
+	personaID     string // resolved persona ID (可选;与 presetID 同源,空=纯指纹)
 	profileID     string // resolved profile ID (default = config.ProfileID)
 	mode          BrowserMode
 	started       bool
@@ -810,6 +812,7 @@ func (p *BrowserPool) getOrCreateEntryLocked(ctx context.Context, desc IdentityD
 	entry := &chromePoolEntry{
 		identity:        desc,
 		presetID:        presetID,
+		personaID:       p.config.PersonaID, // persona 与 preset 同源(pool 默认;空=纯指纹)
 		profileID:       profileID,
 		mode:            requestedMode,
 		tabs:            make(map[string]*tabEntry),
@@ -1213,6 +1216,12 @@ func (p *BrowserPool) materializeManagedTabLocked(entry *chromePoolEntry, tabCtx
 				_, err := cdppage.AddScriptToEvaluateOnNewDocument(GenerateStealthScript(preset)).Do(ctx)
 				return err
 			}))
+			// persona facet 随 preset 同源施加(单一机制 applyPersonaEmulation)
+			if persona := resolvePersonaOrNil(entry.personaID); persona != nil {
+				_ = runCDPWithSoftTimeout(tabCtx, BrowserPoolCDPActionTimeout, chromedp.ActionFunc(func(ctx context.Context) error {
+					return applyPersonaEmulation(ctx, persona)
+				}))
+			}
 			_ = runCDPWithSoftTimeout(tabCtx, BrowserPoolCDPActionTimeout, chromedp.ActionFunc(func(ctx context.Context) error {
 				override := emulation.SetDeviceMetricsOverride(
 					int64(preset.ViewportW), int64(preset.ViewportH),

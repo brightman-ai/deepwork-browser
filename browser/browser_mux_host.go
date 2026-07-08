@@ -59,6 +59,7 @@ type BrowserMuxHostRequest struct {
 	DebugPort  int
 	Mode       BrowserMode
 	PresetID   string
+	PersonaID  string
 	Width      int
 	Height     int
 	UserAgent  string
@@ -93,6 +94,7 @@ type BrowserMuxHostState struct {
 	DebugPort             int                     `json:"debug_port"`
 	Mode                  BrowserMode             `json:"mode"`
 	PresetID              string                  `json:"preset_id,omitempty"`
+	PersonaID             string                  `json:"persona_id,omitempty"`
 	ViewportW             int                     `json:"viewport_w"`
 	ViewportH             int                     `json:"viewport_h"`
 	UserAgent             string                  `json:"user_agent,omitempty"`
@@ -1127,6 +1129,7 @@ func browserMuxHostServeArgs(req BrowserMuxHostRequest) []string {
 		"--chrome-path", req.ChromePath,
 		"--mode", string(req.Mode),
 		"--preset", req.PresetID,
+		"--persona", req.PersonaID,
 		"--width", strconv.Itoa(req.Width),
 		"--height", strconv.Itoa(req.Height),
 		"--owner-pid", strconv.Itoa(req.OwnerPID),

@@ -36,6 +36,7 @@ type SessionInfo struct {
 	TargetID         string             `json:"target_id"` // CDP target ID for the active page
 	Mode             BrowserMode        `json:"mode,omitempty"`
 	PresetID         string             `json:"preset_id,omitempty"`
+	PersonaID        string             `json:"persona_id,omitempty"` // 测试保真人格 ID(与 PresetID 同源 rails)
 	ProfileDir       string             `json:"profile_dir"`
 	PageURL          string             `json:"page_url"`
 	CreatedAt        string             `json:"created_at"`

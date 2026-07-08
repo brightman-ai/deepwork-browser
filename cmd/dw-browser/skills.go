@@ -498,6 +498,23 @@ func containsString(slice []string, s string) bool {
 // § Snap skill hint
 // ============================================================
 
+// formatPersonaHint 在 AI-native 测试场景(app-test-explore/app-test-baseline)的
+// observe 输出里主动提醒:测试保真人格(--persona)可用 —— 让 AI 不必读全 help 就发现
+// 能力(与 skill_hint 同构的能力浮现)。webvisit 不提示;已激活 persona 时不重复提示
+// (只浮现能力,不替 AI 选)。scenario 值须与 browser.Scenario 常量一致。
+func formatPersonaHint(scenario, activePersonaID string) string {
+	if activePersonaID != "" {
+		return ""
+	}
+	switch scenario {
+	case "app-test-explore", "app-test-baseline":
+		return "测试保真人格可用: --persona wechat-iphone|wecom-android|desktop-cn-dark 等" +
+			"(headless 忠实还原 in-app 微信遮罩/移动端/暗色/断网,让被测 app 适配逻辑触发); dw-browser --help 看全部"
+	default:
+		return ""
+	}
+}
+
 // formatSkillHint checks for browser skills matching the page URL's domain.
 // Returns a one-line hint string, or "" if no skill found.
 func formatSkillHint(pageURL string) string {

@@ -496,6 +496,9 @@ func runObserve(args []string) {
 	if hint := formatSkillHint(snap.URL); hint != "" {
 		output["skill_hint"] = hint
 	}
+	if ph := formatPersonaHint(sessionInfo.Scenario, sessionInfo.PersonaID); ph != "" {
+		output["persona_hint"] = ph
+	}
 
 	// — 加法: --tree (全 a11y 文本) —
 	if wantTree {

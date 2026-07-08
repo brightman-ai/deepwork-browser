@@ -203,6 +203,10 @@ func parseBrowserMuxHostFlags(args []string, cmdName string) browser.BrowserMuxH
 			req.PresetID = next()
 		case strings.HasPrefix(arg, "--preset="):
 			req.PresetID = strings.TrimPrefix(arg, "--preset=")
+		case arg == "--persona":
+			req.PersonaID = next()
+		case strings.HasPrefix(arg, "--persona="):
+			req.PersonaID = strings.TrimPrefix(arg, "--persona=")
 		case arg == "--width":
 			req.Width = atoiOrExit(next(), cmdName, "--width")
 		case strings.HasPrefix(arg, "--width="):

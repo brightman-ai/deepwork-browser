@@ -40,47 +40,12 @@ const (
 )
 
 // ============================================================
-// § 设备预设表（Chrome/CDP 表观模拟）[TH-0405-p7c 修改 1]
+// § 身份轴:Persona(可组合测试保真环境)
 // ============================================================
-
-// DevicePreset 设备预设参数。
-// 注意: 这些 preset 只驱动 Chrome/CDP 的 viewport、UA 和 touch 能力，
-// 不等同于真实 iOS Safari / WebKit 渲染环境。
-type DevicePreset struct {
-	Width  int
-	Height int
-	UA     string
-	Touch  bool
-}
-
-// devicePresets 内置设备预设表。
-var devicePresets = map[string]DevicePreset{
-	"iphone-14": {
-		Width: 390, Height: 844,
-		UA:    "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
-		Touch: true,
-	},
-	"iphone-15-pro": {
-		Width: 393, Height: 852,
-		UA:    "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
-		Touch: true,
-	},
-	"ipad-air": {
-		Width: 820, Height: 1180,
-		UA:    "Mozilla/5.0 (iPad; CPU OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
-		Touch: true,
-	},
-	"pixel-7": {
-		Width: 412, Height: 915,
-		UA:    "Mozilla/5.0 (Linux; Android 14; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36",
-		Touch: true,
-	},
-	"galaxy-s23": {
-		Width: 360, Height: 780,
-		UA:    "Mozilla/5.0 (Linux; Android 14; SM-S911B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36",
-		Touch: true,
-	},
-}
+// 设备/指纹 SSOT 已收敛到 browser 包:身份指纹 = browser.FingerprintPreset
+// (browser/fingerprint.go 的 BuiltinPresets),命名组合人格 = browser.Personas
+// (browser/persona.go)。旧的 cmd 层 DevicePreset/devicePresets 已删除(消除
+// "同一身份轴两份实现"的冗余);CLI 入口 = --persona,见 parseCommonFlags。
 
 // ============================================================
 // § CLI Flags 通用结构
@@ -103,7 +68,7 @@ type commonFlags struct {
 	mode              browser.BrowserMode
 	modeExplicit      bool
 	viewport          string // WxH 格式
-	device            string // 设备预设名
+	persona           string // --persona: 组合测试保真人格名(身份轴主入口,见 browser.Personas)
 	userAgent         string
 	diag              bool // --diag 启用每步 observation log
 	stealth           bool // --stealth 只在 headless 下生效：反检测 UA + 额外 flags
@@ -116,11 +81,13 @@ type commonFlags struct {
 	// allowHosts 仍保留 (webvisit 的信任放行参数；非绕过旁路)。
 	allowHosts []string // --allow-host <hosts> (comma-sep / repeatable): 额外信任主机
 	// 解析后
-	viewportW   int
-	viewportH   int
-	hasViewport bool
-	hasUA       bool
-	hasDevice   bool
+	viewportW         int
+	viewportH         int
+	hasViewport       bool
+	hasUA             bool
+	hasPersona        bool
+	personaTouch      bool   // 解析后:所选 persona 的 Fingerprint facet 是否触摸设备
+	personaFingerprint string // 解析后:所选 persona 的身份指纹 ID(流入 PresetID 管道)
 }
 
 // scenarioPolicyOrExit enforces the REQUIRED --scenario on every session-creating
@@ -268,12 +235,17 @@ func parseCommonFlags(args []string, cmd string) (positional []string, flags com
 		case strings.HasPrefix(arg, "--viewport="):
 			flags.viewport = arg[len("--viewport="):]
 			i++
-		case arg == "--device" && i+1 < len(args):
-			flags.device = args[i+1]
+		case arg == "--persona" && i+1 < len(args):
+			flags.persona = args[i+1]
 			i += 2
-		case strings.HasPrefix(arg, "--device="):
-			flags.device = arg[len("--device="):]
+		case strings.HasPrefix(arg, "--persona="):
+			flags.persona = arg[len("--persona="):]
 			i++
+		case arg == "--device" || strings.HasPrefix(arg, "--device="):
+			// Removed: --device 被 --persona 取代(身份轴收敛到单一 Persona 模型)。
+			// 显式 fail-closed,不让陈旧 flag 静默落到 positional。
+			fmt.Fprintf(os.Stderr, "dw-browser %s: --device 已移除,请用 --persona <名称>(dw-browser --help 看可用人格)\n", cmd)
+			os.Exit(exitRunErr)
 		case arg == "--user-agent" && i+1 < len(args):
 			flags.userAgent = args[i+1]
 			i += 2
@@ -384,24 +356,27 @@ func parseCommonFlags(args []string, cmd string) (positional []string, flags com
 		os.Exit(exitRunErr)
 	}
 
-	// 解析 --device（优先级高于 --viewport / --user-agent）
-	if flags.device != "" {
-		preset, ok := devicePresets[flags.device]
-		if !ok {
-			fmt.Fprintf(os.Stderr, "dw-browser: 未知设备预设 %q。可用预设:\n", flags.device)
-			printDevicePresets()
+	// 解析 --persona（优先级高于 --viewport / --user-agent；后者作细粒度 override 逃生口）
+	if flags.persona != "" {
+		p, err := browser.ResolvePersona(flags.persona)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "dw-browser: %v\n", err)
+			printPersonas()
 			os.Exit(exitRunErr)
 		}
-		flags.viewportW = preset.Width
-		flags.viewportH = preset.Height
-		flags.userAgent = preset.UA
-		flags.hasViewport = true
+		w, h, _ := p.EffectiveViewport()
+		flags.viewportW = w
+		flags.viewportH = h
+		flags.userAgent = p.EffectiveUserAgent()
+		flags.personaTouch = p.Touch()
+		flags.personaFingerprint = p.FingerprintID()
+		flags.hasViewport = w > 0 && h > 0
 		flags.hasUA = true
-		flags.hasDevice = true
-		// --viewport / --user-agent 若同时指定则覆盖设备预设
+		flags.hasPersona = true
+		// --viewport / --user-agent 若同时指定则覆盖 persona facet 默认值
 	}
 
-	// 解析 --viewport（覆盖设备预设的 viewport）
+	// 解析 --viewport（覆盖 persona 的 viewport）
 	if flags.viewport != "" {
 		w, h, err := parseViewport(flags.viewport)
 		if err != nil {
@@ -413,8 +388,8 @@ func parseCommonFlags(args []string, cmd string) (positional []string, flags com
 		flags.hasViewport = true
 	}
 
-	// --user-agent 单独指定（覆盖设备预设的 UA）
-	if !flags.hasDevice && flags.userAgent != "" {
+	// --user-agent 单独指定（覆盖 persona 的 UA）
+	if !flags.hasPersona && flags.userAgent != "" {
 		flags.hasUA = true
 	}
 
@@ -540,9 +515,14 @@ func browserOptionsFromFlags(flags commonFlags) []browser.BrowserOption {
 	if flags.hasUA || flags.userAgent != "" {
 		opts = append(opts, browser.WithUserAgent(flags.userAgent))
 	}
-	if flags.hasDevice {
-		preset := devicePresets[flags.device]
-		opts = append(opts, browser.WithTouchEmulation(preset.Touch))
+	if flags.hasPersona && flags.personaTouch {
+		opts = append(opts, browser.WithTouchEmulation(true))
+	}
+	if flags.hasPersona {
+		// 携带完整 persona → 直连路径由 applyPersonaEmulation realize Shell/Network/Env facet。
+		if p, err := browser.ResolvePersona(flags.persona); err == nil {
+			opts = append(opts, browser.WithPersona(p))
+		}
 	}
 	opts = append(opts, browser.WithMode(browser.NormalizeBrowserMode(flags.mode, browser.ModeVisible)))
 	if flags.stealth {
@@ -552,8 +532,11 @@ func browserOptionsFromFlags(flags commonFlags) []browser.BrowserOption {
 }
 
 // resolveSessionPresetID 为 dw-browser session/open 链路挑选一个合理的指纹 preset。
-// 优先根据显式 UA/设备推断，否则回退到当前平台默认 preset。
+// 优先用 --persona 明确指定的身份指纹;否则据显式 UA 推断;再否则回退平台默认。
 func resolveSessionPresetID(flags commonFlags) string {
+	if flags.personaFingerprint != "" {
+		return flags.personaFingerprint
+	}
 	ua := flags.userAgent
 	switch {
 	case strings.Contains(ua, "iPhone"), strings.Contains(ua, "iPad"):
@@ -643,21 +626,24 @@ func main() {
 	}
 }
 
-// printDevicePresets 打印设备预设列表。
-func printDevicePresets() {
-	fmt.Println("  内置设备预设 (--device):")
-	fmt.Println("    说明: --device 运行在 Chrome/CDP 中，只模拟 viewport/UA/touch；")
-	fmt.Println("          不能替代真实 iOS Safari / WebKit / Appium 真机或模拟器验收。")
-	fmt.Printf("    %-16s  %s\n", "预设名", "视口 / User-Agent 摘要")
-	fmt.Printf("    %-16s  %s\n", "------", "----------------------")
-	presetOrder := []string{"iphone-14", "iphone-15-pro", "ipad-air", "pixel-7", "galaxy-s23"}
-	for _, name := range presetOrder {
-		p := devicePresets[name]
-		ua := p.UA
-		if len(ua) > 50 {
-			ua = ua[:47] + "..."
+// printPersonas 打印可用测试保真人格列表 (--persona)。
+func printPersonas() {
+	fmt.Println("  内置测试保真人格 (--persona):")
+	fmt.Println("    说明: persona 组合 设备指纹 × in-app 壳 × 网络 × 环境;运行在 Chrome/CDP,")
+	fmt.Println("          不替代真机/真微信的绝对确认(QR 真实握手)。")
+	fmt.Printf("    %-16s  %s\n", "人格名", "说明 / 视口")
+	fmt.Printf("    %-16s  %s\n", "------", "-----------")
+	for _, name := range browser.PersonaOrder {
+		p := browser.Personas[name]
+		if p == nil {
+			continue
 		}
-		fmt.Printf("    %-16s  %dx%d  %s\n", name, p.Width, p.Height, ua)
+		w, h, _ := p.EffectiveViewport()
+		dim := ""
+		if w > 0 && h > 0 {
+			dim = fmt.Sprintf("%dx%d", w, h)
+		}
+		fmt.Printf("    %-16s  %s  %s\n", name, p.Name, dim)
 	}
 }
 
@@ -1154,10 +1140,10 @@ func printUsage() {
 	p("  --allow-host <h>     webvisit 信任放行主机 (逗号分隔/可重复), 其 origin 视为本地→写放行")
 	p("  --ephemeral          临时 profile, 命令结束即删 (与 --profile 互斥)")
 	p("  --profile <id>       固定 profile (登录态/Human 主浏览器)")
-	p("  --viewport WxH       视口 (默认 1920x1080)   --device <preset>   设备表观模拟   --user-agent <ua>")
+	p("  --viewport WxH       视口 (默认 1920x1080)   --persona <名称>   测试保真人格   --user-agent <ua>")
 	p("  --goal <text>        本次会话目标 (写入 contract)")
 	p("")
-	printDevicePresets()
+	printPersonas()
 	p("")
 	p("─── 定位器 (act / check 用) ────────────────────────────────")
 	p("  @r7                              上次 observe 的 ref (最稳)")
@@ -1344,12 +1330,16 @@ func connectSession(ctx context.Context, sessionInfo *browser.SessionInfo, cmdNa
 	}
 
 	presetID := strings.TrimSpace(sessionInfo.PresetID)
-	if flags.hasDevice || flags.hasUA {
+	if flags.hasPersona || flags.hasUA {
 		presetID = resolveSessionPresetID(flags)
+	}
+	personaID := strings.TrimSpace(sessionInfo.PersonaID)
+	if flags.hasPersona {
+		personaID = flags.persona
 	}
 
 	runtimeMode := browser.NormalizeBrowserMode(sessionInfo.Mode, browser.ModeVisible)
-	impl, err := browser.NewBrowserCoreFromSession(ctx, sessionInfo.WSURL, targetID, presetID, runtimeMode)
+	impl, err := browser.NewBrowserCoreFromSession(ctx, sessionInfo.WSURL, targetID, presetID, personaID, runtimeMode)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "dw-browser %s: connect to session failed: %v\n", cmdName, err)
 		os.Exit(exitRunErr)
@@ -1357,7 +1347,7 @@ func connectSession(ctx context.Context, sessionInfo *browser.SessionInfo, cmdNa
 
 	width := sessionInfo.ViewportW
 	height := sessionInfo.ViewportH
-	if flags.hasViewport || flags.hasDevice {
+	if flags.hasViewport || flags.hasPersona {
 		width = flags.viewportW
 		height = flags.viewportH
 	}
@@ -1443,6 +1433,7 @@ func ensureSessionBrowserMuxHostReady(ctx context.Context, sessionInfo *browser.
 		DebugPort:        sessionInfo.DebugPort,
 		Mode:             sessionInfo.Mode,
 		PresetID:         sessionInfo.PresetID,
+		PersonaID:        sessionInfo.PersonaID,
 		Width:            sessionInfo.ViewportW,
 		Height:           sessionInfo.ViewportH,
 		UserAgent:        sessionInfo.UserAgent,
@@ -1458,7 +1449,7 @@ func ensureSessionBrowserMuxHostReady(ctx context.Context, sessionInfo *browser.
 	if targetID, terr := ensurePageTargetReady(state.WSURL, state.DebugPort); terr == nil {
 		sessionInfo.TargetID = targetID
 		if strings.TrimSpace(sessionInfo.PageURL) != "" {
-			if impl, cerr := browser.NewBrowserCoreFromSession(hostCtx, state.WSURL, targetID, sessionInfo.PresetID, sessionInfo.Mode); cerr == nil {
+			if impl, cerr := browser.NewBrowserCoreFromSession(hostCtx, state.WSURL, targetID, sessionInfo.PresetID, sessionInfo.PersonaID, sessionInfo.Mode); cerr == nil {
 				if snap, nerr := impl.Navigate(hostCtx, sessionInfo.PageURL); nerr == nil && snap != nil {
 					sessionInfo.PageURL = snap.URL
 					sessionRefs := make([]browser.SessionRef, 0, len(snap.Refs))
@@ -2505,6 +2496,7 @@ func runOpen(args []string) {
 	}
 
 	sessionPresetID := resolveSessionPresetID(flags)
+	sessionPersonaID := flags.persona // 与 preset 同源:随会话持久化 + 传 attach 路径
 	browserSessionID := browser.BrowserSessionIDFromSessionID(flags.sessionID)
 
 	// Find Chrome binary
@@ -2558,7 +2550,7 @@ func runOpen(args []string) {
 	width, height := 1920, 1080
 	if flags.hasViewport {
 		width, height = flags.viewportW, flags.viewportH
-	} else if flags.hasDevice {
+	} else if flags.hasPersona {
 		width, height = flags.viewportW, flags.viewportH
 	}
 
@@ -2590,7 +2582,7 @@ func runOpen(args []string) {
 		Height:     height,
 		PresetID:   sessionPresetID,
 		UserAgent:  flags.userAgent,
-		Touch:      flags.hasDevice && devicePresets[flags.device].Touch,
+		Touch:      flags.personaTouch,
 		Mode:       mode,
 		Stealth:    flags.stealth,
 	})
@@ -2621,10 +2613,11 @@ func runOpen(args []string) {
 			DebugPort:        port,
 			Mode:             mode,
 			PresetID:         sessionPresetID,
+			PersonaID:        sessionPersonaID,
 			Width:            width,
 			Height:           height,
 			UserAgent:        flags.userAgent,
-			Touch:            flags.hasDevice && devicePresets[flags.device].Touch,
+			Touch:            flags.personaTouch,
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		var err error
@@ -2714,13 +2707,13 @@ func runOpen(args []string) {
 		os.Exit(exitRunErr)
 	}
 
-	impl, err := browser.NewBrowserCoreFromSession(ctx, wsURL, initialTargetID, sessionPresetID, mode)
+	impl, err := browser.NewBrowserCoreFromSession(ctx, wsURL, initialTargetID, sessionPresetID, sessionPersonaID, mode)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "dw-browser open: connect: %v\n", err)
 		os.Exit(exitRunErr)
 	}
 	defer impl.Close(ctx)
-	replayViewportProfile(impl, sessionPresetID, width, height, flags.hasDevice && devicePresets[flags.device].Touch, "open")
+	replayViewportProfile(impl, sessionPresetID, width, height, flags.personaTouch, "open")
 
 	openSnap, err := impl.Navigate(ctx, url)
 	if err != nil {
@@ -2783,6 +2776,7 @@ func runOpen(args []string) {
 		TargetID:              targetID,
 		Mode:                  mode,
 		PresetID:              sessionPresetID,
+		PersonaID:             sessionPersonaID,
 		ProfileDir:            profileDir,
 		PageURL:               currentURL,
 		Scenario:              flags.scenario,
@@ -2791,7 +2785,7 @@ func runOpen(args []string) {
 		ViewportW:             width,
 		ViewportH:             height,
 		UserAgent:             flags.userAgent,
-		Touch:                 flags.hasDevice && devicePresets[flags.device].Touch,
+		Touch:                 flags.personaTouch,
 		SnapEpoch:             0,
 		Refs:                  openRefs,
 		Ephemeral:             flags.ephemeral || flags.isolation == browser.SessionIsolationEphemeral,

@@ -16,6 +16,14 @@ const (
 	PresetAndroidChrome  = "android-chrome"
 	PresetMacOSSafariUA  = "macos-safari-ua"
 	PresetIPhoneSafariUA = "iphone-safari-ua"
+
+	// 移动设备指纹(迁移自旧 cmd/dw-browser DevicePreset;身份指纹单一 SSOT)。
+	// CP2 将用 Playwright deviceDescriptorsSource.json 复核/刷新硬件字段。
+	PresetIPhone14    = "iphone-14"
+	PresetIPhone15Pro = "iphone-15-pro"
+	PresetIPadAir     = "ipad-air"
+	PresetPixel7      = "pixel-7"
+	PresetGalaxyS24   = "galaxy-s24"
 )
 
 // FingerprintPreset 浏览器指纹预设。
@@ -122,6 +130,9 @@ var BuiltinPresets = map[string]*FingerprintPreset{
 		Touch:             true,
 		MaxTouchPoints:    5,
 	},
+	// 移动设备指纹(iphone-14/iphone-15-pro/ipad-air/pixel-7/galaxy-s24)不在此
+	// 手写:它们是设备硬件事实,单一 SSOT = vendored Playwright 子集
+	// (browser/devicedata/devices.json),经 browser/devicedata.go 的 init() 载入注册。
 }
 
 // PresetOrder 前端展示顺序。

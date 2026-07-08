@@ -55,7 +55,7 @@ func TestSessionAttachClose_DoesNotCloseExistingPageTarget(t *testing.T) {
 		t.Fatalf("extract debug port from %q: %v", debugURL.Host, err)
 	}
 
-	impl, err := NewBrowserCoreFromSession(ctx, wsURL, "", DefaultPresetID())
+	impl, err := NewBrowserCoreFromSession(ctx, wsURL, "", DefaultPresetID(), "")
 	if err != nil {
 		t.Fatalf("NewBrowserCoreFromSession() failed: %v", err)
 	}

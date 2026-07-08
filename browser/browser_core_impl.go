@@ -45,6 +45,7 @@ type browserOptions struct {
 	hasViewport bool
 	hasUA       bool
 	hasMode     bool
+	persona     *Persona // 可选:携带 Shell/Network/Env facet,运行时经 applyPersonaEmulation realize
 }
 
 // BrowserOption 是可选参数函数类型。
@@ -95,6 +96,14 @@ func WithMode(mode BrowserMode) BrowserOption {
 func WithStealth(enabled bool) BrowserOption {
 	return func(o *browserOptions) {
 		o.stealth = enabled
+	}
+}
+
+// WithPersona 携带完整 persona,其 Shell/Network/Env facet 由 applyPersonaEmulation
+// 在会话建立与每次视口重放时 realize(身份指纹仍走 WithFingerprintPreset)。
+func WithPersona(p *Persona) BrowserOption {
+	return func(o *browserOptions) {
+		o.persona = p
 	}
 }
 
@@ -273,6 +282,11 @@ func (impl *browserCoreImpl) applyLiveViewport(targetCtx context.Context, width,
 		if err := applyFingerprintEmulation(targetCtx, impl.chromePath, impl.fingerprintPreset); err != nil {
 			log.Printf("[BROWSER-LIVEVIEW] fingerprint emulation skipped (context not ready): %v", err)
 		}
+		if impl.persona != nil {
+			if err := applyPersonaEmulation(targetCtx, impl.persona); err != nil {
+				log.Printf("[BROWSER-LIVEVIEW] persona emulation skipped (context not ready): %v", err)
+			}
+		}
 		if err := applyViewportProfile(targetCtx, width, height, dpr, mobile, touch, maxTouchPoints); err != nil {
 			return fmt.Errorf("sync target viewport: %w", err)
 		}
@@ -310,6 +324,7 @@ type browserCoreImpl struct {
 	hub                *FrameBroadcastHub // 帧广播 hub，fan-out 给多 WS subscriber [CAP-BS09-C3]
 	takeoverCtrl       *takeoverController
 	fingerprintPreset  string
+	persona            *Persona // 可选:Shell/Network/Env facet,经 applyPersonaEmulation realize
 	runtimeMode        BrowserMode
 	chromePath         string
 	profileID          string
@@ -511,6 +526,13 @@ func NewBrowserCore(ctx context.Context, profileID string, optFns ...BrowserOpti
 		}
 	}
 
+	// Persona Shell/Network/Env facet realization(与 stealth 姿态正交,两模式都应用)。
+	if bopts.persona != nil {
+		_ = chromedp.Run(browserCtx, chromedp.ActionFunc(func(ctx context.Context) error {
+			return applyPersonaEmulation(ctx, bopts.persona)
+		}))
+	}
+
 	snapEngine := newSnapshotEngine()
 	actEngine := newActionEngine(snapEngine)
 	liveEngine := newLiveViewEngine(width, height)
@@ -537,6 +559,7 @@ func NewBrowserCore(ctx context.Context, profileID string, optFns ...BrowserOpti
 		liveEngine:        liveEngine,
 		takeoverCtrl:      takeoverCtrl,
 		fingerprintPreset: fingerprintPresetID,
+		persona:           bopts.persona,
 		runtimeMode:       runtimeMode,
 		chromePath:        chromePath,
 		profileID:         profileID,
@@ -1458,7 +1481,7 @@ func (impl *browserCoreImpl) RestoreRefsFromSession(refs []SessionRef) {
 
 // NewBrowserCoreFromSession 连接到已有 Chrome 实例（通过 CDP WebSocket URL）。
 // 用于 session 模式：open 后 snap/act/get/wait 都连接到同一个 Chrome 进程。
-func NewBrowserCoreFromSession(ctx context.Context, wsURL string, targetID string, presetID string, modes ...BrowserMode) (SessionCore, error) {
+func NewBrowserCoreFromSession(ctx context.Context, wsURL string, targetID string, presetID string, personaID string, modes ...BrowserMode) (SessionCore, error) {
 	var allocCtxOpts []chromedp.ExecAllocatorOption
 	_ = allocCtxOpts
 	runtimeMode := ModeVisible
@@ -1515,6 +1538,14 @@ func NewBrowserCoreFromSession(ctx context.Context, wsURL string, targetID strin
 		}
 	}
 
+	// persona facet 随 preset 同源施加(单一机制;open 命令经此 attach 路径生效)。
+	sessionPersona := resolvePersonaOrNil(personaID)
+	if sessionPersona != nil {
+		_ = chromedp.Run(browserCtx, chromedp.ActionFunc(func(ctx context.Context) error {
+			return applyPersonaEmulation(ctx, sessionPersona)
+		}))
+	}
+
 	snapEngine := newSnapshotEngine()
 	actEngine := newActionEngine(snapEngine)
 	liveEngine := newLiveViewEngine(DefaultViewportWidth, DefaultViewportHeight)
@@ -1530,6 +1561,7 @@ func NewBrowserCoreFromSession(ctx context.Context, wsURL string, targetID strin
 		liveEngine:        liveEngine,
 		takeoverCtrl:      takeoverCtrl,
 		fingerprintPreset: presetID,
+		persona:           sessionPersona,
 		runtimeMode:       runtimeMode,
 		chromePath:        chromePath,
 		profileID:         "session",
