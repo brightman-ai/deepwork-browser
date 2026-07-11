@@ -1983,6 +1983,7 @@ func mapKeyName(key string) string {
 	keyMap := map[string]string{
 		"Enter":      "\r",
 		"Tab":        "\t",
+		"Space":      " ", // 关键: 空格键须发真空格 rune(' ')→CDP code=Space/VK32, 才能 toggle 已聚焦的原生 checkbox
 		"Escape":     "\u001b",
 		"Backspace":  "\u0008",
 		"Delete":     "\u007f",
@@ -2042,6 +2043,8 @@ func canonicalKeyName(key string) string {
 		return "Enter"
 	case "tab":
 		return "Tab"
+	case "space", "spacebar", " ":
+		return "Space"
 	case "escape", "esc":
 		return "Escape"
 	case "backspace":
@@ -2131,41 +2134,117 @@ func (e *actionEngine) executeUncheck(ctx context.Context, ref string) error {
 	return e.executeToggleCheckbox(ctx, ref, false)
 }
 
+// checkedProbe 是"读取元素勾选状态"探针的三态结果。
+// Found=false → 元素不存在；Checkable=false → 元素不是可勾选控件（无 .checked 且无 aria-checked）。
+type checkedProbe struct {
+	Found     bool `json:"found"`
+	Checkable bool `json:"checkable"`
+	Checked   bool `json:"checked"`
+}
+
+// checkedClassifyBody 是"判定元素是否可勾选 + 当前勾选态"的共享 JS 函数体，操作变量 el。
+// CSS 选择器路径（document.querySelector）与语义/element ref 路径（CallFunctionOn on node）
+// 共用同一判定逻辑，消灭 isCSSSelector 分叉里的重复。
+// native <input type=checkbox|radio> 读 el.checked（boolean）；ARIA 控件回退读 aria-checked。
+const checkedClassifyBody = `
+	if (!el) return { found: false, checkable: false, checked: false };
+	if (typeof el.checked === 'boolean') return { found: true, checkable: true, checked: el.checked === true };
+	var ac = (typeof el.getAttribute === 'function') ? el.getAttribute('aria-checked') : null;
+	if (ac === 'true' || ac === 'false') return { found: true, checkable: true, checked: ac === 'true' };
+	return { found: true, checkable: false, checked: false };
+`
+
 // executeToggleCheckbox 切换复选框状态。
+// 终局实现（去除 no-op 假阳）：读真实 checked 状态走"与 executeClick 同源的节点解析路径"，
+// 仅当当前态 != 目标态时才复用 executeClick 点击（保持可信事件链不变）。
+// 状态读取失败 / 目标非可勾选控件 → 返回显式错误（fail-loud），绝不静默返回 nil 冒充成功。
 func (e *actionEngine) executeToggleCheckbox(ctx context.Context, ref string, wantChecked bool) error {
-	// Get current checked state via JS
-	var checkedSelector string
-	if isCSSSelector(ref) {
-		checkedSelector = ref
-	} else {
-		// Use ref as a fallback CSS selector stub
-		checkedSelector = ref
+	isChecked, err := e.readCheckedState(ctx, ref)
+	if err != nil {
+		return err
 	}
-
-	var isChecked bool
-	checkJS := fmt.Sprintf(`(() => {
-		const el = document.querySelector(%q);
-		if (!el) return false;
-		return el.checked === true;
-	})()`, checkedSelector)
-
-	if isCSSSelector(ref) {
-		if err := chromedp.Run(ctx, chromedp.Evaluate(checkJS, &isChecked)); err != nil {
-			isChecked = false
-		}
-		if isChecked != wantChecked {
-			return e.executeClick(ctx, ref)
-		}
+	if isChecked == wantChecked {
 		return nil
 	}
+	return e.executeClick(ctx, ref)
+}
 
-	// For node refs, check via JS using data attribute approach — just click and check
-	if wantChecked && !isChecked {
-		return e.executeClick(ctx, ref)
-	} else if !wantChecked && isChecked {
-		return e.executeClick(ctx, ref)
+// readCheckedState 读取 ref 指向元素的真实勾选态。
+// CSS 选择器 → document.querySelector；element/session ref（eN/@rN）→ 解析为已推入前端的
+// 节点后 CallFunctionOn（与 executeClick 的 BackendNodeID 解析同源）。两路径共用 checkedClassifyBody。
+func (e *actionEngine) readCheckedState(ctx context.Context, ref string) (bool, error) {
+	if isCSSSelector(ref) {
+		return e.readCheckedStateBySelector(ctx, ref)
 	}
-	return nil
+	return e.readCheckedStateByRef(ctx, ref)
+}
+
+// readCheckedStateBySelector 通过 CSS 选择器读取勾选态。
+func (e *actionEngine) readCheckedStateBySelector(ctx context.Context, selector string) (bool, error) {
+	js := fmt.Sprintf(`(() => { var el = document.querySelector(%q);%s})()`, selector, checkedClassifyBody)
+	var probe checkedProbe
+	if err := chromedp.Run(ctx, chromedp.Evaluate(js, &probe)); err != nil {
+		return false, fmt.Errorf("%w: 读取 %q 勾选状态失败: %v", ErrActFailed, selector, err)
+	}
+	return interpretCheckedProbe(selector, probe)
+}
+
+// readCheckedStateByRef 通过 element/session ref 读取勾选态：解析 BackendNodeID → dom.ResolveNode
+// 拿到 JS 对象句柄 → CallFunctionOn 在该节点上执行 checkedClassifyBody。与 executeClick 同源，
+// 不再把语义 locator 字符串塞进 document.querySelector（原病根）。
+func (e *actionEngine) readCheckedStateByRef(ctx context.Context, ref string) (bool, error) {
+	backendNodeID, err := e.resolveBackendNodeID(ref)
+	if err != nil {
+		return false, err
+	}
+	var probe checkedProbe
+	err = chromedp.Run(ctx, chromedp.ActionFunc(func(ctx context.Context) error {
+		obj, err := dom.ResolveNode().
+			WithBackendNodeID(cdp.BackendNodeID(backendNodeID)).
+			Do(ctx)
+		if err != nil {
+			return fmt.Errorf("%w: 解析 ref %q 节点失败: %v", ErrActFailed, ref, err)
+		}
+		if obj == nil || obj.ObjectID == "" {
+			return fmt.Errorf("%w: node not found for ref %q", ErrRefNotFound, ref)
+		}
+		defer func() { _ = runtime.ReleaseObject(obj.ObjectID).Do(ctx) }()
+
+		fn := `function() { var el = this;` + checkedClassifyBody + `}`
+		res, exc, callErr := runtime.CallFunctionOn(fn).
+			WithObjectID(obj.ObjectID).
+			WithReturnByValue(true).
+			Do(ctx)
+		if callErr != nil {
+			return fmt.Errorf("%w: 读取 ref %q 勾选状态失败: %v", ErrActFailed, ref, callErr)
+		}
+		if exc != nil {
+			return fmt.Errorf("%w: 读取 ref %q 勾选状态异常: %s", ErrActFailed, ref, exc.Text)
+		}
+		if res == nil || len(res.Value) == 0 {
+			return fmt.Errorf("%w: ref %q 勾选状态探针返回空", ErrActFailed, ref)
+		}
+		if err := json.Unmarshal([]byte(res.Value), &probe); err != nil {
+			return fmt.Errorf("%w: 解析 ref %q 勾选状态探针失败: %v", ErrActFailed, ref, err)
+		}
+		return nil
+	}))
+	if err != nil {
+		return false, err
+	}
+	return interpretCheckedProbe(ref, probe)
+}
+
+// interpretCheckedProbe 将探针三态结果转为 (checked, error)。
+// 未找到 → ErrRefNotFound；非可勾选控件 → 显式错误"目标不是可勾选控件"。
+func interpretCheckedProbe(ref string, p checkedProbe) (bool, error) {
+	if !p.Found {
+		return false, fmt.Errorf("%w: ref %q 未找到", ErrRefNotFound, ref)
+	}
+	if !p.Checkable {
+		return false, fmt.Errorf("%w: 目标 %q 不是可勾选控件（既非 checkbox/radio，也无 aria-checked）", ErrActFailed, ref)
+	}
+	return p.Checked, nil
 }
 
 // executeScroll 执行滚动操作。

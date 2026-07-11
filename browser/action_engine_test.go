@@ -53,6 +53,22 @@ func TestParseFillSecret(t *testing.T) {
 	}
 }
 
+// TestMapKeyName_SpaceEmitsSpaceRune 回归: "press Space" 必须发真空格 rune(" ")，
+// 而非把字面词 "Space"（5 个字符）逐字派发。空格 rune 经 kb.Encode 映射到
+// CDP code="Space"/VK=32，才能 toggle 已聚焦的原生 checkbox（生产实测假阳根因）。
+// 修前: mapKeyName("Space")=="Space"（因 canonicalKeyName 无 space 分支）→ RED。
+func TestMapKeyName_SpaceEmitsSpaceRune(t *testing.T) {
+	for _, in := range []string{"Space", "space", "spacebar", "SPACE"} {
+		if got := mapKeyName(in); got != " " {
+			t.Fatalf("mapKeyName(%q) = %q, want %q (single space rune)", in, got, " ")
+		}
+	}
+	// canonicalKeyName 归一到 "Space"（供 dispatchModifierCombo 等下游复用）。
+	if got := canonicalKeyName("spacebar"); got != "Space" {
+		t.Fatalf("canonicalKeyName(spacebar) = %q, want Space", got)
+	}
+}
+
 func TestParseKeyCombo(t *testing.T) {
 	cases := []struct {
 		in       string
