@@ -1297,25 +1297,26 @@ func (impl *browserCoreImpl) SetLiveViewport(width, height int, dpr float64, mob
 	maxTouchPoints := impl.liveViewportMaxTP
 	impl.mu.Unlock()
 
-	go func() {
-		if err := impl.applyLiveViewport(targetCtx, width, height, dpr, mobile, touch, maxTouchPoints); err != nil {
-			log.Printf("[BROWSER-LIVEVIEW] viewport metrics update failed: %v", err)
-			return
-		}
+	// Callers rely on the interface contract: once this returns, subsequent eval,
+	// pointer input, and screenshots must observe the requested device semantics.
+	if err := impl.applyLiveViewport(targetCtx, width, height, dpr, mobile, touch, maxTouchPoints); err != nil {
+		return fmt.Errorf("apply live viewport: %w", err)
+	}
 
-		// 如果 Screencast 正在运行，在当前活跃 context 上重启 CDP 命令。
-		// 新 tab / auth target 切换后 liveEngine.ctx 才是当前绑定 target，不能退回 primary target。
-		if liveViewActive {
-			if screencastCtx == nil {
-				screencastCtx = targetCtx
-			}
+	// Screencast restart is presentation plumbing; it need not delay the device
+	// semantics postcondition above.
+	if liveViewActive {
+		if screencastCtx == nil {
+			screencastCtx = targetCtx
+		}
+		go func() {
 			if err := impl.liveEngine.RestartScreencast(screencastCtx); err != nil {
 				log.Printf("[BROWSER-LIVEVIEW] viewport update screencast restart failed: %v", err)
 			} else {
 				log.Printf("[BROWSER-LIVEVIEW] viewport updated: %dx%d dpr=%.1f mobile=%v", width, height, dpr, mobile)
 			}
-		}
-	}()
+		}()
+	}
 
 	return nil
 }

@@ -325,12 +325,34 @@ Exit codes: 0=PASS  1=FAIL  2=RUN_ERROR
 // console/network telemetry misses (CHG-016 R3 — the "errs==0 but red banner on screen"
 // silent-failure gap). Four signal classes, deduped, capped, fail-safe: (1) W3C semantic
 // markers role=alert / aria-invalid / aria-errormessage; (2) error-styled leaf elements;
-// (3) red-colored visible text (computed color); (4) multilingual error keywords. Returns
-// [{kind,text,selector}]. Best practice: surface signals for the agent to INSPECT, not a
-// hard verdict — so false positives cost a look, never a missed error.
+// (3) red-colored visible text (computed color); (4) error keywords WITH corroboration.
+// Returns [{kind,text,selector}]. Signals are for the agent to INSPECT, not a hard verdict.
+//
+// 精度约束 [BUG-VISERR-NOISE] — 安全类产品实测 14 命中 9 个是误报(64% 噪声):
+//   a) 业务图形文字: SVG 图册里的「可疑异常访问」「连接失败告警规则」是**数据**不是报错
+//      → 跳过 <svg>/<canvas> 子树（应用报错 chrome 是 HTML，不画在图里）。
+//   b) danger 风格的**动作**按钮(🗑/删除规则/移入回收站)是操作入口不是错误
+//      → styled/color 类跳过 button/a/[role=button] 等可点元素。
+//   c) 裸关键词(异常/无效/未找到)在安全产品的正常文案里恒常出现 → keyword 类要求佐证:
+//      必须处于报错语境(role=alert/status 或 error/danger/toast/banner 类容器)或本身是红字。
+// 取舍(明说): 这会漏掉"纯黑、无 class、无容器"的报错文案。但 64% 噪声会让 agent 直接
+// 无视整个字段 → 告警疲劳的召回损失更大。宁可少而可信。
 const visibleErrorScanJS = `(() => {
   const out = [], seen = new Set();
   const vis = el => { try { const r = el.getBoundingClientRect(); return el.offsetParent !== null && r.width > 0 && r.height > 0; } catch (e) { return false; } };
+  const safeClosest = (el, sel) => { try { return !!(el.closest && el.closest(sel)); } catch (e) { return false; } };
+  // 业务图形内容（图册/拓扑图的文字是数据，不是应用报错）
+  const inGraphic = el => safeClosest(el, 'svg,canvas');
+  // 可点动作入口（danger 样式的删除按钮是"操作"，不是"错误"）
+  const isAction = el => safeClosest(el, 'button,a,[role=button],[role=tab],[role=menuitem],[role=link]');
+  // 报错语境容器
+  const inErrCtx = el => safeClosest(el, '[role=alert],[role=status],[class*=error i],[class*=danger i],[class*=invalid i],[class*=failed i],[class*=toast i],[class*=banner i],[class*=notice i],[data-error]');
+  const isRed = el => {
+    try {
+      const m = (getComputedStyle(el).color || '').match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/);
+      return !!m && +m[1] > 150 && +m[2] < 90 && +m[3] < 90;
+    } catch (e) { return false; }
+  };
   const push = (kind, text, sel) => {
     text = (text || '').replace(/\s+/g, ' ').trim().slice(0, 200);
     if (!text) return;
@@ -338,22 +360,29 @@ const visibleErrorScanJS = `(() => {
     if (seen.has(key)) return; seen.add(key);
     out.push({ kind: kind, text: text, selector: (sel || '').toString().slice(0, 80) });
   };
+  // (1) 语义标记 — 作者显式声明,精度最高,不加限制
   try { document.querySelectorAll('[role=alert],[aria-invalid=true],[aria-errormessage]').forEach(el => {
     if (out.length < 25 && vis(el) && el.textContent.trim()) push('aria', el.textContent, el.getAttribute('role') || 'aria-invalid');
   }); } catch (e) {}
+  // (2) 报错样式叶子 — 排除动作按钮
   try { document.querySelectorAll('[class*=error i],[class*=danger i],[class*=invalid i],[class*=failed i],[data-error]').forEach(el => {
-    if (out.length < 25 && el.children.length === 0 && vis(el) && el.textContent.trim()) push('styled', el.textContent, el.className || el.tagName);
+    if (out.length < 25 && el.children.length === 0 && vis(el) && el.textContent.trim() && !isAction(el) && !inGraphic(el)) push('styled', el.textContent, el.className || el.tagName);
   }); } catch (e) {}
+  // (3) 红字 — 排除图形内容与动作按钮
   try { document.querySelectorAll('body *').forEach(el => {
     if (out.length >= 25 || el.children.length !== 0 || !el.textContent.trim() || !vis(el)) return;
-    const c = (getComputedStyle(el).color || ''), m = c.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/);
-    if (m) { const R = +m[1], G = +m[2], B = +m[3]; if (R > 150 && G < 90 && B < 90) push('color', el.textContent, 'red:' + el.tagName); }
+    if (inGraphic(el) || isAction(el)) return;
+    if (isRed(el)) push('color', el.textContent, 'red:' + el.tagName);
   }); } catch (e) {}
-  const kw = /(invalid context|failed to|exception|not found|timed? ?out|unavailable|请求失败|加载失败|无法连接|连接失败|出错了|未找到|无效|异常|不可用|报错)/i;
+  // (4) 关键词 — 必须有佐证(报错语境 或 红字), 且排除图形/动作
+  const kw = /(invalid context|failed to|exception|timed? ?out|unavailable|请求失败|加载失败|无法连接|连接失败|出错了|报错|加载出错|保存失败|提交失败)/i;
   try { document.querySelectorAll('body *').forEach(el => {
     if (out.length >= 25 || el.children.length !== 0 || !vis(el)) return;
+    if (inGraphic(el) || isAction(el)) return;
     const t = el.textContent.trim();
-    if (t && t.length < 160 && kw.test(t)) push('keyword', t, el.tagName.toLowerCase());
+    if (!t || t.length >= 160 || !kw.test(t)) return;
+    if (!inErrCtx(el) && !isRed(el)) return; // 无佐证 → 视为业务文案
+    push('keyword', t, el.tagName.toLowerCase());
   }); } catch (e) {}
   return out.slice(0, 20);
 })()`
@@ -379,6 +408,7 @@ func runObserve(args []string) {
 	var jsonOut, outFile string
 	wantHealth, wantTree := false, false
 	topN, budget := defaultBriefTopN, defaultBriefBudget
+	topExplicit, budgetExplicit := false, false
 	clean := make([]string, 0, len(args))
 
 	for i := 0; i < len(args); i++ {
@@ -401,20 +431,24 @@ func runObserve(args []string) {
 		case arg == "--top" && i+1 < len(args):
 			if n, err := strconv.Atoi(args[i+1]); err == nil {
 				topN = n
+				topExplicit = true
 			}
 			i++
 		case strings.HasPrefix(arg, "--top="):
 			if n, err := strconv.Atoi(arg[len("--top="):]); err == nil {
 				topN = n
+				topExplicit = true
 			}
 		case arg == "--budget" && i+1 < len(args):
 			if n, err := strconv.Atoi(args[i+1]); err == nil {
 				budget = n
+				budgetExplicit = true
 			}
 			i++
 		case strings.HasPrefix(arg, "--budget="):
 			if n, err := strconv.Atoi(arg[len("--budget="):]); err == nil {
 				budget = n
+				budgetExplicit = true
 			}
 		default:
 			clean = append(clean, arg)
@@ -477,6 +511,14 @@ func runObserve(args []string) {
 		os.Exit(exitRunErr)
 	}
 
+	// 显式 --top N 未配 --budget 时，放大字节预算以真的兑现 N 个元素。
+	// budget 的职责是保护"默认"上下文开销；调用方明确要 N 个却静默只给 ~37 个 = 骗人。
+	if topExplicit && !budgetExplicit {
+		if want := topN * perElementBudgetEst; want > budget {
+			budget = want
+		}
+	}
+
 	// — 瘦默认输出 {elements@rN, user_state, run_id, step} —
 	elements, total, truncated := briefElements(snap.Refs, topN, budget)
 	output := map[string]interface{}{
@@ -486,6 +528,15 @@ func runObserve(args []string) {
 		"elements":   elements,
 		"shown":      len(elements),
 		"total":      total,
+	}
+	// [BUG-MODAL-FIRST] 有活跃模态 → 明说"只有这层能点"，并说明背后多少元素被挡
+	if activeN, blockedN, hasModal := modalNotice(snap.Refs); hasModal {
+		output["modal_active"] = true
+		output["modal_elements"] = activeN
+		output["blocked_elements"] = blockedN
+		output["modal_hint"] = fmt.Sprintf(
+			"页面被活跃模态层拦截: 只有前 %d 个元素(未标 blocked)可交互; 其余 %d 个标 blocked=true 的元素在浮层背后, 点击会静默失败 — 先处理/关闭浮层",
+			activeN, blockedN)
 	}
 	if truncated {
 		output["truncated"] = true
@@ -932,15 +983,22 @@ func runJourney(args []string) {
 
 	_, flags := parseCommonFlags(clean, "journey")
 
+	// exit terminates the process. Reassigned once a one-shot ephemeral bc is
+	// created (below) so every exit path — including the ordinary PASS/FAIL
+	// exits, not just errors — actually cleans it up: os.Exit skips defers,
+	// so a bare os.Exit here would silently undo the "TASK C: Chrome-leak
+	// fix" comment further down (that defer only ever catches panics).
+	exit := func(code int) { os.Exit(code) }
+
 	if specFile == "" {
 		fmt.Fprintln(os.Stderr, "dw-browser journey: requires --file <spec.yaml>")
-		os.Exit(exitRunErr)
+		exit(exitRunErr)
 	}
 
 	spec, err := btest.LoadSpec(specFile)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "dw-browser journey: %v\n", err)
-		os.Exit(exitRunErr)
+		exit(exitRunErr)
 	}
 
 	if baseURLOverride != "" {
@@ -977,7 +1035,7 @@ func runJourney(args []string) {
 	specNeedsVision := specHasVisualUsing(spec)
 	if deterministic && (specNeedsPlanner || specNeedsVision) {
 		fmt.Fprintln(os.Stderr, "dw-browser journey: deterministic mode: internal LLM disabled but spec requires NL planner / visual oracle")
-		os.Exit(exitRunErr)
+		exit(exitRunErr)
 	}
 	// Build planner once — shared across executor calls (both executors reject NL
 	// goals when this is nil). nil unless the spec has NL goal steps and
@@ -993,7 +1051,7 @@ func runJourney(args []string) {
 		sessionInfo, loadErr := browser.LoadSession(flags.sessionID)
 		if loadErr != nil {
 			fmt.Fprintf(os.Stderr, "dw-browser journey: %v\n", loadErr)
-			os.Exit(exitRunErr)
+			exit(exitRunErr)
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 		defer cancel()
@@ -1019,7 +1077,13 @@ func runJourney(args []string) {
 			flags.headless = scenMode == browser.ModeHeadless
 		}
 		entryURL := joinURL(spec.Environment.BaseURL, spec.Environment.EntryURL)
-		profileID := fmt.Sprintf("journey-%s-%d", spec.ID, time.Now().UnixMilli())
+		// resolveProfileID (not a bare Sprintf): --ephemeral must produce an
+		// "ephemeral-"-prefixed profile ID, or cleanupEphemeral below silently
+		// no-ops (RemoveBrowserCLIEphemeralProfile only deletes that prefix) —
+		// runtime-verified this was leaking even after the exit-closure fix,
+		// because the profile was always named "journey-<spec>-<ts>" and never
+		// actually eligible for cleanup regardless of --ephemeral.
+		profileID := resolveProfileID(flags, fmt.Sprintf("journey-%s-%d", spec.ID, time.Now().UnixMilli()))
 		browserOpts := browserOptionsFromFlags(flags)
 		bc := newBrowserCore(profileID, browserOpts...)
 
@@ -1037,6 +1101,15 @@ func runJourney(args []string) {
 			bc.Close(ctx)
 			cleanupEphemeral(profileID)
 		}()
+		// The panic-recover defer above only fires on an actual panic — os.Exit
+		// (used by every ordinary PASS/FAIL/error exit below) skips defers
+		// entirely, so it never ran on the common paths. Route all exits
+		// through this closure instead so cleanup is guaranteed either way.
+		exit = func(code int) {
+			bc.Close(ctx)
+			cleanupEphemeral(profileID)
+			os.Exit(code)
+		}
 
 		// FIX-J1: wire telemetry collector BEFORE Navigate so load-time events are captured.
 		// Strategy: prefer the browser-level CDP context (browserCtx) which is the primary
@@ -1054,7 +1127,7 @@ func runJourney(args []string) {
 		navSnap, navErr := bc.Navigate(ctx, entryURL)
 		if navErr != nil {
 			fmt.Fprintf(os.Stderr, "dw-browser journey: navigate to %s: %v\n", entryURL, navErr)
-			os.Exit(exitRunErr)
+			exit(exitRunErr)
 		}
 		// 进程内 open→act 路径：policy 由 scenario 导出（无持久 session）。
 		navURL := entryURL
@@ -1066,13 +1139,13 @@ func runJourney(args []string) {
 		executor = &oneshotActionExecutor{impl: bc, ctx: ctx, telemetry: journeyTelemetry, planner: journeyPlanner}
 	} else {
 		fmt.Fprintln(os.Stderr, "dw-browser journey: requires --id <session-id> or spec.environment.base_url")
-		os.Exit(exitRunErr)
+		exit(exitRunErr)
 	}
 
 	runner, err := btest.NewRunner(executor, evidenceDir)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "dw-browser journey: create runner: %v\n", err)
-		os.Exit(exitRunErr)
+		exit(exitRunErr)
 	}
 	// Vision oracle activates only when the spec explicitly opts in (using:[visual])
 	// and determinism is off (CLI flag OR persisted session policy). Deterministic +
@@ -1090,7 +1163,7 @@ func runJourney(args []string) {
 	result, err := runner.Run(ctx2, spec)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "dw-browser journey: run error: %v\n", err)
-		os.Exit(exitRunErr)
+		exit(exitRunErr)
 	}
 
 	enc, _ := json.MarshalIndent(result, "", "  ")
@@ -1098,11 +1171,11 @@ func runJourney(args []string) {
 
 	switch result.Status {
 	case btest.StatusPass:
-		os.Exit(exitOK)
+		exit(exitOK)
 	case btest.StatusFail:
-		os.Exit(exitFail)
+		exit(exitFail)
 	default:
-		os.Exit(exitRunErr)
+		exit(exitRunErr)
 	}
 }
 

@@ -151,11 +151,11 @@ func appendRecordStep(sessionID, action, pageURL string) {
 // runRecord — `dw-browser record {start|stop|export}` dispatcher
 func runRecord(args []string) {
 	if len(args) == 0 {
-		fmt.Fprintf(os.Stderr, "Usage: dw-browser record {start|stop|export} --session <id>\n")
+		fmt.Fprintf(os.Stderr, "Usage: dw-browser record {start|stop|export} --id <id>\n")
 		fmt.Fprintf(os.Stderr, "\n")
-		fmt.Fprintf(os.Stderr, "  record start   --session <id>   开始录制当前 session 的操作\n")
-		fmt.Fprintf(os.Stderr, "  record stop    --session <id>   停止录制，输出 trace JSON → stdout\n")
-		fmt.Fprintf(os.Stderr, "  record export  --session <id>   导出当前 trace（不停止录制）\n")
+		fmt.Fprintf(os.Stderr, "  record start   --id <id>   开始录制当前 session 的操作\n")
+		fmt.Fprintf(os.Stderr, "  record stop    --id <id>   停止录制，输出 trace JSON → stdout\n")
+		fmt.Fprintf(os.Stderr, "  record export  --id <id>   导出当前 trace（不停止录制）\n")
 		os.Exit(exitRunErr)
 	}
 	switch args[0] {
@@ -176,8 +176,8 @@ func runRecord(args []string) {
 // § runRecordStart
 // ============================================================
 
-// runRecordStart — `dw-browser record start --session <id>`
-// 1. 解析 --session flag
+// runRecordStart — `dw-browser record start --id <id>`
+// 1. 解析 --id flag
 // 2. 加载 session 文件获取当前页面 URL + domain
 // 3. 写录制状态文件
 // 4. 输出: "Recording started for {domain} (session: {id})"
@@ -185,7 +185,7 @@ func runRecordStart(args []string) {
 	_, flags := parseCommonFlags(args, "record start")
 
 	if flags.sessionID == "" {
-		fmt.Fprintf(os.Stderr, "dw-browser record start: --session <id> is required\n")
+		fmt.Fprintf(os.Stderr, "dw-browser record start: --id <id> is required\n")
 		os.Exit(exitRunErr)
 	}
 
@@ -206,7 +206,7 @@ func runRecordStart(args []string) {
 	if existing, err := loadRecordState(flags.sessionID); err == nil && existing.Recording {
 		fmt.Fprintf(os.Stderr, "dw-browser record start: recording already active for session %q (started at %s)\n",
 			flags.sessionID, existing.StartTime.Format(time.RFC3339))
-		fmt.Fprintf(os.Stderr, "  Use 'record stop --session %s' to stop it first.\n", flags.sessionID)
+		fmt.Fprintf(os.Stderr, "  Use 'record stop --id %s' to stop it first.\n", flags.sessionID)
 		os.Exit(exitRunErr)
 	}
 
@@ -226,23 +226,23 @@ func runRecordStart(args []string) {
 
 	fmt.Printf("Recording started for %s (session: %s)\n", domain, flags.sessionID)
 	fmt.Printf("  start_url: %s\n", pageURL)
-	fmt.Printf("  Use 'dw-browser act --session %s ...' to perform actions.\n", flags.sessionID)
-	fmt.Printf("  Use 'dw-browser record stop --session %s' to stop and export trace.\n", flags.sessionID)
+	fmt.Printf("  Use 'dw-browser act --id %s ...' to perform actions.\n", flags.sessionID)
+	fmt.Printf("  Use 'dw-browser record stop --id %s' to stop and export trace.\n", flags.sessionID)
 }
 
 // ============================================================
 // § runRecordStop
 // ============================================================
 
-// runRecordStop — `dw-browser record stop --session <id>`
-// 1. 解析 --session flag
+// runRecordStop — `dw-browser record stop --id <id>`
+// 1. 解析 --id flag
 // 2. 读录制状态文件 → 计算 duration → 序列化 trace JSON → stdout
 // 3. 删除状态文件（结束录制）
 func runRecordStop(args []string) {
 	_, flags := parseCommonFlags(args, "record stop")
 
 	if flags.sessionID == "" {
-		fmt.Fprintf(os.Stderr, "dw-browser record stop: --session <id> is required\n")
+		fmt.Fprintf(os.Stderr, "dw-browser record stop: --id <id> is required\n")
 		os.Exit(exitRunErr)
 	}
 
@@ -276,14 +276,14 @@ func runRecordStop(args []string) {
 // § runRecordExport
 // ============================================================
 
-// runRecordExport — `dw-browser record export --session <id>`
+// runRecordExport — `dw-browser record export --id <id>`
 // 导出当前 trace 快照，不停止录制（录制继续进行）。
 // 若需要"导出但不停止"，当前实现支持（直接读文件，不删除）。
 func runRecordExport(args []string) {
 	_, flags := parseCommonFlags(args, "record export")
 
 	if flags.sessionID == "" {
-		fmt.Fprintf(os.Stderr, "dw-browser record export: --session <id> is required\n")
+		fmt.Fprintf(os.Stderr, "dw-browser record export: --id <id> is required\n")
 		os.Exit(exitRunErr)
 	}
 
@@ -331,7 +331,7 @@ func loadSessionForRecord(sessionID string) (*sessionInfoForRecord, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, fmt.Errorf("session %q not found — use 'dw-browser open <url> --session %s --scenario app-test-explore' first", sessionID, sessionID)
+			return nil, fmt.Errorf("session %q not found — use 'dw-browser open <url> --id %s --scenario app-test-explore' first", sessionID, sessionID)
 		}
 		return nil, fmt.Errorf("read session: %w", err)
 	}

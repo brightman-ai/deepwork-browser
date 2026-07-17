@@ -310,6 +310,15 @@ func EnsureBrowserMuxHost(ctx context.Context, req BrowserMuxHostRequest) (*Brow
 		}
 		time.Sleep(BrowserMuxHostReadyPollInterval)
 	}
+	// The daemon never signaled ready and never exited on its own (that path
+	// returns above via exitCh) — it's still running. Without this kill it's
+	// an orphaned muxhost (+ whatever Chrome/display it may have already
+	// started internally) with nothing left to track it: EnsureBrowserMuxHost
+	// is returning an error, so no caller will ever hold its MuxHostID to
+	// touch or shut it down later.
+	if cmd.Process != nil {
+		_ = cmd.Process.Kill()
+	}
 	return nil, fmt.Errorf("browser_mux_host: muxhost %s not ready after %s (log=%s; last_ready_err=%v)",
 		req.MuxHostID, BrowserMuxHostReadyTimeout, hostLogPath, lastErr)
 }

@@ -54,7 +54,7 @@ const (
 // commonFlags 所有子命令共享的 flags。
 type commonFlags struct {
 	profileID         string
-	sessionID         string // --id/--session <id>
+	sessionID         string // --id <id>
 	sessionKind       browser.BrowserSessionKind
 	goal              string
 	owner             string
@@ -737,7 +737,10 @@ func runSessionList(args []string) {
 // runProfile handles `dw-browser profile list|import|prune`.
 // profile list   → lists profiles under ~/.deepwork/browser-cli/
 // profile import <src> [--name <name>] → copies src dir into the profile dir
-// profile prune --ephemeral [--dry-run] [--min-age 30m] → removes stale temp sessions
+// profile prune --ephemeral [--dry-run] [--min-age 30m] [--reap-orphaned] → removes stale temp sessions
+// --reap-orphaned also kills any still-alive Chrome left over from a task-/
+// test-/ephemeral- session whose launching CLI died without cleanup, instead
+// of leaving it protected forever (see BrowserCLIEphemeralPruneOptions.ReapOrphaned).
 //
 // Both use ~/.deepwork/browser-cli/ — the same dir that --profile <name>
 // resolves to (see resolveProfileID → browser-cli/{profileID}). Imported
@@ -854,6 +857,7 @@ func runProfilePrune(args []string) {
 	minAge := time.Duration(0)
 	dryRun := false
 	ephemeralOnly := false
+	reapOrphaned := false
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 		switch {
@@ -861,6 +865,8 @@ func runProfilePrune(args []string) {
 			ephemeralOnly = true
 		case arg == "--dry-run":
 			dryRun = true
+		case arg == "--reap-orphaned":
+			reapOrphaned = true
 		case arg == "--min-age" && i+1 < len(args):
 			d, err := time.ParseDuration(args[i+1])
 			if err != nil {
@@ -887,8 +893,9 @@ func runProfilePrune(args []string) {
 		os.Exit(exitRunErr)
 	}
 	result, err := browser.PruneBrowserCLIEphemeralProfiles(browser.BrowserCLIEphemeralPruneOptions{
-		MinAge: minAge,
-		DryRun: dryRun,
+		MinAge:       minAge,
+		DryRun:       dryRun,
+		ReapOrphaned: reapOrphaned,
 	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "dw-browser profile prune: %v\n", err)
@@ -968,17 +975,21 @@ func runOnce(args []string) {
 	bc := newBrowserCore(profileID, browserOptionsFromFlags(flags)...)
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
-	defer func() {
+	// exit closes bc + cleans up an ephemeral profile before terminating.
+	// os.Exit skips defers, so every exit path below must go through this
+	// instead of calling os.Exit directly (see cleanupEphemeral leak fix).
+	exit := func(code int) {
 		bc.Close(ctx)
 		if flags.ephemeral || flags.isolation == browser.SessionIsolationEphemeral {
 			cleanupEphemeral(profileID)
 		}
-	}()
+		os.Exit(code)
+	}
 
 	snap, err := navigateWithRetry(ctx, bc, url)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "dw-browser once: navigate failed: %v\n", err)
-		os.Exit(exitRunErr)
+		exit(exitRunErr)
 	}
 	// 进程内 open→act 路径：policy 由 scenario 导出，origin 分类用 open 后的 URL。
 	bc.SetPolicy(scenarioPolicy, snap.URL)
@@ -989,7 +1000,7 @@ func runOnce(args []string) {
 			snap, err = actWithRetry(ctx, bc, action, true)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "dw-browser once: act failed: %v\n", err)
-				os.Exit(exitFail)
+				exit(exitFail)
 			}
 		}
 		output := map[string]interface{}{
@@ -1012,7 +1023,7 @@ func runOnce(args []string) {
 			text, err := bc.Text(ctx, nil)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "dw-browser once reading: %v\n", err)
-				os.Exit(exitRunErr)
+				exit(exitRunErr)
 			}
 			// P2: SPA content retry — if text is very short, wait and retry once
 			if len(text) < 200 {
@@ -1035,7 +1046,7 @@ func runOnce(args []string) {
 			jsExpr := `Array.from(document.querySelectorAll('li')).map(li=>li.innerText.trim()).filter(Boolean)`
 			if err := bc.EvalJS(ctx, jsExpr, &items); err != nil {
 				fmt.Fprintf(os.Stderr, "dw-browser once reading list: %v\n", err)
-				os.Exit(exitRunErr)
+				exit(exitRunErr)
 			}
 			output := map[string]interface{}{
 				"view":   "reading",
@@ -1051,7 +1062,7 @@ func runOnce(args []string) {
 			jsExpr := `Array.from(document.querySelectorAll('table')).map(tbl=>Array.from(tbl.querySelectorAll('tr')).map(tr=>Array.from(tr.querySelectorAll('th,td')).map(td=>td.innerText.trim())))`
 			if err := bc.EvalJS(ctx, jsExpr, &tables); err != nil {
 				fmt.Fprintf(os.Stderr, "dw-browser once reading table: %v\n", err)
-				os.Exit(exitRunErr)
+				exit(exitRunErr)
 			}
 			output := map[string]interface{}{
 				"view":   "reading",
@@ -1064,17 +1075,17 @@ func runOnce(args []string) {
 			fmt.Println(string(enc))
 		default:
 			fmt.Fprintf(os.Stderr, "dw-browser once reading: unknown --format %q (use plain|list|table)\n", readingFormat)
-			os.Exit(exitRunErr)
+			exit(exitRunErr)
 		}
 	case "evidence":
 		data, err := screenshotWithRetry(ctx, bc, false)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "dw-browser once evidence: %v\n", err)
-			os.Exit(exitRunErr)
+			exit(exitRunErr)
 		}
 		if err := os.WriteFile(outFile, data, 0644); err != nil {
 			fmt.Fprintf(os.Stderr, "dw-browser once evidence: write screenshot: %v\n", err)
-			os.Exit(exitRunErr)
+			exit(exitRunErr)
 		}
 		enc, _ := json.MarshalIndent(map[string]interface{}{
 			"view":  "evidence",
@@ -1086,9 +1097,9 @@ func runOnce(args []string) {
 		fmt.Println(string(enc))
 	default:
 		fmt.Fprintf(os.Stderr, "dw-browser once: unknown --view %q (use action|reading|evidence)\n", view)
-		os.Exit(exitRunErr)
+		exit(exitRunErr)
 	}
-	os.Exit(exitOK)
+	exit(exitOK)
 }
 
 // printUsage 打印使用说明。
@@ -1746,6 +1757,9 @@ func buildRefsOutput(refs []browser.ElementRef) []map[string]interface{} {
 const (
 	defaultBriefTopN   = 20   // view --as brief 默认返回的可操作元素数
 	defaultBriefBudget = 4096 // 瘦输出字节硬上限,超出截断
+	// perElementBudgetEst 单元素 JSON 的字节量级估算(实测 ~90-140B)。
+	// 用于显式 --top N 时把 budget 放大到真的装得下 N 个,避免"要 320 静默给 37"。
+	perElementBudgetEst = 256
 )
 
 // isStructuralRole 判断是否为非操作性的结构容器 role (brief 模式跳过)。
@@ -1782,7 +1796,25 @@ func leanElement(ref browser.ElementRef) map[string]interface{} {
 	if ref.MatchCount > 1 {
 		el["match"] = ref.MatchCount
 	}
+	// [BUG-MODAL-FIRST] 被活跃模态遮挡 → 点了会静默失败，必须明说
+	if ref.BlockedByModal {
+		el["blocked"] = true
+	}
 	return el
+}
+
+// modalNotice 当页面存在活跃模态层时，返回给 agent 的告警信息 [BUG-MODAL-FIRST]。
+// 返回 (可交互层元素数, 被遮挡元素数, 是否有活跃模态)。
+func modalNotice(refs []browser.ElementRef) (int, int, bool) {
+	active, blocked := 0, 0
+	for _, r := range refs {
+		if r.BlockedByModal {
+			blocked++
+		} else if r.ModalRank > 0 {
+			active++
+		}
+	}
+	return active, blocked, active > 0 || blocked > 0
 }
 
 // briefElements 返回 top-N 可操作元素(优先 Interactable),并在 budget 内截断。
@@ -1940,7 +1972,7 @@ func buildUserState(snap *browser.Snapshot, activeTabURL string) map[string]inte
 }
 
 // runSnap 执行 snap 子命令: 导航到 URL 并输出 A11y 快照。
-// Session 模式: dw-browser snap --session <id>
+// Session 模式: dw-browser snap --id <id>
 // One-shot 模式: dw-browser snap <url> [flags]
 func runAct(args []string) {
 	positional, flags := parseCommonFlags(args, "act")
@@ -1969,7 +2001,7 @@ func runAct(args []string) {
 			}
 		}
 		if len(actPositional) < 1 {
-			fmt.Fprintln(os.Stderr, "dw-browser act: requires <action> with --session")
+			fmt.Fprintln(os.Stderr, "dw-browser act: requires <action> with --id")
 			os.Exit(exitRunErr)
 		}
 		runActSession(flags, actPositional[0], awaitStable, snapAfterAct, skillFlag)
@@ -1990,17 +2022,21 @@ func runAct(args []string) {
 	bc := newBrowserCore(profileID, browserOpts...)
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
-	defer func() {
+	// exit closes bc + cleans up an ephemeral profile before terminating.
+	// os.Exit skips defers, so every exit path below must go through this
+	// instead of calling os.Exit directly (see cleanupEphemeral leak fix).
+	exit := func(code int) {
 		bc.Close(ctx)
 		if flags.ephemeral {
 			cleanupEphemeral(profileID)
 		}
-	}()
+		os.Exit(code)
+	}
 
 	navSnap, err := navigateWithRetry(ctx, bc, url)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "dw-browser: navigate failed: %v\n", err)
-		os.Exit(exitRunErr)
+		exit(exitRunErr)
 	}
 	// 进程内 navigate→act 路径：policy 由 scenario 导出，origin 分类用导航后的 URL。
 	navURL := url
@@ -2013,7 +2049,7 @@ func runAct(args []string) {
 	snap, err := actWithRetry(ctx, bc, action, observe)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "dw-browser: act failed: %v\n", err)
-		os.Exit(exitFail)
+		exit(exitFail)
 	}
 
 	output := map[string]interface{}{
@@ -2024,7 +2060,7 @@ func runAct(args []string) {
 	}
 	enc, _ := json.MarshalIndent(output, "", "  ")
 	fmt.Println(string(enc))
-	os.Exit(exitOK)
+	exit(exitOK)
 }
 
 // needsPostActionSnapshot 判断操作是否需要后置 A11y 快照。
@@ -2233,13 +2269,13 @@ func runActSession(flags commonFlags, action string, awaitStable bool, snapAfter
 // ============================================================
 
 // runEval 执行 JavaScript 表达式并输出结果。
-// 用法: dw-browser eval --session <id> "<js-expression>"
+// 用法: dw-browser eval --id <id> "<js-expression>"
 // 仅支持 session 模式（需要已有 Chrome 连接）。
 func runEval(args []string) {
 	positional, flags := parseCommonFlags(args, "eval")
 
 	if flags.sessionID == "" {
-		fmt.Fprintln(os.Stderr, "dw-browser eval: requires --session <id>")
+		fmt.Fprintln(os.Stderr, "dw-browser eval: requires --id <id>")
 		os.Exit(exitRunErr)
 	}
 	if len(positional) < 1 {
@@ -2282,7 +2318,7 @@ func runEval(args []string) {
 // ============================================================
 
 // runCookieImport 从本机浏览器导入 Cookie 到当前 session。
-// 用法: dw-browser cookie-import --session <id> [--browser chrome|firefox] [--domain <filter>]
+// 用法: dw-browser cookie-import --id <id> [--browser chrome|firefox] [--domain <filter>]
 func runCookieImport(args []string) {
 	// Parse cookie-import specific flags
 	sourceBrowser := ""
@@ -2313,7 +2349,7 @@ func runCookieImport(args []string) {
 	_, flags := parseCommonFlags(cleanArgs, "cookie-import")
 
 	if flags.sessionID == "" {
-		fmt.Fprintln(os.Stderr, "dw-browser cookie-import: requires --session <id>")
+		fmt.Fprintln(os.Stderr, "dw-browser cookie-import: requires --id <id>")
 		os.Exit(exitRunErr)
 	}
 
@@ -2476,7 +2512,7 @@ func runOpenSafari(url string, flags commonFlags, scenarioPolicy browser.Session
 func runOpen(args []string) {
 	positional, flags := parseCommonFlags(args, "open")
 	if flags.sessionID == "" {
-		fmt.Fprintln(os.Stderr, "dw-browser open: requires --session <id>")
+		fmt.Fprintln(os.Stderr, "dw-browser open: requires --id <id>")
 		os.Exit(exitRunErr)
 	}
 	// --scenario 是 session-creating 命令的必选业务主入口: Policy/render/kind 全由它导出。
@@ -2518,8 +2554,9 @@ func runOpen(args []string) {
 	// Resolve profile dir. Snap Chromium is routed through its writable common dir.
 	profileID := resolveProfileID(flags, defaultProfileID(flags))
 	if pruneResult, pruneErr := browser.PruneBrowserCLIEphemeralProfiles(browser.BrowserCLIEphemeralPruneOptions{
-		ChromePath: chromePath,
-		MinAge:     browser.DefaultCLIEphemeralPruneMinAge,
+		ChromePath:   chromePath,
+		MinAge:       browser.DefaultCLIEphemeralPruneMinAge,
+		ReapOrphaned: true,
 	}); pruneErr != nil {
 		fmt.Fprintf(os.Stderr, "dw-browser open: ephemeral profile prune skipped: %v\n", pruneErr)
 	} else if pruneResult.Removed > 0 {
@@ -2528,6 +2565,33 @@ func runOpen(args []string) {
 	}
 	profileDir := browser.BrowserCLIProfileDir(chromePath, profileID)
 	mode := browser.NormalizeBrowserMode(flags.mode, browser.ModeVisible)
+
+	// cleanup tears down whatever Chrome/Xvfb/BrowserMuxHost open has actually
+	// started so far; it grows as each resource comes up and is disarmed once
+	// SaveSession succeeds (open's contract is "launch, hand off, exit — the
+	// browser outlives the CLI", so success must NOT tear anything down).
+	// exit routes every remaining exit through it — os.Exit skips defers, so
+	// without this, any failure between starting Chrome and SaveSession
+	// leaked the whole stack with no session file to ever find it by.
+	cleanup := func() {}
+	exit := func(code int) {
+		cleanup()
+		os.Exit(code)
+	}
+	// removeEphemeralProfileDirIfNeeded reclaims profileDir immediately
+	// instead of leaving it for the next scheduled prune pass (up to
+	// DefaultCLIEphemeralPruneMinAge later) — we already know for certain
+	// it's ephemeral, so there's no reason to wait. Every mode's cleanup
+	// closure calls this last, after the process it owns is confirmed dead
+	// (via browser.KillChromeProcessGroup, not a single-PID kill — a plain
+	// proc.Kill() only kills the leader and leaves zygote/renderer/gpu-
+	// process/crashpad_handler alive, which keep writing into profileDir and
+	// silently resurrect it seconds after RemoveAll reports success).
+	removeEphemeralProfileDirIfNeeded := func() {
+		if flags.ephemeral || flags.isolation == browser.SessionIsolationEphemeral {
+			_ = os.RemoveAll(profileDir)
+		}
+	}
 
 	// Phase_v2_4 startup recovery (CAP-BS09-C4 §3.5) — 与 BrowserPool 共享 4 步协议:
 	//   1. SingletonLock 残留检测 (orphan PID 强杀, 避免上次 CLI 崩溃留下的 chrome 抢锁)
@@ -2538,13 +2602,13 @@ func runOpen(args []string) {
 	if mode != browser.ModeHeaded {
 		if err := browser.RunStartupRecovery(profileDir, ownerKey); err != nil {
 			fmt.Fprintf(os.Stderr, "dw-browser open: startup recovery: %v\n", err)
-			os.Exit(exitRunErr)
+			exit(exitRunErr)
 		}
 	}
 
 	if err := os.MkdirAll(profileDir, 0755); err != nil {
 		fmt.Fprintf(os.Stderr, "dw-browser open: mkdir profile: %v\n", err)
-		os.Exit(exitRunErr)
+		exit(exitRunErr)
 	}
 
 	// Viewport
@@ -2567,13 +2631,17 @@ func runOpen(args []string) {
 			dm = &browser.DisplayManager{}
 			if !dm.EnsureDisplay() {
 				fmt.Fprintln(os.Stderr, "dw-browser open: visible mode unavailable on linux: Xvfb display setup failed")
-				os.Exit(exitRunErr)
+				exit(exitRunErr)
 			}
 			displayBackend = "xvfb"
+			cleanup = func() {
+				dm.Close()
+				removeEphemeralProfileDirIfNeeded()
+			}
 		}
 	default:
 		fmt.Fprintf(os.Stderr, "dw-browser open: unsupported browser mode %q\n", mode)
-		os.Exit(exitRunErr)
+		exit(exitRunErr)
 	}
 
 	chromeArgs := browser.BuildDetachedChromeArgs(browser.DetachedChromeLaunchOptions{
@@ -2626,15 +2694,26 @@ func runOpen(args []string) {
 		cancel()
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "dw-browser open: ensure BrowserMuxHost: %v\n", err)
-			os.Exit(exitRunErr)
+			exit(exitRunErr)
 		}
 		chromePID = hostState.ChromePID
 		wsURL = hostState.WSURL
 		port = hostState.DebugPort
 		displayBackend = hostState.DisplayBackend
+		// Runtime-scoped: ShutdownBrowserMuxHost always sends this state's
+		// RuntimeID, so the shared muxhost daemon (GlobalBrowserMuxHostID —
+		// one process multiplexes every headed session on the machine) only
+		// closes *this* runtime, not the whole daemon or any other session
+		// attached to it.
+		cleanup = func() {
+			shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 8*time.Second)
+			_, _ = browser.ShutdownBrowserMuxHost(shutdownCtx, hostState)
+			shutdownCancel()
+			removeEphemeralProfileDirIfNeeded()
+		}
 	} else if mode == browser.ModeVisible {
 		ws := browser.NewWorkspace()
-		defer ws.Close()
+		cleanup = func() { ws.Close() }
 		if spaceID, wsErr := ws.EnsureSpace(); wsErr != nil {
 			fmt.Fprintf(os.Stderr, "[workspace] EnsureSpace: %v (Chrome will appear on current Space)\n", wsErr)
 		} else if spaceID > 0 {
@@ -2648,28 +2727,34 @@ func runOpen(args []string) {
 		})
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "dw-browser open: workspace launch chrome: %v\n", err)
-			os.Exit(exitRunErr)
+			exit(exitRunErr)
 		}
 		chromePID = handle.PID()
 		wsURL = handle.WSURL()
-		// Note: 不 Kill handle — dw-browser open 语义为"启动后退出, Chrome 继续运行".
-		// Setpgid 已切断 process group, CLI 退出后 Chrome 不受影响.
+		// Note: 不 Kill handle — dw-browser open 语义为"启动后退出, Chrome 继续运行"
+		// on the SUCCESS path (cleanup is disarmed once SaveSession succeeds,
+		// see below). Setpgid 已切断 process group, CLI 退出后 Chrome 不受影响.
+		prevCleanup := cleanup
+		cleanup = func() {
+			prevCleanup()
+			browser.KillChromeProcessGroup(chromePID)
+			removeEphemeralProfileDirIfNeeded()
+		}
 	} else {
 		var err error
 		chromePID, err = startDetachedChrome(chromePath, chromeArgs)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "dw-browser open: %v\n", err)
-			os.Exit(exitRunErr)
+			exit(exitRunErr)
+		}
+		cleanup = func() {
+			browser.KillChromeProcessGroup(chromePID)
+			removeEphemeralProfileDirIfNeeded()
 		}
 		wsURL, err = browser.WaitForChromeReady(port, 120*time.Second)
 		if err != nil {
-			if chromePID > 0 {
-				if proc, findErr := os.FindProcess(chromePID); findErr == nil {
-					_ = proc.Kill()
-				}
-			}
 			fmt.Fprintf(os.Stderr, "dw-browser open: %v\n", err)
-			os.Exit(exitRunErr)
+			exit(exitRunErr)
 		}
 		if chromePID == 0 {
 			chromePID = findChromePIDForDebugPort(port)
@@ -2688,13 +2773,8 @@ func runOpen(args []string) {
 			DisplayVerified:       displayBackend == "none" || displayBackend == "xvfb" || displayBackend == "native",
 			ChromeWindowContained: displayBackend == "none" || displayBackend == "xvfb" || displayBackend == "native",
 		}); err != nil {
-			if chromePID > 0 {
-				if proc, findErr := os.FindProcess(chromePID); findErr == nil {
-					_ = proc.Kill()
-				}
-			}
 			fmt.Fprintf(os.Stderr, "dw-browser open: write profile owner marker: %v\n", err)
-			os.Exit(exitRunErr)
+			exit(exitRunErr)
 		}
 	}
 
@@ -2705,13 +2785,13 @@ func runOpen(args []string) {
 	initialTargetID, err := ensurePageTargetReady(wsURL, port)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "dw-browser open: ensure page target: %v\n", err)
-		os.Exit(exitRunErr)
+		exit(exitRunErr)
 	}
 
 	impl, err := browser.NewBrowserCoreFromSession(ctx, wsURL, initialTargetID, sessionPresetID, sessionPersonaID, mode)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "dw-browser open: connect: %v\n", err)
-		os.Exit(exitRunErr)
+		exit(exitRunErr)
 	}
 	defer impl.Close(ctx)
 	replayViewportProfile(impl, sessionPresetID, width, height, flags.personaTouch, "open")
@@ -2719,7 +2799,7 @@ func runOpen(args []string) {
 	openSnap, err := impl.Navigate(ctx, url)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "dw-browser open: navigate: %v\n", err)
-		os.Exit(exitRunErr)
+		exit(exitRunErr)
 	}
 
 	// Get current page URL after navigation
@@ -2807,8 +2887,13 @@ func runOpen(args []string) {
 	}
 	if err := browser.SaveSession(sessionInfo); err != nil {
 		fmt.Fprintf(os.Stderr, "dw-browser open: save session: %v\n", err)
-		os.Exit(exitRunErr)
+		exit(exitRunErr)
 	}
+	// Handoff complete: the session file is now the source of truth for
+	// closing this Chrome/display/muxhost (dw-browser close reads it back).
+	// Disarm cleanup so nothing below this point can ever tear down what we
+	// just successfully handed off.
+	cleanup = func() {}
 
 	output := map[string]interface{}{
 		"session_id":         flags.sessionID,
@@ -2863,14 +2948,14 @@ func runOpen(args []string) {
 	}
 	enc, _ := json.MarshalIndent(output, "", "  ")
 	fmt.Println(string(enc))
-	os.Exit(exitOK)
+	exit(exitOK)
 }
 
 // runClose 关闭 session（杀 Chrome 进程，删 session 文件）。
 func runClose(args []string) {
 	_, flags := parseCommonFlags(args, "close")
 	if flags.sessionID == "" {
-		fmt.Fprintln(os.Stderr, "dw-browser close: requires --session <id>")
+		fmt.Fprintln(os.Stderr, "dw-browser close: requires --id <id>")
 		os.Exit(exitRunErr)
 	}
 
@@ -2901,11 +2986,12 @@ func runClose(args []string) {
 
 	// Kill Chrome process when the session is not BrowserMuxHost-owned, or when
 	// BrowserMuxHost shutdown was unavailable and we must fail closed.
+	// Whole-process-group kill (see KillChromeProcessGroup doc): a plain
+	// single-PID kill leaves zygote/renderer/gpu-process/crashpad_handler
+	// alive, which keep writing into the profile dir and undo the cleanup
+	// below moments later.
 	if !hostShutdown && sessionInfo.ChromePID > 0 {
-		proc, err := os.FindProcess(sessionInfo.ChromePID)
-		if err == nil {
-			_ = proc.Kill()
-		}
+		browser.KillChromeProcessGroup(sessionInfo.ChromePID)
 	}
 	if !hostShutdown && sessionInfo.ProfileDir != "" {
 		browser.RemoveProfileOwnerMarker(sessionInfo.ProfileDir, browser.IdentityKey("dw-cli-"+sessionInfo.BrowserSessionID))
@@ -2924,12 +3010,18 @@ func runClose(args []string) {
 		fmt.Fprintf(os.Stderr, "dw-browser close: delete session: %v\n", err)
 	}
 
-	// Clean up profile dir if ephemeral (from session info or close flag)
+	// Clean up profile dir if ephemeral (from session info or close flag).
+	// Driven by SessionInfo.Ephemeral, not by directory-name prefix: the
+	// default "task" session kind is policy-classified ephemeral
+	// (session_contract.go) but its profile dir is named "task-<id>", so a
+	// prefix check here would silently never delete it.
 	if sessionInfo.Ephemeral || flags.ephemeral {
-		if sessionInfo.ProfileDir != "" && strings.HasPrefix(filepath.Base(sessionInfo.ProfileDir), browser.BrowserCLIEphemeralProfilePrefix) {
+		if sessionInfo.ProfileDir != "" {
 			_ = os.RemoveAll(sessionInfo.ProfileDir)
 		}
-		_ = browser.RemoveBrowserCLIEphemeralProfile(sessionInfo.ProfileID)
+		if sessionInfo.ProfileID != "" {
+			_ = browser.RemoveBrowserCLIProfileByID(sessionInfo.ProfileID)
+		}
 	}
 
 	enc, _ := json.MarshalIndent(map[string]interface{}{
@@ -2945,7 +3037,7 @@ func runClose(args []string) {
 func runWait(args []string) {
 	positional, flags := parseCommonFlags(args, "wait")
 	if flags.sessionID == "" {
-		fmt.Fprintln(os.Stderr, "dw-browser wait: requires --session <id>")
+		fmt.Fprintln(os.Stderr, "dw-browser wait: requires --id <id>")
 		os.Exit(exitRunErr)
 	}
 	if len(positional) < 1 {
@@ -3111,7 +3203,7 @@ func waitSelectorCountJS(selector string) string {
 }
 
 // runScreenshot 执行 screenshot 子命令。
-// Session 模式: dw-browser screenshot --session <id> [out.png]
+// Session 模式: dw-browser screenshot --id <id> [out.png]
 // One-shot 模式: dw-browser screenshot <url> [out.png]
 func runLayout(args []string) {
 	positional, flags := parseCommonFlags(args, "layout")
@@ -3128,28 +3220,32 @@ func runLayout(args []string) {
 	bc := newBrowserCore(profileID, browserOpts...)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	defer func() {
+	// exit closes bc + cleans up an ephemeral profile before terminating.
+	// os.Exit skips defers, so every exit path below must go through this
+	// instead of calling os.Exit directly (see cleanupEphemeral leak fix).
+	exit := func(code int) {
 		bc.Close(ctx)
 		if flags.ephemeral {
 			cleanupEphemeral(profileID)
 		}
-	}()
+		os.Exit(code)
+	}
 
 	snap, err := navigateWithRetry(ctx, bc, url)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "dw-browser: navigate failed: %v\n", err)
-		os.Exit(exitRunErr)
+		exit(exitRunErr)
 	}
 	bc.SetPolicy(scenarioPolicy, snap.URL)
 
 	// L2 布局断言: 验证页面有可交互元素（基本布局完整性）
 	if len(snap.Refs) == 0 && snap.SnapshotType == "screenshot_fallback" {
 		fmt.Fprintf(os.Stderr, "[L2 FAIL] page has no interactive elements: %s\n", url)
-		os.Exit(exitFail)
+		exit(exitFail)
 	}
 
 	fmt.Printf("[L2 PASS] layout OK: %s (refs=%d, type=%s)\n", url, len(snap.Refs), snap.SnapshotType)
-	os.Exit(exitOK)
+	exit(exitOK)
 }
 
 // ============================================================
@@ -3394,12 +3490,16 @@ func runTest(args []string) {
 	bc.SetPolicy(scenarioPolicy, "")
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
-	defer func() {
+	// exit closes bc + cleans up an ephemeral profile before terminating.
+	// os.Exit skips defers, so every exit path below must go through this
+	// instead of calling os.Exit directly (see cleanupEphemeral leak fix).
+	exit := func(code int) {
 		bc.Close(ctx)
 		if flags.ephemeral {
 			cleanupEphemeral(profileID)
 		}
-	}()
+		os.Exit(code)
+	}
 
 	passed := 0
 	failed := 0
@@ -3426,7 +3526,7 @@ func runTest(args []string) {
 		f, err := os.Create(obsFileName)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "dw-browser test: --diag: create obs file: %v\n", err)
-			os.Exit(exitRunErr)
+			exit(exitRunErr)
 		}
 		obsFile = f
 		defer obsFile.Close()
@@ -3675,9 +3775,9 @@ func runTest(args []string) {
 	if failed > 0 {
 		// 等待所有 failure report goroutine 完成后再退出（最长不超过 server timeout × 2）
 		reportWG.Wait()
-		os.Exit(exitFail)
+		exit(exitFail)
 	}
-	os.Exit(exitOK)
+	exit(exitOK)
 }
 
 // runPostAssertions 执行 AAAAA 后置断言 (P2)。
@@ -3836,7 +3936,7 @@ func runAudit(args []string) {
 	_, flags := parseCommonFlags(cleanArgs, "audit")
 
 	if flags.sessionID == "" {
-		fmt.Fprintln(os.Stderr, "dw-browser audit: requires --session <id>")
+		fmt.Fprintln(os.Stderr, "dw-browser audit: requires --id <id>")
 		os.Exit(exitRunErr)
 	}
 

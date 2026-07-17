@@ -138,6 +138,13 @@ type ElementRef struct {
 	NameShort          string      // 截断后的 name（≤50 字符，用于显示）
 	RecommendedLocator string      // 推荐的 locator（供 Agent 直接使用）
 	MatchCount         int         // 同 role+name 的元素数量
+
+	// ModalRank 活跃模态层序号 [BUG-MODAL-FIRST]。
+	// 0 = 基础层（页面本体）；≥1 = 处于第 N 个活跃模态（aria-modal=true / <dialog> showModal）子树内。
+	// 序号越大 = 越晚出现在 DOM = 越靠上（栈顶）。栈顶模态是"当前唯一能交互的那一层"。
+	ModalRank int
+	// BlockedByModal 该元素被更上层的活跃模态遮挡，点击会静默失败（不是栈顶层）。
+	BlockedByModal bool
 }
 
 // ScreencastFrame 是 Screencast 帧（LiveView 推送）。

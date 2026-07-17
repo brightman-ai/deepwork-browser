@@ -52,6 +52,9 @@ const (
 	jsEnrichmentTimeout    = 1200 * time.Millisecond
 	selectorResolveTimeout = 3 * time.Second
 	partialAXProbeTimeout  = 5 * time.Second
+	// selectorExistsProbeTimeout CSS 选择器"是否存在"的即时探测上限 [BUG-SCROLLINTO-OPAQUE]。
+	// 只跑一句 querySelector，不等元素出现 —— 这正是它和 chromedp.ByQuery 的区别。
+	selectorExistsProbeTimeout = 1500 * time.Millisecond
 )
 
 type pageLoadProbe struct {
@@ -534,10 +537,49 @@ var genericRoles = map[string]bool{
 	"InlineTextBox": true,
 }
 
-// extractInteractableRefs 从 A11y Tree 中提取可交互元素，按 DFS 顺序分配 Refs [TC-09-U-26]。
+// modalContainerRoles 是能承载"活跃模态层"的 role [BUG-MODAL-FIRST]。
+var modalContainerRoles = map[string]bool{
+	"dialog":      true,
+	"alertdialog": true,
+}
+
+// isActiveModalContainer 判断节点是否为一个"活跃模态"容器 [BUG-MODAL-FIRST]。
+//
+// 证据 (■ 实测 Chrome getFullAXTree):
+//   - <div role="dialog" aria-modal="true"> → AX 节点 role=dialog + properties 含 modal=true
+//   - <dialog> 经 showModal() 打开 → 同样带 modal=true
+//   - 被 display:none / hidden / visibility:hidden 关掉的模态 → 整个子树不出现在 AX 树里，
+//     因此不会误判为活跃（无需额外可见性探测）。仍保留 !Ignored 作为防御。
+//
+// 这是纯 A11y 树信号：不碰 CDP DOM 域（TH-0405-p7c 实测 DOM/DOMSnapshot 域会破坏 chromedp Click 状态）。
+func isActiveModalContainer(node *accessibility.Node) bool {
+	if node == nil || node.Ignored {
+		return false
+	}
+	if !modalContainerRoles[getRoleName(node)] {
+		return false
+	}
+	for _, prop := range node.Properties {
+		if prop == nil || prop.Value == nil {
+			continue
+		}
+		if prop.Name == "modal" && prop.Value.Value.String() == "true" {
+			return true
+		}
+	}
+	return false
+}
+
+// extractInteractableRefs 从 A11y Tree 中提取可交互元素 [TC-09-U-26]。
+//
+// 顺序契约 [BUG-MODAL-FIRST]: 活跃模态层的元素排在最前（栈顶模态优先），基础层其后；
+// 同层内保持 DFS（视觉阅读）顺序。
+//
+// 真因备忘: 模态/抽屉通常 Teleport/append 到 <body> 末尾 → DFS 序天然排最后 →
+// 被 observe 默认 top-20 截断 → agent 看不见"当前唯一能点的那一层"，却把背后点不到的
+// 元素全列出来 → 一路点空气且零报错。排序而非过滤是正解：不丢信息，只纠正优先级。
 func extractInteractableRefs(nodes []*accessibility.Node) []ElementRef {
 	var refs []ElementRef
-	counter := 1
 
 	// 建立 nodeID → node 映射，用于 DFS 遍历
 	nodeMap := make(map[accessibility.NodeID]*accessibility.Node, len(nodes))
@@ -548,9 +590,11 @@ func extractInteractableRefs(nodes []*accessibility.Node) []ElementRef {
 	}
 
 	// DFS 遍历（找根节点，通常是第一个没有父节点的节点）
-	var dfs func(nodeID accessibility.NodeID)
+	// modalRank: 当前所处的活跃模态层序号（0 = 基础层）；modalSeq: 已遇到的活跃模态计数器。
+	var dfs func(nodeID accessibility.NodeID, modalRank int)
 	visited := make(map[accessibility.NodeID]bool)
-	dfs = func(nodeID accessibility.NodeID) {
+	modalSeq := 0
+	dfs = func(nodeID accessibility.NodeID, modalRank int) {
 		if visited[nodeID] {
 			return
 		}
@@ -561,14 +605,18 @@ func extractInteractableRefs(nodes []*accessibility.Node) []ElementRef {
 			return
 		}
 
+		// 进入活跃模态子树 → 分配新的（更高的）层序号，子树继承
+		if isActiveModalContainer(node) {
+			modalSeq++
+			modalRank = modalSeq
+		}
+
 		// 检查是否为可交互元素
 		roleName := getRoleName(node)
 		if !genericRoles[roleName] && (interactableRoles[roleName] || isInteractableByProperties(node)) {
 			name := getAccessibleName(node)
 			placeholder := getPlaceholder(node)
 			if name != "" || placeholder != "" || interactableRoles[roleName] {
-				ref := fmt.Sprintf("e%d", counter)
-				counter++
 				nameShort := name
 				if len(nameShort) > 50 {
 					// Truncate by runes, not bytes
@@ -578,7 +626,6 @@ func extractInteractableRefs(nodes []*accessibility.Node) []ElementRef {
 					}
 				}
 				refs = append(refs, ElementRef{
-					Ref:           ref,
 					BackendNodeID: int64(node.BackendDOMNodeID),
 					Role:          roleName,
 					Name:          name,
@@ -586,24 +633,26 @@ func extractInteractableRefs(nodes []*accessibility.Node) []ElementRef {
 					NameShort:     nameShort,
 					Placeholder:   placeholder,
 					Interactable:  true,
+					ModalRank:     modalRank,
 				})
 			}
 		}
 
 		// 递归处理子节点
 		for _, childID := range node.ChildIDs {
-			dfs(childID)
+			dfs(childID, modalRank)
 		}
 	}
 
 	// 找根节点并开始 DFS
 	for _, node := range nodes {
 		if node != nil && len(findParent(node, nodes)) == 0 {
-			dfs(node.NodeID)
+			dfs(node.NodeID, 0)
 		}
 	}
 
-	// 如果 DFS 遍历没有找到，直接遍历所有节点
+	// 如果 DFS 遍历没有找到，直接遍历所有节点（AX 树结构异常时的兜底；
+	// 无父子关系可用 → 无法判断模态归属，ModalRank 全为 0）
 	if len(refs) == 0 {
 		for _, node := range nodes {
 			if node == nil {
@@ -618,14 +667,11 @@ func extractInteractableRefs(nodes []*accessibility.Node) []ElementRef {
 			}
 			name := getAccessibleName(node)
 			placeholder := getPlaceholder(node)
-			ref := fmt.Sprintf("e%d", counter)
-			counter++
 			nameShort := name
 			if runes := []rune(nameShort); len(runes) > 50 {
 				nameShort = string(runes[:47]) + "..."
 			}
 			refs = append(refs, ElementRef{
-				Ref:           ref,
 				BackendNodeID: int64(node.BackendDOMNodeID),
 				Role:          roleName,
 				Name:          name,
@@ -637,6 +683,40 @@ func extractInteractableRefs(nodes []*accessibility.Node) []ElementRef {
 		}
 	}
 
+	// 模态优先重排 + 分配 Ref 名（Ref 序号必须等于最终位置，@rN 依赖这一点）
+	return orderModalFirst(refs)
+}
+
+// orderModalFirst 按"活跃模态层优先"重排元素，并（重新）分配 eN Ref 名 [BUG-MODAL-FIRST]。
+//
+// 排序键:
+//  1. 栈顶模态优先: ModalRank 降序（rank 越大 = DOM 中越晚出现 = 越靠上），基础层(0)垫底
+//  2. 同层内: 保持 DFS（视觉阅读）顺序 —— 用稳定排序保证
+//
+// 同时给非栈顶层元素打 BlockedByModal：它们被遮挡，点了会静默失败。
+// 这里只重排 + 标注，不删除：aria-modal 是作者声明而非浏览器强制，全删会在声明不准时把 agent 弄瞎。
+func orderModalFirst(refs []ElementRef) []ElementRef {
+	maxRank := 0
+	for i := range refs {
+		if refs[i].ModalRank > maxRank {
+			maxRank = refs[i].ModalRank
+		}
+	}
+
+	if maxRank > 0 {
+		// 稳定排序: 高 ModalRank 在前；同 rank 保持原 DFS 次序
+		sort.SliceStable(refs, func(i, j int) bool {
+			return refs[i].ModalRank > refs[j].ModalRank
+		})
+		for i := range refs {
+			refs[i].BlockedByModal = refs[i].ModalRank < maxRank
+		}
+	}
+
+	// Ref 名必须在排序后分配：eN / @rN 的序号即最终位置
+	for i := range refs {
+		refs[i].Ref = fmt.Sprintf("e%d", i+1)
+	}
 	return refs
 }
 

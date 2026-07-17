@@ -73,9 +73,37 @@ var windowsChromePaths = []string{
 	`C:\Program Files (x86)\Google\Chrome\Application\chrome.exe`,
 }
 
+// EnvChromePath — 显式指定 Chrome 可执行文件, 优先于一切自动探测。
+//
+// 为什么需要它 (2026-07-14 实测): Linux 默认走 snap wrapper (`/usr/bin/chromium-browser`), 而
+// snap-confine 在某些宿主状态下会直接拒绝启动 —— 实测报错:
+//
+//	snap-confine is packaged without necessary permissions and cannot continue
+//	required permitted capability cap_dac_override not found in current capabilities
+//
+// 同一台机器上**直接跑 snap 内的真实二进制**
+// (`/snap/chromium/current/usr/lib/chromium-browser/chrome`) 一切正常。也就是说, 挂掉的是 snap
+// 的封装层, 不是 Chrome 本身。这种情况下调用方必须有一条出路, 而不是眼睁睁看着整条测试链停摆
+// —— 那正是当时发生的事: 一个 Human 旅程验证 agent 花了 80 分钟、8 次尝试, 全卡在 open 这一步。
+//
+// 保留 snap wrapper 作**默认**是有道理的 (见 linuxChromePaths 头注: 沙箱内的 TLS/DNS 行为与桌面
+// 一致, 直连真二进制会让 Cloudflare 那类反爬检测出差异)。但那个理由只对 `webvisit` 这种"操作真实
+// 公网站点"的场景成立; 对着 localhost 测自家 app 时, 它只是一个能把人卡死的默认值。
+// 所以: 默认不变, 但给出显式覆盖口 —— **显式优于隐式**, 调用方知道自己在做什么。
+const EnvChromePath = "DW_BROWSER_CHROME"
+
 // FindChrome 返回本地 Chrome/Edge/Chromium 可执行文件路径。
 // 未找到返回 ErrBrowserNotFound。无浏览器不下载 Chromium [IR-02, BP §A2]。
 func (l *chromeLauncherImpl) FindChrome() (string, error) {
+	// 显式覆盖优先。指了却不存在 → 明确报错, 不要"友好地"退回自动探测:
+	// 那样只会让调用方以为覆盖生效了, 而实际上跑的还是那个起不来的 snap wrapper。
+	if p := strings.TrimSpace(os.Getenv(EnvChromePath)); p != "" {
+		if _, err := os.Stat(p); err != nil {
+			return "", fmt.Errorf("%s=%q: %w", EnvChromePath, p, err)
+		}
+		return p, nil
+	}
+
 	var candidates []string
 	switch runtime.GOOS {
 	case "linux":

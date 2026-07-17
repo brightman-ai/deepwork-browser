@@ -454,6 +454,9 @@ func ParseAction(action string) (*ParsedAction, error) {
 		}
 		value, quoted := extractQuotedValue(action, parts[1])
 		if !quoted {
+			if err := checkWithKeywordMisuse("fill", parts); err != nil {
+				return nil, err
+			}
 			value = strings.Join(parts[2:], " ")
 		}
 		return &ParsedAction{Op: "fill", Ref: parts[1], Value: value}, nil
@@ -465,6 +468,9 @@ func ParseAction(action string) (*ParsedAction, error) {
 		// 提取引号内的值（支持多词）
 		value, quoted := extractQuotedValue(action, parts[1])
 		if !quoted {
+			if err := checkWithKeywordMisuse("type", parts); err != nil {
+				return nil, err
+			}
 			value = strings.Join(parts[2:], " ")
 		}
 		return &ParsedAction{Op: "type", Ref: parts[1], Value: value}, nil
@@ -478,6 +484,9 @@ func ParseAction(action string) (*ParsedAction, error) {
 		}
 		value, quoted := extractQuotedValue(action, parts[1])
 		if !quoted {
+			if err := checkWithKeywordMisuse("fillsecret", parts); err != nil {
+				return nil, err
+			}
 			value = strings.Join(parts[2:], " ")
 		}
 		return &ParsedAction{Op: "fillsecret", Ref: parts[1], Value: value}, nil
@@ -614,6 +623,35 @@ func extractQuotedValue(action string, afterRef string) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+// checkWithKeywordMisuse 拦截 `fill <loc> with 'v'` 这类不存在的 `with` 语法 [BUG-FILL-WITH]。
+//
+// 真因: DSL 合法支持不带引号的多词值（fill @r1 hello world → "hello world"），于是
+// `fill @r1 with 'hello'` 会被静默当成字面值 "with 'hello'" 填进输入框 —— act 返回
+// success:true、退出码 0，agent 完全无从察觉。实测已复现（输入框里真是 with 'hello'）。
+//
+// 判据取"极不可能是真实意图"的窄形状: 值以裸词 with 开头 + 其后是完整引号串。
+// 逃生舱: 真要填这个字面量就整体加引号 —— fill @r1 "with 'hello'" 走 quoted 路径，不受影响。
+func checkWithKeywordMisuse(op string, parts []string) error {
+	if len(parts) < 4 || !strings.EqualFold(parts[2], "with") {
+		return nil
+	}
+	tail := strings.TrimSpace(strings.Join(parts[3:], " "))
+	if len(tail) < 2 {
+		return nil
+	}
+	q := tail[0]
+	if (q != '\'' && q != '"') || tail[len(tail)-1] != q {
+		return nil
+	}
+	inner := tail[1 : len(tail)-1]
+	literal := strings.Join(parts[2:], " ") // 误用时会被填进去的整串, 如: with 'hello'
+	return fmt.Errorf("%w: %s 不支持 `with` 语法 (整串 %q 会被当成字面值填进去)。正确写法: %s %s %s%s%s；"+
+		"若确实要填字面量 %q，请整体加引号: %s %s %q",
+		ErrActFailed, op, literal,
+		op, parts[1], string(q), inner, string(q),
+		literal, op, parts[1], literal)
 }
 
 // Execute 执行操作 [TC-09-U-05~08, TC-09-U-27, TC-09-U-28]。
@@ -1074,7 +1112,9 @@ func (e *actionEngine) elementBoxForSelector(ctx context.Context, ref string) (a
 		const r = el.getBoundingClientRect();
 		return JSON.stringify({left: r.left, top: r.top, width: r.width, height: r.height});
 	})()`, ref)
-	if err := chromedp.Run(ctx, chromedp.WaitVisible(ref, chromedp.ByQuery), chromedp.Evaluate(js, &boxJSON)); err != nil {
+	// Coordinate actions operate on the geometry visible now. Waiting here makes a
+	// typo look like a hung gesture and duplicates the explicit `wait` command.
+	if err := chromedp.Run(ctx, chromedp.Evaluate(js, &boxJSON)); err != nil {
 		return actionElementBox{}, err
 	}
 	if boxJSON == "" || boxJSON == "null" {
@@ -2109,6 +2149,20 @@ func (e *actionEngine) executeFocusSelector(ctx context.Context, ref string) err
 // executeScrollIntoView 滚动元素到可见区域。
 func (e *actionEngine) executeScrollIntoView(ctx context.Context, ref string) error {
 	if isCSSSelector(ref) {
+		// 先做一次即时存在性探测再交给 chromedp [BUG-SCROLLINTO-OPAQUE]。
+		// chromedp.ByQuery 语义是"等元素出现"，选择器打错 → 干等到 ctx 超时(实测 45s)，
+		// 且只吐 "context deadline exceeded" —— agent 会误判成时序问题去重试，
+		// 而不是意识到自己选择器写错了。这里把"不存在"翻译成人话，且立刻返回。
+		var exists bool
+		probeCtx, cancel := context.WithTimeout(ctx, selectorExistsProbeTimeout)
+		err := chromedp.Run(probeCtx, chromedp.Evaluate(
+			`!!document.querySelector(`+strconv.Quote(ref)+`)`, &exists))
+		cancel()
+		// 探测本身失败（如选择器语法非法）不武断否定，交给下游 chromedp 处理
+		if err == nil && !exists {
+			return fmt.Errorf("%w: scrollinto: CSS 选择器 %q 在当前页面匹配 0 个元素 "+
+				"(不是超时；先 observe 确认元素真的在 DOM 里)", ErrRefNotFound, ref)
+		}
 		return chromedp.Run(ctx, chromedp.ScrollIntoView(ref, chromedp.ByQuery))
 	}
 	backendNodeID, err := e.resolveBackendNodeID(ref)
