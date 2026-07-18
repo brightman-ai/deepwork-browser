@@ -72,6 +72,13 @@ type SessionInfo struct {
 	// gating + LLM determinism) declared at open and enforced per-act. See
 	// policy.go. Zero value normalizes to the safe default (deny remote writes).
 	Policy SessionPolicy `json:"policy,omitempty"`
+
+	// BrowserChrome 会话级 chrome 仿真模式（"on" = 启用；空 = 关）。open 时定死，
+	// 中途不漂（determinism）。几何不在此重复 —— 经 PresetID 从 SSOT 重导出。
+	BrowserChrome string `json:"browser_chrome,omitempty"`
+	// PageScale 当前页面缩放（act "zoom" 设置；0 视为 1.0）。跨 CLI 调用镜像
+	// Chrome 内的 Emulation.setPageScaleFactor 状态，供 observe/遮挡折算。
+	PageScale float64 `json:"page_scale,omitempty"`
 }
 
 // SessionRef セッション内の要素 ref エントリ。

@@ -3,7 +3,7 @@
     "source": "Playwright deviceDescriptorsSource.json",
     "source_url": "https://cdn.jsdelivr.net/npm/playwright-core/lib/server/deviceDescriptorsSource.json",
     "license": "Apache-2.0 (microsoft/playwright)",
-    "note": "geometry/UA/mobile/touch sourced verbatim from Playwright; platform/vendor/webgl/maxTouchPoints/languages are dw-added fingerprint fields. Single SSOT for dw-browser device fingerprints (loaded via go:embed).",
+    "note": "geometry/UA/mobile/touch sourced verbatim from Playwright; platform/vendor/webgl/maxTouchPoints/languages are dw-added fingerprint fields. browserChrome is the dw-added browser-chrome geometry SSOT (spec docs/product/browser-chrome/): screenH-statusBarH-bottomBarExpandedH MUST equal viewportH (load-time fail-fast). browserChrome numbers derived from Playwright svh + Apple HIG, pending --engine safari Simulator calibration. Single SSOT for dw-browser device fingerprints (loaded via go:embed).",
     "vendored": "2026-07-06"
   },
   "devices": {
@@ -20,7 +20,15 @@
       "webglVendor": "Apple Inc.",
       "webglRenderer": "Apple GPU",
       "maxTouchPoints": 5,
-      "languages": "['en-US','en']"
+      "languages": "['en-US','en']",
+      "browserChrome": {
+        "style": "safari-bottom-bar",
+        "screenH": 844,
+        "statusBarH": 47,
+        "bottomBarExpandedH": 133,
+        "bottomBarCollapsedH": 33,
+        "homeIndicatorH": 34
+      }
     },
     "iphone-15-pro": {
       "playwright_source": "iPhone 15 Pro",
@@ -35,7 +43,15 @@
       "webglVendor": "Apple Inc.",
       "webglRenderer": "Apple GPU",
       "maxTouchPoints": 5,
-      "languages": "['en-US','en']"
+      "languages": "['en-US','en']",
+      "browserChrome": {
+        "style": "safari-bottom-bar",
+        "screenH": 852,
+        "statusBarH": 59,
+        "bottomBarExpandedH": 134,
+        "bottomBarCollapsedH": 34,
+        "homeIndicatorH": 34
+      }
     },
     "ipad-air": {
       "playwright_source": "iPad Pro 11",

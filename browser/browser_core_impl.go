@@ -348,6 +348,7 @@ type browserCoreImpl struct {
 	virtualDisplay     *VirtualDisplayManager
 	workspace          Workspace
 	ownerIdentityKey   IdentityKey
+	chromeSim          *BrowserChromeSpec // 非 nil = browser chrome 仿真启用（open 定死；SSOT 经 preset）
 
 	// policyMu 独立保护 policy/lastURL，与 mu 解耦：Navigate 在持有 mu.RLock
 	// 期间也需刷新 lastURL，若复用 mu 会触发 RWMutex 不可重入的写锁死锁。
@@ -1076,14 +1077,27 @@ func (impl *browserCoreImpl) Text(ctx context.Context, focus *string) (string, e
 	return impl.snapEngine.GetText(runCtx, focus)
 }
 
-// Screenshot 截图。
+// Screenshot 截图。chrome 仿真会话在此合成 Safari chrome 层（页面外绘制，
+// 所有截图消费者——observe/screenshot/evidence——统一经过这个唯一出口）。
 func (impl *browserCoreImpl) Screenshot(ctx context.Context, annotate bool) ([]byte, error) {
 	impl.mu.RLock()
 	defer impl.mu.RUnlock()
 	targetCtx := impl.currentCtx()
 	runCtx, cancel := deriveTargetContext(ctx, targetCtx)
 	defer cancel()
-	return impl.snapEngine.Screenshot(runCtx, annotate)
+	data, err := impl.snapEngine.Screenshot(runCtx, annotate)
+	if err != nil || impl.chromeSim == nil {
+		return data, err
+	}
+	// 主题取色（真机行为：底栏随页面 theme-color/背景）；探测失败用浅色缺省。
+	var theme string
+	_ = chromedp.Run(runCtx, chromedp.Evaluate(browserChromeThemeProbeJS, &theme))
+	composed, cErr := CompositeBrowserChrome(data, impl.chromeSim, theme, annotate)
+	if cErr != nil {
+		log.Printf("[BROWSER] browser-chrome composite failed (returning raw screenshot): %v", cErr)
+		return data, nil
+	}
+	return composed, nil
 }
 
 func (impl *browserCoreImpl) ScreenshotTarget(ctx context.Context, targetID string, annotate bool) ([]byte, error) {

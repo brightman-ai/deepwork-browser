@@ -42,6 +42,9 @@ type FingerprintPreset struct {
 	Mobile            bool    `json:"mobile"`
 	Touch             bool    `json:"touch"`
 	MaxTouchPoints    int     `json:"max_touch_points"`
+	// BrowserChrome 浏览器 chrome 几何（iOS Safari 底栏等）；nil = 该设备无
+	// chrome 仿真数据（--browser-chrome auto 下不启用）。SSOT = devices.json。
+	BrowserChrome *BrowserChromeSpec `json:"browser_chrome,omitempty"`
 }
 
 // BuiltinPresets 内置浏览器指纹预设 (2026-04 主流版本 + 主流硬件)。

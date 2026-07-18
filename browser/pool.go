@@ -1222,6 +1222,10 @@ func (p *BrowserPool) materializeManagedTabLocked(entry *chromePoolEntry, tabCtx
 					return applyPersonaEmulation(ctx, persona)
 				}))
 			}
+			// 注意: 此处恒用 preset.ViewportH(=svh)。browser chrome 仿真会话(CLI open
+			// 视口=lvh)当前不经此路径物化; 若未来 headed/mux 多 tab 叠加 chrome 仿真,
+			// 新 tab 以 svh 物化、依赖上层 replayViewportProfile 重放纠正——届时应在此
+			// 感知会话 chrome-sim 并改用 BrowserChrome.LargeViewportH()(备察窄窗口)。
 			_ = runCDPWithSoftTimeout(tabCtx, BrowserPoolCDPActionTimeout, chromedp.ActionFunc(func(ctx context.Context) error {
 				override := emulation.SetDeviceMetricsOverride(
 					int64(preset.ViewportW), int64(preset.ViewportH),

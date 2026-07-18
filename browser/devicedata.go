@@ -24,19 +24,20 @@ type deviceFingerprintFile struct {
 }
 
 type deviceFingerprint struct {
-	PlaywrightSource  string  `json:"playwright_source"`
-	UserAgent         string  `json:"userAgent"`
-	ViewportW         int     `json:"viewportW"`
-	ViewportH         int     `json:"viewportH"`
-	DeviceScaleFactor float64 `json:"deviceScaleFactor"`
-	Mobile            bool    `json:"mobile"`
-	Touch             bool    `json:"touch"`
-	Platform          string  `json:"platform"`
-	Vendor            string  `json:"vendor"`
-	WebGLVendor       string  `json:"webglVendor"`
-	WebGLRenderer     string  `json:"webglRenderer"`
-	MaxTouchPoints    int     `json:"maxTouchPoints"`
-	Languages         string  `json:"languages"`
+	PlaywrightSource  string             `json:"playwright_source"`
+	UserAgent         string             `json:"userAgent"`
+	ViewportW         int                `json:"viewportW"`
+	ViewportH         int                `json:"viewportH"`
+	DeviceScaleFactor float64            `json:"deviceScaleFactor"`
+	Mobile            bool               `json:"mobile"`
+	Touch             bool               `json:"touch"`
+	Platform          string             `json:"platform"`
+	Vendor            string             `json:"vendor"`
+	WebGLVendor       string             `json:"webglVendor"`
+	WebGLRenderer     string             `json:"webglRenderer"`
+	MaxTouchPoints    int                `json:"maxTouchPoints"`
+	Languages         string             `json:"languages"`
+	BrowserChrome     *BrowserChromeSpec `json:"browserChrome,omitempty"`
 }
 
 // loadDeviceFingerprints 从 vendored Playwright 子集构建设备指纹。
@@ -48,6 +49,12 @@ func loadDeviceFingerprints() (map[string]*FingerprintPreset, error) {
 	}
 	out := make(map[string]*FingerprintPreset, len(f.Devices))
 	for id, d := range f.Devices {
+		// browserChrome 几何自洽门：与 viewportH 矛盾 = SSOT 分裂，fail-fast。
+		if d.BrowserChrome != nil {
+			if err := d.BrowserChrome.Validate(d.ViewportH); err != nil {
+				return nil, fmt.Errorf("device %s: %w", id, err)
+			}
+		}
 		out[id] = &FingerprintPreset{
 			ID:                id,
 			Name:              d.PlaywrightSource,
@@ -63,6 +70,7 @@ func loadDeviceFingerprints() (map[string]*FingerprintPreset, error) {
 			Mobile:            d.Mobile,
 			Touch:             d.Touch,
 			MaxTouchPoints:    d.MaxTouchPoints,
+			BrowserChrome:     d.BrowserChrome,
 		}
 	}
 	return out, nil

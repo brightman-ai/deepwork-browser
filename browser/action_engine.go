@@ -6,10 +6,12 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/chromedp/cdproto/cdp"
 	"github.com/chromedp/cdproto/dom"
+	"github.com/chromedp/cdproto/emulation"
 	"github.com/chromedp/cdproto/input"
 	"github.com/chromedp/cdproto/runtime"
 	"github.com/chromedp/chromedp"
@@ -22,11 +24,52 @@ import (
 // actionEngine 实现操作解析与执行。
 type actionEngine struct {
 	snapEngine *snapshotEngine
+	// pointerGuard 指针动作前置守卫（browser chrome 仿真：拒绝点击遮挡带内的点）。
+	// nil = 无守卫。由 browserCoreImpl.EnableBrowserChromeSim 在会话启用时安装
+	// （单写者：act 执行前设置，执行期只读）。
+	pointerGuard func(ctx context.Context, x, y float64) error
+	// pageScale 镜像 Emulation.setPageScaleFactor 当前值（act "zoom" 更新；0 视为 1）。
+	// psMu 保护 pageScale：写(executeZoom)发生在 impl.mu.RLock 下，读(PageScale)亦然，
+	// RWMutex 读锁不互斥这对读写 —— 单进程串行下无活 race，但语义上必须自持锁。
+	psMu      sync.Mutex
+	pageScale float64
 }
 
 // newActionEngine 创建 ActionEngine 实例。
 func newActionEngine(snapEngine *snapshotEngine) *actionEngine {
 	return &actionEngine{snapEngine: snapEngine}
+}
+
+// setPointerGuard 安装指针守卫（见 pointerGuard 字段）。
+func (e *actionEngine) setPointerGuard(g func(ctx context.Context, x, y float64) error) {
+	e.pointerGuard = g
+}
+
+// guardPoint 指针动作统一前置：把 (x,y) 交守卫判定，守卫拒绝则动作 fail-loud。
+func (e *actionEngine) guardPoint(ctx context.Context, x, y float64) error {
+	if e.pointerGuard == nil {
+		return nil
+	}
+	return e.pointerGuard(ctx, x, y)
+}
+
+// PageScale 当前页面缩放（默认 1.0）。
+func (e *actionEngine) PageScale() float64 {
+	e.psMu.Lock()
+	defer e.psMu.Unlock()
+	if e.pageScale <= 0 {
+		return 1
+	}
+	return e.pageScale
+}
+
+// restorePageScale 对齐本进程镜像的缩放值（CDP 重放由调用方负责）。
+func (e *actionEngine) restorePageScale(scale float64) {
+	if scale > 0 {
+		e.psMu.Lock()
+		e.pageScale = scale
+		e.psMu.Unlock()
+	}
 }
 
 // ParsedAction 是解析后的操作结构。
@@ -448,6 +491,16 @@ func ParseAction(action string) (*ParsedAction, error) {
 		}
 		return &ParsedAction{Op: "wheelat", Ref: parts[1], CoordX: x, CoordY: y, DeltaX: dx, DeltaY: dy}, nil
 
+	// 页面缩放态（browser chrome 仿真的视口状态空间维度之一）：
+	//   "zoom 2" / "zoom 1.5" — 模拟捏合/聚焦放大后的视觉视口（CDP Emulation.setPageScaleFactor）
+	//   "zoom reset"          — 回到 1.0
+	// Safari 语义：页面缩放不改变布局视口，chrome 层（底栏）恒定不动。
+	case "zoom":
+		if len(parts) < 2 {
+			return nil, fmt.Errorf("%w: zoom requires factor (1..5) or 'reset'", ErrActFailed)
+		}
+		return &ParsedAction{Op: "zoom", Value: strings.ToLower(parts[1])}, nil
+
 	case "fill":
 		if len(parts) < 3 {
 			return nil, fmt.Errorf("%w: fill requires selector and value", ErrActFailed)
@@ -673,7 +726,7 @@ func (e *actionEngine) ExecuteWithSessionMode(ctx context.Context, action string
 	// page-level 操作不需要选择器
 	// tapxy 是绝对视口坐标点击，刻意不解析 ref（绕过 a11y/locator）。
 	// typetext 向当前聚焦元素插入文本，同样刻意不解析 ref。
-	noSelectorOps := map[string]bool{"scroll": true, "back": true, "forward": true, "tapxy": true, "typetext": true}
+	noSelectorOps := map[string]bool{"scroll": true, "back": true, "forward": true, "tapxy": true, "typetext": true, "zoom": true}
 
 	var resolvedRef string
 	if !noSelectorOps[parsed.Op] && parsed.Ref != "" {
@@ -705,6 +758,10 @@ func (e *actionEngine) ExecuteWithSessionMode(ctx context.Context, action string
 		}
 	case "typetext":
 		if err := e.executeTypeText(ctx, parsed.Value); err != nil {
+			return nil, err
+		}
+	case "zoom":
+		if err := e.executeZoom(ctx, parsed.Value); err != nil {
 			return nil, err
 		}
 	case "dblclickat":
@@ -1055,13 +1112,23 @@ func (e *actionEngine) executeClick(ctx context.Context, ref string) error {
 		}
 		x := box.Left + box.Width*0.5
 		y := box.Top + box.Height*0.5
+		if err := e.guardPoint(ctx, x, y); err != nil {
+			return err
+		}
 		return dispatchMouseClickAt(ctx, x, y)
 	}
 
 	// 对 DOM 发现的 clickable 类型元素，用 data-testid CSS 选择器点击
 	if meta, ok := e.snapEngine.LookupRefMeta(ref); ok && meta.Role == "clickable" && meta.Name != "" {
 		selector := `[data-testid="` + meta.Name + `"]`
+		if err := e.guardBoxCenter(ctx, func() (actionElementBox, error) { return e.elementBoxForSelector(ctx, selector) }); err != nil {
+			return err
+		}
 		return chromedp.Run(ctx, chromedp.Click(selector, chromedp.ByQuery))
+	}
+
+	if err := e.guardBoxCenter(ctx, func() (actionElementBox, error) { return e.elementBoxForRef(ctx, ref) }); err != nil {
+		return err
 	}
 
 	backendNodeID, err := e.resolveBackendNodeID(ref)
@@ -1378,6 +1445,9 @@ func (e *actionEngine) executeClickAt(ctx context.Context, ref string, relX, rel
 	if err != nil {
 		return err
 	}
+	if err := e.guardPoint(ctx, x, y); err != nil {
+		return err
+	}
 	return dispatchMouseClick(ctx, x, y, input.Left, 1)
 }
 
@@ -1417,6 +1487,9 @@ func (e *actionEngine) executeTapXY(ctx context.Context, fracX, fracY float64) e
 	}
 	x := w * fracX
 	y := h * fracY
+	if err := e.guardPoint(ctx, x, y); err != nil {
+		return err
+	}
 	return dispatchMouseClick(ctx, x, y, input.Left, 1)
 }
 
@@ -1436,6 +1509,9 @@ func (e *actionEngine) executeDoubleClickAt(ctx context.Context, ref string, rel
 	if err != nil {
 		return err
 	}
+	if err := e.guardPoint(ctx, x, y); err != nil {
+		return err
+	}
 	return dispatchMouseClick(ctx, x, y, input.Left, 2)
 }
 
@@ -1445,11 +1521,64 @@ func (e *actionEngine) executeRightClickAt(ctx context.Context, ref string, relX
 	if err != nil {
 		return err
 	}
+	if err := e.guardPoint(ctx, x, y); err != nil {
+		return err
+	}
 	return dispatchMouseClick(ctx, x, y, input.Right, 1)
 }
 
 func (e *actionEngine) executeTap(ctx context.Context, ref string) error {
 	return e.executeTapAt(ctx, ref, 0.5, 0.5)
+}
+
+// guardBoxCenter 对"无显式坐标"的点击路径（chromedp.Click 系）做遮挡守卫：
+// 取元素 box 中心投影判定。box 解析失败不阻断（守卫只拦"确证被遮"，
+// 解析异常交由后续点击路径自身报错）。
+func (e *actionEngine) guardBoxCenter(ctx context.Context, boxFn func() (actionElementBox, error)) error {
+	if e.pointerGuard == nil {
+		return nil
+	}
+	box, err := boxFn()
+	if err != nil || box.Width <= 0 || box.Height <= 0 {
+		return nil
+	}
+	return e.guardPoint(ctx, box.Left+box.Width*0.5, box.Top+box.Height*0.5)
+}
+
+// parseZoomFactor 解析 zoom 参数：1..5 的倍率或 "reset"（=1.0）。
+// 范围下限 1 = Safari 语义（捏合不缩小于 1）。
+func parseZoomFactor(value string) (float64, error) {
+	switch value {
+	case "reset", "1", "1.0":
+		return 1, nil
+	}
+	v, err := strconv.ParseFloat(value, 64)
+	if err != nil {
+		return 0, fmt.Errorf("%w: zoom expects factor 1..5 or 'reset', got %q", ErrActFailed, value)
+	}
+	if v < 1 || v > 5 {
+		return 0, fmt.Errorf("%w: zoom factor %.2f out of range [1,5] (Safari pinch zoom cannot go below 1)", ErrActFailed, v)
+	}
+	return v, nil
+}
+
+// executeZoom 设置页面缩放（视口状态空间的缩放维；browser chrome 仿真下
+// chrome 层与遮挡带在屏幕坐标系恒定不动，复刻真机捏合/聚焦放大语义）。
+// 确定性：同参数同结果。
+func (e *actionEngine) executeZoom(ctx context.Context, value string) error {
+	scale, err := parseZoomFactor(value)
+	if err != nil {
+		return err
+	}
+	if err := chromedp.Run(ctx, chromedp.ActionFunc(func(actCtx context.Context) error {
+		return emulation.SetPageScaleFactor(scale).Do(actCtx)
+	})); err != nil {
+		return fmt.Errorf("%w: set page scale %.2f: %v", ErrActFailed, scale, err)
+	}
+	e.psMu.Lock()
+	e.pageScale = scale
+	e.psMu.Unlock()
+	return nil
 }
 
 // executeTapAt 对目标元素的相对坐标执行真实触控点击。
@@ -1459,6 +1588,9 @@ func (e *actionEngine) executeTap(ctx context.Context, ref string) error {
 func (e *actionEngine) executeTapAt(ctx context.Context, ref string, relX, relY float64) error {
 	x, y, err := e.resolvePoint(ctx, ref, relX, relY)
 	if err != nil {
+		return err
+	}
+	if err := e.guardPoint(ctx, x, y); err != nil {
 		return err
 	}
 	return dispatchTouchTapAt(ctx, x, y)
