@@ -182,8 +182,11 @@ func (r *AuditRunner) runCheck(ctx context.Context, target Auditable, check Chec
 	return result
 }
 
-// injectParams 将 params 序列化为 JS 变量声明，前置注入脚本。
-// 生成格式: "const __params = {...};\n<原脚本>"
+// injectParams 将 params 注入脚本作用域。
+// 必须 IIFE 包裹、零全局残留：顶层 `const __params` 会驻留页面全局词法环境，
+// 同一会话第二次 audit 即 "Identifier '__params' has already been declared"
+// 全体失败（独立 Witness 实测抓获 2026-07-19）。
+// 生成格式: "(() => { const __params = {...}; return (<原脚本>); })()"
 func injectParams(script string, params map[string]any) (string, error) {
 	if len(params) == 0 {
 		return script, nil
@@ -192,5 +195,5 @@ func injectParams(script string, params map[string]any) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return fmt.Sprintf("const __params = %s;\n%s", b, script), nil
+	return fmt.Sprintf("(() => { const __params = %s;\nreturn (%s); })()", b, script), nil
 }
