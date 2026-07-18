@@ -406,7 +406,7 @@ func runObserve(args []string) {
 		os.Exit(exitOK)
 	}
 	var jsonOut, outFile string
-	wantHealth, wantTree := false, false
+	wantHealth, wantTree, wantAnnotate := false, false, false
 	topN, budget := defaultBriefTopN, defaultBriefBudget
 	topExplicit, budgetExplicit := false, false
 	clean := make([]string, 0, len(args))
@@ -428,6 +428,8 @@ func runObserve(args []string) {
 			wantHealth = true
 		case arg == "--tree":
 			wantTree = true
+		case arg == "--annotate":
+			wantAnnotate = true
 		case arg == "--top" && i+1 < len(args):
 			if n, err := strconv.Atoi(args[i+1]); err == nil {
 				topN = n
@@ -544,6 +546,33 @@ func runObserve(args []string) {
 	}
 	injectEvidenceID(output, sessionInfo)
 	injectSnapshotState(output, snap)
+
+	// — browser chrome 仿真机读块（REQ-BC-04）：像素给 Witness 感知，此块给 AI 校准。
+	// simulated:false 也如实报（裸 viewport/桌面会话无 chrome 数据 = 诚实降级，不猜）。
+	if bcc, ok := impl.(browser.BrowserChromeCapable); ok {
+		if spec, baseH, scale, on := bcc.BrowserChromeState(); on {
+			dpr := 1.0
+			if p := browser.BuiltinPresets[browser.NormalizePresetID(sessionInfo.PresetID)]; p != nil {
+				dpr = p.DeviceScaleFactor
+			}
+			output["browser_chrome"] = map[string]interface{}{
+				"simulated": true,
+				"style":     spec.Style,
+				// zones 坐标系 = CSS px 视口坐标（与 act/元素 rect 同系）；
+				// 截图为物理像素，索引像素行须乘 device_pixel_ratio。
+				"coordinate_space":   "css-px",
+				"device_pixel_ratio": dpr,
+				"page_scale":         scale,
+				"occlusion_zones":    spec.OcclusionZones(sessionInfo.ViewportW),
+				"page_protections":   bcc.ProbePageProtections(ctx),
+				"hint": fmt.Sprintf(
+					"视口底部 y>=%d 为 Safari 底栏遮挡带(截图中已画出): 带内元素用户不可见/不可点, act 点击会被拒; 页面 100vh 布局的底部 UI 会沉入此带(与真机同构)", baseH),
+			}
+		} else {
+			output["browser_chrome"] = map[string]interface{}{"simulated": false}
+		}
+	}
+
 	if hint := formatSkillHint(snap.URL); hint != "" {
 		output["skill_hint"] = hint
 	}
@@ -556,9 +585,10 @@ func runObserve(args []string) {
 		output["tree"] = snap.Text
 	}
 
-	// — 加法: --out (截图落盘, 返回路径) —
+	// — 加法: --out (截图落盘, 返回路径)；--annotate 叠加证据标注
+	// (browser chrome 仿真会话=遮挡区红描边; 供 evidence, 默认截图保 Witness 无提示独立性) —
 	if outFile != "" {
-		if shot, err2 := impl.Screenshot(ctx, false); err2 == nil {
+		if shot, err2 := impl.Screenshot(ctx, wantAnnotate); err2 == nil {
 			if werr := os.WriteFile(outFile, shot, 0o644); werr == nil {
 				output["screenshot"] = outFile
 			} else {
@@ -599,6 +629,7 @@ func printObserveHelp() {
 	fmt.Fprintln(os.Stderr, "")
 	fmt.Fprintln(os.Stderr, "flag 自由组合 (加法, 非互斥):")
 	fmt.Fprintln(os.Stderr, "  --out <path>    截图落盘路径 (返回 screenshot 字段)")
+	fmt.Fprintln(os.Stderr, "  --annotate      配 --out: 证据标注截图 (chrome 仿真遮挡区红描边; 默认截图无标注)")
 	fmt.Fprintln(os.Stderr, "  --health        附健康通道 (诊断/grader lens)")
 	fmt.Fprintln(os.Stderr, "  --tree          附全 a11y 树文本")
 	fmt.Fprintln(os.Stderr, "  --top <N>       elements 上限 (默认 20)")

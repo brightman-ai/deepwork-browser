@@ -30,7 +30,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-const version = "0.7.0"
+const version = "0.8.0"
 
 // exitCodes [IR-08]
 const (
@@ -80,6 +80,10 @@ type commonFlags struct {
 	scenario string // --scenario app-test-explore | app-test-baseline | webvisit
 	// allowHosts 仍保留 (webvisit 的信任放行参数；非绕过旁路)。
 	allowHosts []string // --allow-host <hosts> (comma-sep / repeatable): 额外信任主机
+	// browserChrome — browser chrome 仿真模式 (auto|on|off, 默认 auto)。
+	// auto: 移动预设带 chrome 几何数据即启用(双视口显形 + 截图画 Safari 底栏 +
+	// act 遮挡拒绝 + observe/audit 机读遮挡区)。spec: docs/product/browser-chrome/。
+	browserChrome string
 	// 解析后
 	viewportW         int
 	viewportH         int
@@ -292,6 +296,12 @@ func parseCommonFlags(args []string, cmd string) (positional []string, flags com
 		case strings.HasPrefix(arg, "--engine="):
 			flags.engine = strings.ToLower(strings.TrimSpace(arg[len("--engine="):]))
 			i++
+		case arg == "--browser-chrome" && i+1 < len(args):
+			flags.browserChrome = strings.ToLower(strings.TrimSpace(args[i+1]))
+			i += 2
+		case strings.HasPrefix(arg, "--browser-chrome="):
+			flags.browserChrome = strings.ToLower(strings.TrimSpace(arg[len("--browser-chrome="):]))
+			i++
 		case arg == "--safari-device" && i+1 < len(args):
 			flags.safariDevice = args[i+1]
 			i += 2
@@ -381,6 +391,12 @@ func parseCommonFlags(args []string, cmd string) (positional []string, flags com
 		w, h, err := parseViewport(flags.viewport)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "dw-browser: --viewport 格式错误 %q，应为 WxH（如 1920x1080）\n", flags.viewport)
+			os.Exit(exitRunErr)
+		}
+		// [REQ-AE-03] 误用硬拦：裸移动尺寸视口 = "假手机"（无 UA/无 touch/无 Safari
+		// chrome 仿真），测不出真机问题还给假绿 —— AI-native 最大误用陷阱，error 不 warn。
+		if !flags.hasPersona && w > 0 && w < 500 {
+			fmt.Fprintf(os.Stderr, "dw-browser %s: 裸 --viewport %dx%d 是\"假手机\"(无 UA/touch/Safari chrome, 测不出真机问题)。\n  测移动端 → --persona mobile\n  确要裸小视口(响应式断点等) → --persona desktop --viewport %dx%d\n", cmd, w, h, w, h)
 			os.Exit(exitRunErr)
 		}
 		flags.viewportW = w
@@ -628,9 +644,14 @@ func main() {
 
 // printPersonas 打印可用测试保真人格列表 (--persona)。
 func printPersonas() {
+	fmt.Println("  ★ 测试怎么选 (AI 首选, 一眼最优):")
+	fmt.Println("      测移动端 → --persona mobile     (iPhone 保真全家桶: UA/touch/DPR/视口/Safari底栏仿真)")
+	fmt.Println("      测 PC 端 → --persona desktop    (平台默认桌面指纹, 保真姿态)")
+	fmt.Println("")
 	fmt.Println("  内置测试保真人格 (--persona):")
 	fmt.Println("    说明: persona 组合 设备指纹 × in-app 壳 × 网络 × 环境;运行在 Chrome/CDP,")
 	fmt.Println("          不替代真机/真微信的绝对确认(QR 真实握手)。")
+	fmt.Println("    [保真 fidelity=测试用] 在前, [stealth=反检测用, 非测试保真] 在后:")
 	fmt.Printf("    %-16s  %s\n", "人格名", "说明 / 视口")
 	fmt.Printf("    %-16s  %s\n", "------", "-----------")
 	for _, name := range browser.PersonaOrder {
@@ -643,7 +664,11 @@ func printPersonas() {
 		if w > 0 && h > 0 {
 			dim = fmt.Sprintf("%dx%d", w, h)
 		}
-		fmt.Printf("    %-16s  %s  %s\n", name, p.Name, dim)
+		tag := ""
+		if p.Stealth {
+			tag = "  [stealth]"
+		}
+		fmt.Printf("    %-16s  %s  %s%s\n", name, p.Name, dim, tag)
 	}
 }
 
@@ -1151,7 +1176,11 @@ func printUsage() {
 	p("  --allow-host <h>     webvisit 信任放行主机 (逗号分隔/可重复), 其 origin 视为本地→写放行")
 	p("  --ephemeral          临时 profile, 命令结束即删 (与 --profile 互斥)")
 	p("  --profile <id>       固定 profile (登录态/Human 主浏览器)")
-	p("  --viewport WxH       视口 (默认 1920x1080)   --persona <名称>   测试保真人格   --user-agent <ua>")
+	p("  --persona <名称>     ★测试身份入口: mobile=移动端最优 | desktop=PC最优 | 具体机型/壳 见下表")
+	p("  --viewport WxH       视口覆盖 (裸移动尺寸无 persona 会被硬拦; 配 --persona desktop 可裸测)   --user-agent <ua>")
+	p("  --browser-chrome <m> auto|on|off (默认 auto): iOS 移动 persona 自动仿真 Safari 底栏——截图画出遮挡带、")
+	p("                       act 点遮挡区 fail-loud、observe 带 browser_chrome 机读块、audit browser-chrome-occlusion;")
+	p("                       act \"zoom <n>|reset\" 进/出缩放态 (chrome 恒定不动, 复刻真机)。off 关闭; on 强制(无数据报错)")
 	p("  --goal <text>        本次会话目标 (写入 contract)")
 	p("")
 	printPersonas()
@@ -1172,6 +1201,7 @@ func printUsage() {
 	p("  select <loc> '<value>'           下拉选择        hover <loc>           悬停")
 	p("  scroll down|up                   滚动            scrollinto <loc>      滚动到可见")
 	p("  focus/check/uncheck <loc>        聚焦/勾选/取消   back | forward        导航历史")
+	p("  zoom <1..5> | zoom reset         页面缩放态 (模拟捏合/聚焦放大; browser chrome 遮挡带恒定不动)")
 	p("  坐标动作 (canvas 图表无子 DOM, 用坐标命中图元):")
 	p("    tapxy <xf> <yf>                视口比例坐标真实点击 (不进 a11y 树的控件最通用解)")
 	p("    typetext <text>                向当前焦点插文本 (配合 tapxy 聚焦自定义 input)")
@@ -1368,6 +1398,18 @@ func connectSession(ctx context.Context, sessionInfo *browser.SessionInfo, cmdNa
 	// 若此处漏传 PageURL，lastURL 为空 → 所有 mutating act 的 origin="" 被判 remote
 	// → localhost 存量行为被误阻断。故必须传 sessionInfo.PageURL。
 	impl.SetPolicy(sessionInfo.Policy, sessionInfo.PageURL)
+	// browser chrome 仿真：会话 open 时定死的模式，attach 路径恢复。
+	// PageScale 必须经 CDP 重放 —— 上面的 replayViewportProfile(SetDeviceMetricsOverride)
+	// 会把 Chrome 内的 page scale 踩回 1，只靠"驻留"缩放态会静默丢（实测抓获）。
+	// 缩放态恢复不依赖仿真开关：非 sim 会话的 act "zoom" 同样要跨调用持久（评审 finding-8）。
+	if bcc, ok := impl.(browser.BrowserChromeCapable); ok {
+		if sessionInfo.BrowserChrome == "on" {
+			bcc.EnableBrowserChromeSim()
+		}
+		if sessionInfo.PageScale > 0 {
+			bcc.RestorePageScale(ctx, sessionInfo.PageScale)
+		}
+	}
 	return impl
 }
 
@@ -2148,6 +2190,16 @@ func runActSession(flags commonFlags, action string, awaitStable bool, snapAfter
 	// 零副作用：无录制状态文件 → 静默跳过；写入错误 → 静默忽略，不影响 act 主路径。
 	appendRecordStep(flags.sessionID, action, sessionInfo.PageURL)
 
+	// [browser-chrome] zoom 后把页面缩放镜像回 session 文件：Chrome 内的
+	// Emulation 覆写跨 CLI 调用驻留，镜像不落盘则下次 observe/守卫按 1.0 折算错。
+	zoomAction := strings.HasPrefix(strings.ToLower(strings.TrimSpace(action)), "zoom ")
+	if zoomAction {
+		if bcc, ok := impl.(browser.BrowserChromeCapable); ok {
+			sessionInfo.PageScale = bcc.PageScale()
+			_ = browser.SaveSession(sessionInfo)
+		}
+	}
+
 	// [P1-α await-stable] --await: 操作完成后等待页面稳定，再重新快照。
 	// 解决导航操作（back/forward/click-link）Handler 先返回 HTTP 200、页面尚未完成跳转的竞态。
 	//
@@ -2201,6 +2253,11 @@ func runActSession(flags commonFlags, action string, awaitStable bool, snapAfter
 		"browser_session_id": sessionInfo.BrowserSessionID,
 		"session_kind":       sessionInfo.SessionKind,
 		"success":            true,
+	}
+	if zoomAction {
+		if bcc, ok := impl.(browser.BrowserChromeCapable); ok {
+			output["page_scale"] = bcc.PageScale()
+		}
 	}
 	// [Browser Skills] --skill flag: resolve and inject skill execution context
 	sc := resolveSkillContext(skillFlag, sessionInfo.PageURL, flags.sessionID)
@@ -2528,6 +2585,10 @@ func runOpen(args []string) {
 
 	// Safari 引擎分支：完全绕开 Chrome/CDP 路径
 	if flags.engine == "safari" {
+		if flags.browserChrome == browser.BrowserChromeOn {
+			fmt.Fprintln(os.Stderr, "dw-browser open: --browser-chrome=on 不适用于 --engine safari（真机 Simulator 自带真实 Safari chrome）")
+			os.Exit(exitRunErr)
+		}
 		runOpenSafari(url, flags, scenarioPolicy)
 		return
 	}
@@ -2535,6 +2596,29 @@ func runOpen(args []string) {
 	sessionPresetID := resolveSessionPresetID(flags)
 	sessionPersonaID := flags.persona // 与 preset 同源:随会话持久化 + 传 attach 路径
 	browserSessionID := browser.BrowserSessionIDFromSessionID(flags.sessionID)
+
+	// browser chrome 仿真判定（spec: docs/product/browser-chrome/）。
+	// auto 默认：移动预设带 chrome 几何 → 启用；启用即"双视口显形"——会话视口
+	// 高开到大视口 lvh，底部 [svh,lvh) 为 Safari 底栏遮挡带，100vh 类布局 bug
+	// 与真机同构显形。会话级模式，open 时定死，中途不漂。
+	browserChromeOn := false
+	{
+		chromePreset := browser.BuiltinPresets[browser.NormalizePresetID(sessionPresetID)]
+		on, bcErr := browser.ResolveBrowserChromeMode(flags.browserChrome, chromePreset, flags.viewport != "")
+		if bcErr != nil {
+			fmt.Fprintf(os.Stderr, "dw-browser open: %v\n", bcErr)
+			os.Exit(exitRunErr)
+		}
+		if on {
+			browserChromeOn = true
+			flags.viewportH = chromePreset.BrowserChrome.LargeViewportH()
+			flags.hasViewport = true
+		} else if chromePreset != nil && chromePreset.BrowserChrome != nil && flags.viewport != "" && flags.browserChrome != browser.BrowserChromeOff {
+			// [评审 finding-7] mobile 类 persona 叠显式 --viewport 会静默失去 chrome
+			// 仿真承诺 —— 如实提示，不静默。
+			fmt.Fprintln(os.Stderr, "dw-browser open: 提示: 显式 --viewport 已关闭该 persona 的 Safari chrome 仿真(几何归设备); 需要仿真请去掉 --viewport")
+		}
+	}
 
 	// Find Chrome binary
 	launcher := browser.NewChromeLauncher()
@@ -2795,6 +2879,14 @@ func runOpen(args []string) {
 	}
 	defer impl.Close(ctx)
 	replayViewportProfile(impl, sessionPresetID, width, height, flags.personaTouch, "open")
+	if browserChromeOn {
+		if bcc, ok := impl.(browser.BrowserChromeCapable); ok {
+			if !bcc.EnableBrowserChromeSim() {
+				fmt.Fprintf(os.Stderr, "dw-browser open: enable browser-chrome sim failed for preset %q\n", sessionPresetID)
+				exit(exitRunErr)
+			}
+		}
+	}
 
 	openSnap, err := impl.Navigate(ctx, url)
 	if err != nil {
@@ -2822,6 +2914,11 @@ func runOpen(args []string) {
 	targetID := initialTargetID
 	if err == nil && len(targets) > 0 {
 		targetID = selectSessionTargetID(targets, currentURL, initialTargetID)
+	}
+
+	browserChromeState := ""
+	if browserChromeOn {
+		browserChromeState = "on"
 	}
 
 	// B2 修复: open 命令保存初始快照的 refs，使后续 act "click button:'xxx'" 无需先执行 snap。
@@ -2871,6 +2968,8 @@ func runOpen(args []string) {
 		Refs:                  openRefs,
 		Ephemeral:             flags.ephemeral || flags.isolation == browser.SessionIsolationEphemeral,
 		XvfbPID:               xvfbPIDFromDisplayManager(dm),
+		BrowserChrome:         browserChromeState,
+		PageScale:             1,
 		BrowserRunID:          browserRunID,
 		DisplayBackend:        displayBackend,
 		DisplayVerified:       displayBackend == "none" || displayBackend == "xvfb" || displayBackend == "native",
@@ -2906,6 +3005,10 @@ func runOpen(args []string) {
 		"pid":                chromePID,
 		"port":               port,
 		"ws_url":             wsURL,
+	}
+	if browserChromeOn {
+		output["browser_chrome"] = "on"
+		output["browser_chrome_hint"] = fmt.Sprintf("Safari chrome 仿真已启用: 视口 %dx%d(大视口), 底部 y>=%d 为底栏遮挡带(截图可见/act 点击拒绝); act \"zoom <n>\" 可进缩放态", width, height, browser.BuiltinPresets[browser.NormalizePresetID(sessionPresetID)].BrowserChrome.SmallViewportH())
 	}
 	if hostState != nil {
 		output["browser_mux_host_id"] = hostState.MuxHostID
@@ -3956,6 +4059,17 @@ func runAudit(args []string) {
 	audit.RegisterA11y(registry)
 	audit.RegisterLayout(registry)
 	audit.RegisterPerf(registry)
+	audit.RegisterChrome(registry)
+
+	// browser chrome 仿真会话：把遮挡区几何（SSOT=设备预设）注入 occlusion 检查。
+	// 未启用时 zones 留空 → 脚本自判"不适用"返回 pass，不造假阳。
+	if bcc, ok := impl.(browser.BrowserChromeCapable); ok {
+		if spec, _, _, on := bcc.BrowserChromeState(); on {
+			if c := registry.ByID("browser-chrome-occlusion"); c != nil {
+				c.Params["zones"] = spec.OcclusionZones(sessionInfo.ViewportW)
+			}
+		}
+	}
 
 	runner := audit.NewRunner(registry)
 

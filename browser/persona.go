@@ -154,8 +154,32 @@ var Personas = map[string]*Persona{
 	},
 }
 
-// PersonaOrder — 展示/列表顺序(fidelity 人格在前,stealth 指纹别名在后)。
+// AI-native 意图别名（AI 说意图，工具配最优组合 — 与 --scenario"业务主入口"
+// 同一设计哲学；具体机型名保留给需要精确机型的场景）：
+//   - "mobile"  → 移动端测试最优路径：iPhone 15 Pro fidelity 全家桶
+//     （UA/touch/DPR/视口 + browser chrome 仿真 auto-on，见 docs/product/browser-chrome/）。
+//   - "desktop" → PC 端测试最优路径：平台默认桌面指纹、fidelity 姿态
+//     （Stealth=false：测本地 app 不需要反检测注入，保真优先）。
+// 注册在 init()：desktop 的指纹依 runtime 平台（DefaultPresetID）。
+const (
+	PersonaAliasMobile  = "mobile"
+	PersonaAliasDesktop = "desktop"
+)
+
+func init() {
+	Personas[PersonaAliasMobile] = &Persona{
+		ID: PersonaAliasMobile, Name: "移动端测试最优 (iPhone 15 Pro · Safari chrome 仿真)",
+		Fingerprint: PresetIPhone15Pro,
+	}
+	Personas[PersonaAliasDesktop] = &Persona{
+		ID: PersonaAliasDesktop, Name: "PC 端测试最优 (平台默认桌面指纹 · 保真姿态)",
+		Fingerprint: DefaultPresetID(),
+	}
+}
+
+// PersonaOrder — 展示/列表顺序(意图别名最前=AI 首见即最优;fidelity 在前,stealth 在后)。
 var PersonaOrder = []string{
+	PersonaAliasMobile, PersonaAliasDesktop,
 	"wechat-iphone", "wecom-android", "desktop-cn-dark",
 	PresetIPhone14, PresetIPhone15Pro, PresetIPadAir, PresetPixel7, PresetGalaxyS24,
 	PresetWindowsChrome, PresetLinuxChrome, PresetMacOSChrome, PresetAndroidChrome,
