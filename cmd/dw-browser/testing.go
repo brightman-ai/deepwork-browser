@@ -555,6 +555,13 @@ func runObserve(args []string) {
 			if p := browser.BuiltinPresets[browser.NormalizePresetID(sessionInfo.PresetID)]; p != nil {
 				dpr = p.DeviceScaleFactor
 			}
+			kb := bcc.KeyboardVisible()
+			hint := fmt.Sprintf(
+				"视口底部 y>=%d 为 Safari 底栏遮挡带(截图中已画出): 带内元素用户不可见/不可点, act 点击会被拒; 页面 100vh 布局的底部 UI 会沉入此带(与真机同构). 页面感知的 visualViewport/innerHeight/100svh=%d(小视口, 自适应页已真实 reflow); 100dvh/fixed-bottom 是引擎残留假阳通道(act 豁免放行, audit pass+标记)", baseH, baseH)
+			if kb {
+				hint = fmt.Sprintf(
+					"软键盘弹起: 视口底部 y>=%d 为键盘遮挡区(截图中已画出), 带内元素不可见/不可点且无豁免; act \"keyboard hide\" 收起. 页面感知的 visualViewport.height 已收窄(自适应页应上浮 composer; 没上浮=键盘布局 bug)", spec.KeyboardTopY())
+			}
 			output["browser_chrome"] = map[string]interface{}{
 				"simulated": true,
 				"style":     spec.Style,
@@ -563,10 +570,19 @@ func runObserve(args []string) {
 				"coordinate_space":   "css-px",
 				"device_pixel_ratio": dpr,
 				"page_scale":         scale,
-				"occlusion_zones":    spec.OcclusionZones(sessionInfo.ViewportW),
-				"page_protections":   bcc.ProbePageProtections(ctx),
-				"hint": fmt.Sprintf(
-					"视口底部 y>=%d 为 Safari 底栏遮挡带(截图中已画出): 带内元素用户不可见/不可点, act 点击会被拒; 页面 100vh 布局的底部 UI 会沉入此带(与真机同构)", baseH),
+				"keyboard": map[string]interface{}{
+					"visible":     kb,
+					"inset_css":   spec.KeyboardInsetH(),
+					"top_y":       spec.KeyboardTopY(),
+					"how_to":      "act \"keyboard show|hide\"; click/tap/fill 输入框后自动弹起(真机语义)",
+				},
+				// 视口单位事实（REQ-BC-11）：svh 经 CDP override=小视口; dvh/vh 锁死
+				// layout viewport=大视口(Chrome 引擎约束, 真机 bars-expanded 下 dvh=小视口
+				// → dvh 页在截图里可能显示为被遮而真机正常 = 残留假阳, 判定层已豁免)。
+				"viewport_units":  map[string]interface{}{"svh": spec.SmallViewportH(), "lvh": spec.LargeViewportH(), "vh": spec.LargeViewportH(), "dvh_residual": spec.LargeViewportH()},
+				"occlusion_zones": spec.OcclusionZones(sessionInfo.ViewportW, kb),
+				"page_protections": bcc.ProbePageProtections(ctx),
+				"hint":             hint,
 			}
 		} else {
 			output["browser_chrome"] = map[string]interface{}{"simulated": false}

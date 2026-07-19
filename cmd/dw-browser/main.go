@@ -30,7 +30,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-const version = "0.8.0"
+const version = "0.9.0"
 
 // exitCodes [IR-08]
 const (
@@ -635,6 +635,10 @@ func main() {
 		runCheck(os.Args[2:])
 	case "journey":
 		runJourney(os.Args[2:])
+	case "persona", "personas":
+		// AI-native 意图入口：`dw-browser persona [list]` 直达人格表（Witness 实测
+		// 会先试这个拼法；报 unknown 再甩全量 help = 误导）。
+		printPersonas()
 	default:
 		fmt.Fprintf(os.Stderr, "dw-browser: unknown command %q\n", cmd)
 		printUsage()
@@ -1202,6 +1206,8 @@ func printUsage() {
 	p("  scroll down|up                   滚动            scrollinto <loc>      滚动到可见")
 	p("  focus/check/uncheck <loc>        聚焦/勾选/取消   back | forward        导航历史")
 	p("  zoom <1..5> | zoom reset         页面缩放态 (模拟捏合/聚焦放大; browser chrome 遮挡带恒定不动)")
+	p("  keyboard show | keyboard hide    软键盘态 (visualViewport 收窄+resize 事件, 自适应页真实 reflow;")
+	p("                                   click/fill 输入框后自动弹起=真机语义, 键盘区点击拒绝)")
 	p("  坐标动作 (canvas 图表无子 DOM, 用坐标命中图元):")
 	p("    tapxy <xf> <yf>                视口比例坐标真实点击 (不进 a11y 树的控件最通用解)")
 	p("    typetext <text>                向当前焦点插文本 (配合 tapxy 聚焦自定义 input)")
@@ -1408,6 +1414,14 @@ func connectSession(ctx context.Context, sessionInfo *browser.SessionInfo, cmdNa
 		}
 		if sessionInfo.PageScale > 0 {
 			bcc.RestorePageScale(ctx, sessionInfo.PageScale)
+		}
+		// 视口事实重放（REQ-BC-11/12）：svh override 跨导航复位 + 上面的
+		// replayViewportProfile 可能踩状态 → 每次 attach 重放（幂等）；键盘态
+		// 从 SessionInfo（意图态 SSOT）推回页面。失败降级警告不阻塞命令。
+		if sessionInfo.BrowserChrome == "on" {
+			if err := bcc.ApplyViewportFacts(ctx, sessionInfo.Keyboard, false); err != nil {
+				fmt.Fprintf(os.Stderr, "dw-browser %s: viewport facts replay degraded: %v\n", cmdName, err)
+			}
 		}
 	}
 	return impl
@@ -2193,9 +2207,20 @@ func runActSession(flags commonFlags, action string, awaitStable bool, snapAfter
 	// [browser-chrome] zoom 后把页面缩放镜像回 session 文件：Chrome 内的
 	// Emulation 覆写跨 CLI 调用驻留，镜像不落盘则下次 observe/守卫按 1.0 折算错。
 	zoomAction := strings.HasPrefix(strings.ToLower(strings.TrimSpace(action)), "zoom ")
-	if zoomAction {
-		if bcc, ok := impl.(browser.BrowserChromeCapable); ok {
+	keyboardChanged := false
+	if bcc, ok := impl.(browser.BrowserChromeCapable); ok {
+		dirty := false
+		if zoomAction {
 			sessionInfo.PageScale = bcc.PageScale()
+			dirty = true
+		}
+		// 键盘态可因显式 op 或焦点自动同步改变（REQ-BC-12）——每次 act 后对账。
+		if kb := bcc.KeyboardVisible(); kb != sessionInfo.Keyboard {
+			sessionInfo.Keyboard = kb
+			keyboardChanged = true
+			dirty = true
+		}
+		if dirty {
 			_ = browser.SaveSession(sessionInfo)
 		}
 	}
@@ -2257,6 +2282,20 @@ func runActSession(flags commonFlags, action string, awaitStable bool, snapAfter
 	if zoomAction {
 		if bcc, ok := impl.(browser.BrowserChromeCapable); ok {
 			output["page_scale"] = bcc.PageScale()
+		}
+	}
+	// 键盘态变化时输出（显式 keyboard op 或焦点自动同步弹起/收起）——
+	// agent 须知道视口刚变了（截图/遮挡区随之变）。
+	if keyboardChanged || strings.HasPrefix(strings.ToLower(strings.TrimSpace(action)), "keyboard ") {
+		if bcc, ok := impl.(browser.BrowserChromeCapable); ok {
+			output["keyboard"] = bcc.KeyboardVisible()
+			if keyboardChanged {
+				if bcc.KeyboardVisible() {
+					output["keyboard_hint"] = "软键盘已弹起(焦点自动同步/显式): visualViewport 已收窄, 底部被键盘遮挡; act \"keyboard hide\" 收起"
+				} else {
+					output["keyboard_hint"] = "软键盘已收起(焦点离开输入框, 真机语义): 要再截键盘态先 act \"keyboard show\""
+				}
+			}
 		}
 	}
 	// [Browser Skills] --skill flag: resolve and inject skill execution context
@@ -2885,6 +2924,16 @@ func runOpen(args []string) {
 				fmt.Fprintf(os.Stderr, "dw-browser open: enable browser-chrome sim failed for preset %q\n", sessionPresetID)
 				exit(exitRunErr)
 			}
+			// 视口事实（REQ-BC-11）：shim 须在首次导航前注册（install=true 仅此
+			// 一处），页面脚本加载即读到真机同构的 vv/innerHeight；svh override
+			// 在导航提交时复位，由 frameNavigated 监听 + Navigate 钩子重放——
+			// 首屏存在毫秒级窗口（页面 document-start 一次性读 100svh 且缓存的
+			// 场景可能取到 lvh 旧值；CSS 用法随重放自动重算）。建立失败 =
+			// 会话保真度谎言源头，fail-loud。
+			if err := bcc.ApplyViewportFacts(ctx, false, true); err != nil {
+				fmt.Fprintf(os.Stderr, "dw-browser open: establish viewport facts: %v\n", err)
+				exit(exitRunErr)
+			}
 		}
 	}
 
@@ -3008,7 +3057,7 @@ func runOpen(args []string) {
 	}
 	if browserChromeOn {
 		output["browser_chrome"] = "on"
-		output["browser_chrome_hint"] = fmt.Sprintf("Safari chrome 仿真已启用: 视口 %dx%d(大视口), 底部 y>=%d 为底栏遮挡带(截图可见/act 点击拒绝); act \"zoom <n>\" 可进缩放态", width, height, browser.BuiltinPresets[browser.NormalizePresetID(sessionPresetID)].BrowserChrome.SmallViewportH())
+		output["browser_chrome_hint"] = fmt.Sprintf("Safari chrome 仿真已启用: 视口 %dx%d(大视口), 底部 y>=%d 为底栏遮挡带(截图可见/act 点击拒绝); 页面感知的 visualViewport/innerHeight/100svh=%d(真机同构, 自适应页真实 reflow); act \"zoom <n>\" 缩放态 / act \"keyboard show\" 软键盘态(点输入框自动弹起)", width, height, browser.BuiltinPresets[browser.NormalizePresetID(sessionPresetID)].BrowserChrome.SmallViewportH(), browser.BuiltinPresets[browser.NormalizePresetID(sessionPresetID)].BrowserChrome.SmallViewportH())
 	}
 	if hostState != nil {
 		output["browser_mux_host_id"] = hostState.MuxHostID
@@ -4066,7 +4115,7 @@ func runAudit(args []string) {
 	if bcc, ok := impl.(browser.BrowserChromeCapable); ok {
 		if spec, _, _, on := bcc.BrowserChromeState(); on {
 			if c := registry.ByID("browser-chrome-occlusion"); c != nil {
-				c.Params["zones"] = spec.OcclusionZones(sessionInfo.ViewportW)
+				c.Params["zones"] = spec.OcclusionZones(sessionInfo.ViewportW, sessionInfo.Keyboard)
 			}
 		}
 	}
