@@ -4,6 +4,7 @@ package browser
 
 import (
 	"bytes"
+	"context"
 	"image"
 	"image/color"
 	"image/png"
@@ -98,12 +99,12 @@ func TestCompositeChromeInvariance(t *testing.T) {
 	shotA := makeTestShot(t, spec, w, 3)
 	shotB := makeTestShot(t, spec, w, 199)
 
-	outA1, err := CompositeBrowserChrome(shotA, spec, "#1c1c1e", false)
+	outA1, err := CompositeBrowserChrome(shotA, spec, "#1c1c1e", false, false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	outA2, _ := CompositeBrowserChrome(shotA, spec, "#1c1c1e", false)
-	outB, _ := CompositeBrowserChrome(shotB, spec, "#1c1c1e", false)
+	outA2, _ := CompositeBrowserChrome(shotA, spec, "#1c1c1e", false, false)
+	outB, _ := CompositeBrowserChrome(shotB, spec, "#1c1c1e", false, false)
 
 	if !bytes.Equal(outA1, outA2) {
 		t.Fatal("determinism: same input must produce byte-identical output")
@@ -140,8 +141,8 @@ func TestCompositeAnnotateOutline(t *testing.T) {
 	w := BuiltinPresets[PresetIPhone14].ViewportW
 	shot := makeTestShot(t, spec, w, 42)
 
-	plain, _ := CompositeBrowserChrome(shot, spec, "", false)
-	annotated, _ := CompositeBrowserChrome(shot, spec, "", true)
+	plain, _ := CompositeBrowserChrome(shot, spec, "", false, false)
+	annotated, _ := CompositeBrowserChrome(shot, spec, "", true, false)
 	if bytes.Equal(plain, annotated) {
 		t.Fatal("annotate=true must draw the occlusion outline (outputs identical)")
 	}
@@ -221,5 +222,121 @@ func TestParseActionZoom(t *testing.T) {
 	}
 	if _, err = ParseAction("zoom"); err == nil || !strings.Contains(err.Error(), "zoom") {
 		t.Fatalf("bare zoom must fail with guidance, got %v", err)
+	}
+}
+
+// --- REQ-BC-11/12 视口事实 + 键盘态 ---
+
+func kbSpec() *BrowserChromeSpec {
+	return &BrowserChromeSpec{Style: "safari-bottom-bar", ScreenH: 852, StatusBarH: 59,
+		BottomBarExpandedH: 134, BottomBarCollapsedH: 34, HomeIndicatorH: 34, KeyboardH: 336}
+}
+
+func TestKeyboardGeometryFromSSOT(t *testing.T) {
+	s := kbSpec()
+	if got := s.KeyboardInsetH(); got != 302 { // 336 - 34
+		t.Fatalf("KeyboardInsetH = %d, want 302", got)
+	}
+	if got := s.KeyboardTopY(); got != 457 { // 759 - 302
+		t.Fatalf("KeyboardTopY = %d, want 457", got)
+	}
+	if err := s.Validate(659); err != nil {
+		t.Fatalf("Validate with keyboardH: %v", err)
+	}
+	// 无键盘几何 → inset 0（键盘仿真不可用，非报错）
+	s2 := *s
+	s2.KeyboardH = 0
+	if s2.KeyboardInsetH() != 0 {
+		t.Fatalf("KeyboardH=0 must yield inset 0")
+	}
+	// 键盘比 chrome 带还矮 = 数据错误，载入期 fail-fast
+	s3 := *s
+	s3.KeyboardH = 100
+	if err := s3.Validate(659); err == nil {
+		t.Fatalf("keyboardH smaller than chrome band must fail Validate")
+	}
+}
+
+func TestOcclusionZonesKeyboardState(t *testing.T) {
+	s := kbSpec()
+	normal := s.OcclusionZones(393, false)
+	if len(normal) != 1 || normal[0].Y != 659 || normal[0].State != "expanded" {
+		t.Fatalf("normal zones wrong: %+v", normal)
+	}
+	kb := s.OcclusionZones(393, true)
+	if len(kb) != 1 || kb[0].Y != 457 || kb[0].H != 302 || kb[0].State != "keyboard" {
+		t.Fatalf("keyboard zones wrong: %+v", kb)
+	}
+	// 无键盘几何时 keyboard=true 退回 chrome 带（不造假区）
+	s2 := *s
+	s2.KeyboardH = 0
+	fallback := s2.OcclusionZones(393, true)
+	if len(fallback) != 1 || fallback[0].State != "expanded" {
+		t.Fatalf("no-keyboard fallback wrong: %+v", fallback)
+	}
+}
+
+func TestViewportFactsShimJS(t *testing.T) {
+	s := kbSpec()
+	js := s.ViewportFactsShimJS()
+	for _, want := range []string{"chromeInset: 100", "__dwViewportFacts", "visualViewport", "innerHeight", "dispatchEvent"} {
+		if !strings.Contains(js, want) {
+			t.Fatalf("shim JS missing %q", want)
+		}
+	}
+	show := s.KeyboardStateJS(true)
+	if !strings.Contains(show, "kbInset: 302") || !strings.Contains(show, "457") {
+		t.Fatalf("keyboard show JS wrong: %s", show)
+	}
+	hide := s.KeyboardStateJS(false)
+	if !strings.Contains(hide, "kbInset: 0") {
+		t.Fatalf("keyboard hide JS wrong: %s", hide)
+	}
+}
+
+func TestCompositeKeyboardState(t *testing.T) {
+	s := kbSpec()
+	shot := makeTestShot(t, s, 393, 7)
+	plain, err := CompositeBrowserChrome(shot, s, "", false, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kb1, err := CompositeBrowserChrome(shot, s, "", false, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kb2, _ := CompositeBrowserChrome(shot, s, "", false, true)
+	if bytes.Equal(plain, kb1) {
+		t.Fatalf("keyboard composite must differ from chrome-bar composite")
+	}
+	if !bytes.Equal(kb1, kb2) {
+		t.Fatalf("keyboard composite must be deterministic")
+	}
+}
+
+func TestParseActionKeyboard(t *testing.T) {
+	for _, val := range []string{"show", "hide"} {
+		p, err := ParseAction("keyboard " + val)
+		if err != nil || p.Op != "keyboard" || p.Value != val {
+			t.Fatalf("keyboard %s parse failed: %+v %v", val, p, err)
+		}
+	}
+	if _, err := ParseAction("keyboard"); err == nil {
+		t.Fatalf("bare keyboard must fail with guidance")
+	}
+	e := newActionEngine(nil)
+	if err := e.executeKeyboard(context.Background(), "show"); err == nil || !strings.Contains(err.Error(), "persona mobile") {
+		t.Fatalf("keyboard without controller must fail with --persona mobile guidance, got %v", err)
+	}
+	installed := false
+	e.setKeyboardController(func(ctx context.Context, show bool) error { installed = show; return nil })
+	if err := e.executeKeyboard(context.Background(), "bogus"); err == nil {
+		t.Fatalf("keyboard bogus must fail")
+	}
+	if err := e.executeKeyboard(context.Background(), "show"); err != nil || !installed || !e.KeyboardVisible() {
+		t.Fatalf("keyboard show via controller failed: %v", err)
+	}
+	if err := e.executeKeyboard(context.Background(), "hide"); err != nil || e.KeyboardVisible() {
+		t.Fatalf("keyboard hide via controller failed: %v", err)
 	}
 }

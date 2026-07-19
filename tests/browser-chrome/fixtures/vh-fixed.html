@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>vh-fixed — 100vh 病灶页（真机被 Safari 底栏遮挡，仿真必须显形）</title>
+<style>
+  * { margin: 0; box-sizing: border-box; }
+  html, body { overflow: hidden; }
+  #app { display: flex; flex-direction: column; height: 100vh; }
+  header { padding: 12px 16px; background: #dc2626; color: #fff; font: 600 16px system-ui; }
+  main { flex: 1; overflow: auto; padding: 16px; font: 14px system-ui; color: #333; background: #fff7f7; }
+  #toolbar {
+    display: flex; gap: 8px; padding: 10px 12px;
+    background: #fff; border-top: 1px solid #fecaca;
+  }
+  #toolbar button {
+    flex: 1; padding: 12px 0; border: 0; border-radius: 10px;
+    background: #dc2626; color: #fff; font: 600 14px system-ui;
+  }
+</style>
+</head>
+<body>
+<div id="app">
+  <header>vh-fixed 画板</header>
+  <main>此页用 100vh 布局（经典病灶）——真机 iPhone Safari 上
+    底部工具条沉入浏览器底栏之下，用户点不到。仿真截图必须把这个遮挡显形。</main>
+  <div id="toolbar">
+    <button id="btn-undo">撤销</button>
+    <button id="btn-color">颜色</button>
+    <button id="btn-send">发送</button>
+  </div>
+</div>
+</body>
+</html>

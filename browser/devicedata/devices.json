@@ -3,7 +3,7 @@
     "source": "Playwright deviceDescriptorsSource.json",
     "source_url": "https://cdn.jsdelivr.net/npm/playwright-core/lib/server/deviceDescriptorsSource.json",
     "license": "Apache-2.0 (microsoft/playwright)",
-    "note": "geometry/UA/mobile/touch sourced verbatim from Playwright; platform/vendor/webgl/maxTouchPoints/languages are dw-added fingerprint fields. browserChrome is the dw-added browser-chrome geometry SSOT (spec docs/product/browser-chrome/): screenH-statusBarH-bottomBarExpandedH MUST equal viewportH (load-time fail-fast). browserChrome numbers derived from Playwright svh + Apple HIG, pending --engine safari Simulator calibration. Single SSOT for dw-browser device fingerprints (loaded via go:embed).",
+    "note": "geometry/UA/mobile/touch sourced verbatim from Playwright; platform/vendor/webgl/maxTouchPoints/languages are dw-added fingerprint fields. browserChrome is the dw-added browser-chrome geometry SSOT (spec docs/product/browser-chrome/): screenH-statusBarH-bottomBarExpandedH MUST equal viewportH (load-time fail-fast). browserChrome numbers derived from Playwright svh + Apple HIG, pending --engine safari Simulator calibration. Single SSOT for dw-browser device fingerprints (loaded via go:embed). keyboardH=336(便携键盘含QuickType,推导值△,待 --engine safari Simulator 校准; 视口内遮挡=keyboardH-bottomBarCollapsedH).",
     "vendored": "2026-07-06"
   },
   "devices": {
@@ -27,7 +27,8 @@
         "statusBarH": 47,
         "bottomBarExpandedH": 133,
         "bottomBarCollapsedH": 33,
-        "homeIndicatorH": 34
+        "homeIndicatorH": 34,
+        "keyboardH": 336
       }
     },
     "iphone-15-pro": {
@@ -50,7 +51,8 @@
         "statusBarH": 59,
         "bottomBarExpandedH": 134,
         "bottomBarCollapsedH": 34,
-        "homeIndicatorH": 34
+        "homeIndicatorH": 34,
+        "keyboardH": 336
       }
     },
     "ipad-air": {

@@ -38,6 +38,9 @@ type BrowserChromeSpec struct {
 	BottomBarExpandedH  int    `json:"bottomBarExpandedH"`
 	BottomBarCollapsedH int    `json:"bottomBarCollapsedH"`
 	HomeIndicatorH      int    `json:"homeIndicatorH"`
+	// KeyboardH 软键盘总高（屏幕坐标，自屏幕底边起，含 QuickType 候选条；
+	// 0 = 该设备无键盘几何 → 键盘仿真不可用）。REQ-BC-12。
+	KeyboardH int `json:"keyboardH,omitempty"`
 }
 
 // SmallViewportH 底栏展开态布局视口高（= Playwright 视口，svh）。
@@ -53,6 +56,22 @@ func (s *BrowserChromeSpec) LargeViewportH() int {
 // OcclusionBandH 遮挡带高度（视口底部被 chrome 盖住的区间）。
 func (s *BrowserChromeSpec) OcclusionBandH() int {
 	return s.LargeViewportH() - s.SmallViewportH()
+}
+
+// KeyboardInsetH 软键盘盖住视口底部的高度（CSS px，视口坐标系）。
+// 键盘自屏幕底边起 KeyboardH；视口底边在屏幕 statusBarH+lvh 处，其下还有
+// bottomBarCollapsedH（收起态底栏/home 区）不属于视口 → 视口内被盖 =
+// KeyboardH - BottomBarCollapsedH。KeyboardH=0 → 0（无键盘几何）。
+func (s *BrowserChromeSpec) KeyboardInsetH() int {
+	if s.KeyboardH <= 0 {
+		return 0
+	}
+	return s.KeyboardH - s.BottomBarCollapsedH
+}
+
+// KeyboardTopY 键盘态遮挡区上沿（视口 CSS y；仅 KeyboardInsetH>0 有意义）。
+func (s *BrowserChromeSpec) KeyboardTopY() int {
+	return s.LargeViewportH() - s.KeyboardInsetH()
 }
 
 // Validate 校验几何自洽（devicedata 载入期 fail-fast 用）。
@@ -71,6 +90,13 @@ func (s *BrowserChromeSpec) Validate(presetViewportH int) error {
 	}
 	if s.HomeIndicatorH < 0 || s.HomeIndicatorH > s.BottomBarExpandedH {
 		return fmt.Errorf("browserChrome: homeIndicatorH %d out of range", s.HomeIndicatorH)
+	}
+	if s.KeyboardH != 0 {
+		inset := s.KeyboardInsetH()
+		if inset <= s.OcclusionBandH() || inset >= s.LargeViewportH() {
+			return fmt.Errorf("browserChrome: keyboardH %d → viewport inset %d out of range (must cover more than chrome band %d, less than lvh %d)",
+				s.KeyboardH, inset, s.OcclusionBandH(), s.LargeViewportH())
+		}
 	}
 	return nil
 }
@@ -123,14 +149,120 @@ type OcclusionZone struct {
 
 // OcclusionZones 按状态给出遮挡矩形集。
 // expanded（默认/最坏态）：底部 [svh, lvh) 整带被底栏盖住。
+// keyboard=true（REQ-BC-12）：软键盘替代底栏（真机行为），遮挡区扩大为
+// [KeyboardTopY, lvh)——单矩形，键盘区已覆盖 chrome 带。
 // collapsed：收起态底栏位于视口之外（布局视口即 lvh）→ 无页面遮挡（几何事实，
 // 保留状态位以便未来非 iOS 顶栏模型扩展）。
-func (s *BrowserChromeSpec) OcclusionZones(viewportW int) []OcclusionZone {
+func (s *BrowserChromeSpec) OcclusionZones(viewportW int, keyboard bool) []OcclusionZone {
+	if keyboard && s.KeyboardInsetH() > 0 {
+		return []OcclusionZone{{
+			X: 0, Y: s.KeyboardTopY(), W: viewportW, H: s.KeyboardInsetH(),
+			State: "keyboard", Desc: "soft keyboard (act \"keyboard hide\" to dismiss)",
+		}}
+	}
 	return []OcclusionZone{{
 		X: 0, Y: s.SmallViewportH(), W: viewportW, H: s.OcclusionBandH(),
 		State: "expanded", Desc: "safari bottom bar (address pill + toolbar)",
 	}}
 }
+
+// ---- 视口事实 shim（REQ-BC-11/12：页面感知的视口 = 真机 bars-expanded 态）----
+//
+// 真机上 chrome/键盘不是"画在页面上的像素"，而是"改变页面所依据的视口"并触发
+// visualViewport resize 事件。Chrome 引擎里 layout viewport/dvh/vh 锁死会话视口
+// （必须留在 lvh，否则 100vh 病灶隐身），能对齐的通道：
+//   - visualViewport.height：实例 getter patch = real - bottomInset/scale（zoom 自洽）
+//   - window.innerHeight：= real - chromeInset/scale（iOS 语义：随底栏/缩放，不随键盘）
+//   - 100svh / env(safe-area-inset-*)：CDP 原生 override（browser_chrome_impl.go）
+// 残留假阳通道（引擎级不可修，判定层豁免 + 机读块如实声明）：100dvh、fixed-bottom。
+//
+// 幂等（guard on __dwViewportFacts）：AddScriptToEvaluateOnNewDocument 每次 attach
+// 重注册 + evaluate-now 兜底，重复执行零效果。仅 top frame。真实事件流不拦截：
+// 只 patch getter，Chrome 自身的 vv resize（缩放等）自然穿透且读值已折算。
+const viewportFactsShimJSTmpl = `(function () {
+  if (window !== window.top) return;
+  if (window.__dwViewportFacts) return;
+  var vv = window.visualViewport;
+  if (!vv) return;
+  var proto = Object.getPrototypeOf(vv);
+  var realH = Object.getOwnPropertyDescriptor(proto, 'height').get;
+  var state = { chromeInset: %d, kbInset: 0 };
+  function bottomInset() { return Math.max(state.chromeInset, state.kbInset); }
+  Object.defineProperty(vv, 'height', {
+    configurable: true,
+    get: function () {
+      var s = vv.scale || 1;
+      return Math.max(0, realH.call(vv) - bottomInset() / s);
+    }
+  });
+  Object.defineProperty(window, 'innerHeight', {
+    configurable: true,
+    get: function () {
+      var s = vv.scale || 1;
+      return Math.max(0, Math.round(realH.call(vv) - state.chromeInset / s));
+    }
+  });
+  window.__dwViewportFacts = function (patch) {
+    if (patch && typeof patch.kbInset === 'number' && patch.kbInset !== state.kbInset) {
+      state.kbInset = patch.kbInset;
+      vv.dispatchEvent(new Event('resize'));
+    }
+    // layoutH = 布局视口高（lvh，未仿真的引擎真相）——内部工具 JS 专用出口：
+    // 页面看仿真事实（innerHeight=svh），坐标/快照工具必须看布局真相（截图高=lvh），
+    // 两界不可混（评审抓获 tapxy 用 patched innerHeight 作基准 → 落点偏高约一成）。
+    return { chromeInset: state.chromeInset, kbInset: state.kbInset,
+             layoutH: Math.round(realH.call(vv) * (vv.scale || 1)) };
+  };
+})();`
+
+// LayoutViewportHeightJSExpr 内部工具 JS 取布局视口高的统一表达式：
+// chrome 仿真会话经 shim 出口取 lvh（innerHeight 已被 patch 成 svh，不可用作
+// 坐标基准）；非仿真会话回退 innerHeight（原契约）。
+const LayoutViewportHeightJSExpr = `(window.__dwViewportFacts ? window.__dwViewportFacts().layoutH : (window.innerHeight || 0))`
+
+// ViewportFactsShimJS 按设备几何实例化 shim（chromeInset = 遮挡带高）。
+func (s *BrowserChromeSpec) ViewportFactsShimJS() string {
+	return fmt.Sprintf(viewportFactsShimJSTmpl, s.OcclusionBandH())
+}
+
+// keyboardStateJSTmpl 键盘态推入页面：更新 kbInset（shim 内部派发 vv resize），
+// show 时若聚焦元素沉在键盘区下则 scrollIntoView（真机 Safari 卷动语义——真实
+// 布局滚动，渲染与报告坐标一致；不合成 offsetTop 假值）。
+// 参数：%d kbInset（0=hide）、%d 键盘区上沿 KeyboardTopY。
+const keyboardStateJSTmpl = `(function () {
+  if (!window.__dwViewportFacts) return 'no-shim';
+  window.__dwViewportFacts({ kbInset: %d });
+  var kbTop = %d;
+  if (kbTop > 0) {
+    var ae = document.activeElement;
+    if (ae && ae !== document.body && ae !== document.documentElement) {
+      var r = ae.getBoundingClientRect();
+      if (r.bottom > kbTop) { try { ae.scrollIntoView({ block: 'center', behavior: 'instant' }); } catch (e) {} }
+    }
+  }
+  return 'ok';
+})()`
+
+// KeyboardStateJS 生成键盘态推入脚本。show=false → kbInset 0 且不卷动。
+func (s *BrowserChromeSpec) KeyboardStateJS(show bool) string {
+	if !show {
+		return fmt.Sprintf(keyboardStateJSTmpl, 0, 0)
+	}
+	return fmt.Sprintf(keyboardStateJSTmpl, s.KeyboardInsetH(), s.KeyboardTopY())
+}
+
+// editableFocusProbeJS 焦点自动同步探针：activeElement 是否文本可编辑
+// （真机语义：用户点输入框 → 键盘弹起；点别处失焦 → 键盘收起）。
+const editableFocusProbeJS = `(function () {
+  var ae = document.activeElement;
+  if (!ae || ae === document.body || ae === document.documentElement) return false;
+  var tag = (ae.tagName || '').toLowerCase();
+  if (tag === 'textarea' || tag === 'select') return true;
+  if (ae.isContentEditable) return true;
+  if (tag !== 'input') return false;
+  var t = (ae.getAttribute('type') || 'text').toLowerCase();
+  return ['button','checkbox','radio','submit','reset','file','range','color','image','hidden'].indexOf(t) < 0;
+})()`
 
 // ---- 主题取色 ----
 
@@ -256,11 +388,13 @@ func darken(c color.RGBA, d int) color.RGBA {
 //   - shot: 原截图字节（JPEG/PNG 自动识别，按原格式回编码）。
 //   - themeCSS: 页面主题色（空 → 浅色缺省）。
 //   - annotate: true 时额外画红描边遮挡区（evidence 用；默认截图不带标注）。
+//   - keyboard: 键盘态（REQ-BC-12）——软键盘替代 safari 底栏（真机行为），
+//     绘制键盘意符占满 [KeyboardTopY, lvh)。
 //
 // 截图物理像素与 CSS 的比例（DPR）由"图高 / lvh"自动推导 —— 仿真会话视口高
 // 恒为 lvh（open 时定死），几何与 DPR 无关。
-// 纯函数：同 (spec, 尺寸, theme, annotate) → 逐字节相同输出（确定性/不变性）。
-func CompositeBrowserChrome(shot []byte, spec *BrowserChromeSpec, themeCSS string, annotate bool) ([]byte, error) {
+// 纯函数：同 (spec, 尺寸, theme, annotate, keyboard) → 逐字节相同输出（确定性/不变性）。
+func CompositeBrowserChrome(shot []byte, spec *BrowserChromeSpec, themeCSS string, annotate, keyboard bool) ([]byte, error) {
 	if spec == nil {
 		return shot, nil
 	}
@@ -279,12 +413,29 @@ func CompositeBrowserChrome(shot []byte, spec *BrowserChromeSpec, themeCSS strin
 	px := func(cssPx int) int { return int(float64(cssPx)*scale + 0.5) }
 
 	bandTop := px(spec.SmallViewportH())
+	if keyboard && spec.KeyboardInsetH() > 0 {
+		bandTop = px(spec.KeyboardTopY())
+	}
 	bandBottom := b.Dy() // 视口底 = lvh
 	if bandTop >= bandBottom {
 		return shot, nil // 图不含遮挡带（异常尺寸），原样返回
 	}
 	pal := paletteForTheme(themeCSS)
 	w := b.Dx()
+
+	if keyboard && spec.KeyboardInsetH() > 0 {
+		// 键盘态：键盘意符 + home indicator；safari 底栏被键盘替代不画。
+		drawKeyboard(img, image.Rect(0, bandTop, w, bandBottom), pal)
+		indW := w * 36 / 100
+		indH := maxInt(px(5), 3)
+		indTop := bandBottom - px(spec.HomeIndicatorH)/2 - indH/2
+		fillRoundedRect(img, image.Rect((w-indW)/2, indTop, (w+indW)/2, indTop+indH), indH/2, pal.Indicator)
+		if annotate {
+			red := color.RGBA{R: 0xFF, G: 0x3B, B: 0x30, A: 255}
+			strokeRect(img, image.Rect(0, bandTop, w, bandBottom), maxInt(2, px(2)), red)
+		}
+		return encodeShot(img, format)
+	}
 
 	// 底栏背景 + 顶部 hairline
 	fillRect(img, image.Rect(0, bandTop, w, bandBottom), pal.Bar)
@@ -322,8 +473,12 @@ func CompositeBrowserChrome(shot []byte, spec *BrowserChromeSpec, themeCSS strin
 		red := color.RGBA{R: 0xFF, G: 0x3B, B: 0x30, A: 255}
 		strokeRect(img, image.Rect(0, bandTop, w, bandBottom), maxInt(2, px(2)), red)
 	}
+	return encodeShot(img, format)
+}
 
+func encodeShot(img *image.RGBA, format string) ([]byte, error) {
 	var out bytes.Buffer
+	var err error
 	switch format {
 	case "png":
 		err = png.Encode(&out, img)
@@ -405,9 +560,18 @@ func isqrt(n int) int {
 
 // ---- 视觉视口投影（act 遮挡守卫 / audit 共用语义）----
 
-// chromeGuardProbeJS act 守卫单次探针：视觉视口投影参数 + 页面防护声明一把取
-// （每次受守卫点击一次 evaluate，合并省往返）。
-const chromeGuardProbeJS = `(function(){
+// chromeGuardProbeJSTmpl act 守卫单次探针：视觉视口投影参数 + 页面防护声明 +
+// fixed-bottom 命中检测一把取（每次受守卫点击一次 evaluate，合并省往返）。
+// 参数：%f pageX、%f pageY、%d lvh（布局视口高，Go 侧 SSOT 注入）。
+// 注意 vv.scale 是真实值（shim 只 patch height），offsetTop 亦真实。
+// fixedBottom（REQ-BC-05 MODIFIED(2)）：命中点所在元素链上存在 position:fixed 且
+// 底边锚定布局视口底（|rect.bottom - lvh| <= 2）的祖先 —— 真机 bars-expanded
+// 时 layout viewport = svh，此类元素在底栏上方可见，chrome 带命中为模型假阳。
+// 基准必须是注入的 lvh：svh 单位 override 会把 documentElement.clientHeight 一并
+// 改成 svh，而 fixed 元素实际仍锚定 ICB=lvh（评审实测抓获——用 clientHeight 判定
+// 恒不命中 = 豁免死代码）。
+const chromeGuardProbeJSTmpl = `(function(){
+  var px = %f, py = %f, lvh = %d;
   var v = window.visualViewport || {};
   var css = '';
   try {
@@ -420,18 +584,31 @@ const chromeGuardProbeJS = `(function(){
   } catch (e) {}
   css += (document.documentElement.getAttribute('style') || '');
   if (document.body) css += (document.body.getAttribute('style') || '');
+  var fixedBottom = false;
+  try {
+    var el = document.elementFromPoint(px - window.scrollX, py - window.scrollY);
+    for (var n = el; n && n !== document.documentElement; n = n.parentElement) {
+      var cs = getComputedStyle(n);
+      if (cs.position === 'fixed') {
+        var r = n.getBoundingClientRect();
+        if (Math.abs(r.bottom - lvh) <= 2) { fixedBottom = true; break; }
+      }
+    }
+  } catch (e) {}
   return JSON.stringify({
     scale: v.scale || 1, offsetTop: v.offsetTop || 0, offsetLeft: v.offsetLeft || 0,
     dvh: /\b\d+(\.\d+)?(dvh|svh)\b/.test(css),
-    safe_area: /safe-area-inset/.test(css)
+    safe_area: /safe-area-inset/.test(css),
+    fixed_bottom: fixedBottom
   });
 })()`
 
 type chromeGuardProbe struct {
-	Scale     float64 `json:"scale"`
-	OffsetTop float64 `json:"offsetTop"`
-	Dvh       bool    `json:"dvh"`
-	SafeArea  bool    `json:"safe_area"`
+	Scale       float64 `json:"scale"`
+	OffsetTop   float64 `json:"offsetTop"`
+	Dvh         bool    `json:"dvh"`
+	SafeArea    bool    `json:"safe_area"`
+	FixedBottom bool    `json:"fixed_bottom"`
 }
 
 // ProjectPageYToScreen 把页面坐标 y 投影到屏幕（视觉视口）CSS 坐标。

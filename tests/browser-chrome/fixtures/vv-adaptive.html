@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>vv-adaptive — visualViewport 钉高（真机正常，仿真不得误报）</title>
+<style>
+  * { margin: 0; box-sizing: border-box; }
+  html, body { overflow: hidden; }
+  #app { display: flex; flex-direction: column; height: 100vh; /* JS 用 vv.height 覆写 */ }
+  header { padding: 12px 16px; background: #2563eb; color: #fff; font: 600 16px system-ui; }
+  main { flex: 1; overflow: auto; padding: 16px; font: 14px system-ui; color: #333; background: #f8fafc; }
+  #toolbar {
+    display: flex; gap: 8px; padding: 10px 12px;
+    background: #fff; border-top: 1px solid #e2e8f0;
+  }
+  #toolbar button {
+    flex: 1; padding: 12px 0; border: 0; border-radius: 10px;
+    background: #2563eb; color: #fff; font: 600 14px system-ui;
+  }
+</style>
+</head>
+<body>
+<div id="app">
+  <header>vv-adaptive 画板</header>
+  <main id="log">此页用 visualViewport.height 钉住 #app 高度并监听 resize——
+    与真机 Safari 自适应页同构。底部工具条在真机上完全可见。</main>
+  <div id="toolbar">
+    <button id="btn-undo">撤销</button>
+    <button id="btn-color">颜色</button>
+    <button id="btn-send" onclick="document.getElementById('log').textContent='sent@'+Date.now()">发送</button>
+  </div>
+</div>
+<script>
+  const app = document.getElementById('app');
+  function fit() {
+    const vv = window.visualViewport;
+    if (!vv) return;
+    app.style.height = vv.height + 'px';
+  }
+  fit();
+  if (window.visualViewport) {
+    window.visualViewport.addEventListener('resize', fit);
+    window.visualViewport.addEventListener('scroll', fit);
+  }
+</script>
+</body>
+</html>

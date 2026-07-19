@@ -901,7 +901,9 @@ func discoverClickableDOMViaJS(ctx context.Context, existingRefs []ElementRef) [
 			const style = window.getComputedStyle(el);
 			if (style.display === 'none' || style.visibility === 'hidden' || style.pointerEvents === 'none') return false;
 			const x = Math.min(Math.max(r.left + r.width / 2, 0), window.innerWidth - 1);
-			const y = Math.min(Math.max(r.top + r.height / 2, 0), window.innerHeight - 1);
+			// 布局视口高作 clamp 基准（chrome 仿真下 innerHeight 被 shim 成小视口，
+			// 用它会把遮挡带内元素探测点夹到带外 → 误判非顶层）
+			const y = Math.min(Math.max(r.top + r.height / 2, 0), ` + LayoutViewportHeightJSExpr + ` - 1);
 			const top = document.elementFromPoint(x, y);
 			return !!top && (el === top || el.contains(top));
 		};

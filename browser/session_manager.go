@@ -79,6 +79,9 @@ type SessionInfo struct {
 	// PageScale 当前页面缩放（act "zoom" 设置；0 视为 1.0）。跨 CLI 调用镜像
 	// Chrome 内的 Emulation.setPageScaleFactor 状态，供 observe/遮挡折算。
 	PageScale float64 `json:"page_scale,omitempty"`
+	// Keyboard 软键盘态（act "keyboard show|hide"/焦点自动同步设置；REQ-BC-12）。
+	// 跨 CLI 调用的意图态 SSOT，attach 时经 ApplyViewportFacts 重放进页面。
+	Keyboard bool `json:"keyboard,omitempty"`
 }
 
 // SessionRef セッション内の要素 ref エントリ。

@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>units-probe — 视口事实自报页（E2E 断言用）</title>
+<style>
+  body { font: 16px/1.6 system-ui; padding: 16px; margin: 0; }
+  #svh-el { height: 100svh; position: absolute; left: -9999px; width: 1px; }
+  #dvh-el { height: 100dvh; position: absolute; left: -9999px; width: 1px; }
+  #vh-el  { height: 100vh;  position: absolute; left: -9999px; width: 1px; }
+</style>
+</head>
+<body>
+<h1>视口事实自报</h1>
+<div id="svh-el"></div><div id="dvh-el"></div><div id="vh-el"></div>
+<p id="report" role="status">measuring…</p>
+<script>
+  function h(id) { return Math.round(document.getElementById(id).getBoundingClientRect().height); }
+  function report() {
+    const vv = window.visualViewport;
+    document.getElementById('report').textContent =
+      'svh=' + h('svh-el') + ' dvh=' + h('dvh-el') + ' vh=' + h('vh-el') +
+      ' innerH=' + window.innerHeight +
+      ' vvH=' + (vv ? Math.round(vv.height) : -1) +
+      ' saB=' + getComputedStyle(document.documentElement).getPropertyValue('--sab-probe');
+  }
+  document.documentElement.style.setProperty('--sab-probe', 'env(safe-area-inset-bottom, 0px)');
+  // env() 不能经 CSS 变量直接读数值——用探针元素折算
+  const sa = document.createElement('div');
+  sa.style.cssText = 'position:absolute;left:-9999px;width:1px;height:env(safe-area-inset-bottom,0px)';
+  document.body.appendChild(sa);
+  // lastClick 入状态变量：attach 重放 SetDeviceMetricsOverride 会触发 window
+  // resize → reportAll 重写文本，若只 append 会被抹掉（E2E 实测抓获）。
+  var lastClick = '';
+  function reportAll() {
+    report();
+    document.getElementById('report').textContent =
+      document.getElementById('report').textContent.replace(/ saB=.*/, '') +
+      ' saB=' + Math.round(sa.getBoundingClientRect().height) + lastClick;
+  }
+  reportAll();
+  if (window.visualViewport) window.visualViewport.addEventListener('resize', reportAll);
+  window.addEventListener('resize', reportAll);
+  // 点击坐标记录（tapxy 契约 E2E：0.5/0.5 应落在布局视口中心）+ 点击即重测
+  document.addEventListener('click', function (ev) {
+    lastClick = ' lastClick=' + Math.round(ev.clientX) + ',' + Math.round(ev.clientY);
+    reportAll();
+  });
+</script>
+</body>
+</html>

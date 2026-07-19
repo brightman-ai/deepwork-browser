@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"strconv"
 	"strings"
 	"sync"
@@ -29,10 +30,15 @@ type actionEngine struct {
 	// （单写者：act 执行前设置，执行期只读）。
 	pointerGuard func(ctx context.Context, x, y float64) error
 	// pageScale 镜像 Emulation.setPageScaleFactor 当前值（act "zoom" 更新；0 视为 1）。
-	// psMu 保护 pageScale：写(executeZoom)发生在 impl.mu.RLock 下，读(PageScale)亦然，
+	// psMu 保护 pageScale/keyboardVisible：写(executeZoom/executeKeyboard)发生在
+	// impl.mu.RLock 下，读(PageScale/KeyboardVisible)亦然，
 	// RWMutex 读锁不互斥这对读写 —— 单进程串行下无活 race，但语义上必须自持锁。
 	psMu      sync.Mutex
 	pageScale float64
+	// keyboardCtl 软键盘态控制器（browser chrome 仿真安装；nil = 键盘仿真不可用）。
+	// keyboardVisible 镜像当前键盘态（act "keyboard"/焦点自动同步更新；psMu 保护）。
+	keyboardCtl     func(ctx context.Context, show bool) error
+	keyboardVisible bool
 }
 
 // newActionEngine 创建 ActionEngine 实例。
@@ -70,6 +76,66 @@ func (e *actionEngine) restorePageScale(scale float64) {
 		e.pageScale = scale
 		e.psMu.Unlock()
 	}
+}
+
+// setKeyboardController 安装软键盘态控制器（见 keyboardCtl 字段）。
+func (e *actionEngine) setKeyboardController(ctl func(ctx context.Context, show bool) error) {
+	e.keyboardCtl = ctl
+}
+
+// KeyboardVisible 当前软键盘态（默认 false）。
+func (e *actionEngine) KeyboardVisible() bool {
+	e.psMu.Lock()
+	defer e.psMu.Unlock()
+	return e.keyboardVisible
+}
+
+// restoreKeyboard 对齐本进程镜像的键盘态（页面侧推入由调用方负责）。
+func (e *actionEngine) restoreKeyboard(visible bool) {
+	e.psMu.Lock()
+	e.keyboardVisible = visible
+	e.psMu.Unlock()
+}
+
+// executeKeyboard 软键盘态显式切换（act "keyboard show|hide"，REQ-BC-12）。
+func (e *actionEngine) executeKeyboard(ctx context.Context, value string) error {
+	if e.keyboardCtl == nil {
+		return fmt.Errorf("%w: keyboard simulation requires browser chrome sim (open with --persona mobile)", ErrActFailed)
+	}
+	var show bool
+	switch value {
+	case "show":
+		show = true
+	case "hide":
+		show = false
+	default:
+		return fmt.Errorf("%w: keyboard expects 'show' or 'hide', got %q", ErrActFailed, value)
+	}
+	if err := e.keyboardCtl(ctx, show); err != nil {
+		return err
+	}
+	e.restoreKeyboard(show)
+	return nil
+}
+
+// autoSyncKeyboard 焦点自动同步（真机语义：点输入框键盘弹起、失焦收起）。
+// 在可能改变焦点的 op 之后调用；探测/切换失败只记日志不失败主 op（辅助路径）。
+func (e *actionEngine) autoSyncKeyboard(ctx context.Context) {
+	if e.keyboardCtl == nil {
+		return
+	}
+	var editable bool
+	if err := chromedp.Run(ctx, chromedp.Evaluate(editableFocusProbeJS, &editable)); err != nil {
+		return
+	}
+	if editable == e.KeyboardVisible() {
+		return
+	}
+	if err := e.keyboardCtl(ctx, editable); err != nil {
+		log.Printf("[BROWSER] keyboard auto-sync (%v) failed: %v", editable, err)
+		return
+	}
+	e.restoreKeyboard(editable)
 }
 
 // ParsedAction 是解析后的操作结构。
@@ -501,6 +567,14 @@ func ParseAction(action string) (*ParsedAction, error) {
 		}
 		return &ParsedAction{Op: "zoom", Value: strings.ToLower(parts[1])}, nil
 
+	// 软键盘态（REQ-BC-12）：显式切换；click/tap/fill 后另有焦点自动同步。
+	//   "keyboard show" / "keyboard hide"
+	case "keyboard":
+		if len(parts) < 2 {
+			return nil, fmt.Errorf("%w: keyboard requires 'show' or 'hide'", ErrActFailed)
+		}
+		return &ParsedAction{Op: "keyboard", Value: strings.ToLower(parts[1])}, nil
+
 	case "fill":
 		if len(parts) < 3 {
 			return nil, fmt.Errorf("%w: fill requires selector and value", ErrActFailed)
@@ -726,7 +800,7 @@ func (e *actionEngine) ExecuteWithSessionMode(ctx context.Context, action string
 	// page-level 操作不需要选择器
 	// tapxy 是绝对视口坐标点击，刻意不解析 ref（绕过 a11y/locator）。
 	// typetext 向当前聚焦元素插入文本，同样刻意不解析 ref。
-	noSelectorOps := map[string]bool{"scroll": true, "back": true, "forward": true, "tapxy": true, "typetext": true, "zoom": true}
+	noSelectorOps := map[string]bool{"scroll": true, "back": true, "forward": true, "tapxy": true, "typetext": true, "zoom": true, "keyboard": true}
 
 	var resolvedRef string
 	if !noSelectorOps[parsed.Op] && parsed.Ref != "" {
@@ -762,6 +836,10 @@ func (e *actionEngine) ExecuteWithSessionMode(ctx context.Context, action string
 		}
 	case "zoom":
 		if err := e.executeZoom(ctx, parsed.Value); err != nil {
+			return nil, err
+		}
+	case "keyboard":
+		if err := e.executeKeyboard(ctx, parsed.Value); err != nil {
 			return nil, err
 		}
 	case "dblclickat":
@@ -862,6 +940,17 @@ func (e *actionEngine) ExecuteWithSessionMode(ctx context.Context, action string
 	domSettleOps := map[string]bool{"click": true, "tap": true, "type": true, "fill": true, "fillsecret": true, "select": true, "check": true, "uncheck": true}
 	if domSettleOps[parsed.Op] {
 		_ = waitForDOMSettle(ctx, 500, 5000)
+	}
+
+	// 焦点自动同步（REQ-BC-12 真机语义）：可能改变焦点的 op 之后，
+	// activeElement 可编辑 ⇒ 软键盘弹起，否则收起。settle 之后判（焦点已定）。
+	focusSyncOps := map[string]bool{
+		"click": true, "tap": true, "clickat": true, "tapat": true, "tapxy": true,
+		"dblclickat": true, "fill": true, "fillsecret": true, "type": true,
+		"typetext": true, "press": true, "focus": true,
+	}
+	if focusSyncOps[parsed.Op] {
+		e.autoSyncKeyboard(ctx)
 	}
 
 	// observe=false 时不返回 Snapshot [TC-09-U-28]
@@ -1452,14 +1541,16 @@ func (e *actionEngine) executeClickAt(ctx context.Context, ref string, relX, rel
 }
 
 // viewportSize 读取当前视口像素尺寸（CSS 像素）。
-// 用 window.innerWidth/innerHeight：与快照 probe 同源，DPR 无关，等价 CDP
-// Page.getLayoutMetrics 的 cssLayoutViewport，但无需 Page domain enable。
+// 语义 = 布局视口（等价 CDP Page.getLayoutMetrics 的 cssLayoutViewport），DPR 无关。
+// 高度不可直接用 window.innerHeight：chrome 仿真下 innerHeight 被 shim 成小视口
+// （页面事实），而 tapxy/clickat 的比例基准必须是布局/截图高（工具真相）——
+// 经 LayoutViewportHeightJSExpr 取 lvh，非仿真会话回退 innerHeight（原契约）。
 func (e *actionEngine) viewportSize(ctx context.Context) (float64, float64, error) {
 	var dims struct {
 		W float64 `json:"w"`
 		H float64 `json:"h"`
 	}
-	js := `(() => JSON.stringify({w: window.innerWidth || 0, h: window.innerHeight || 0}))()`
+	js := `(() => JSON.stringify({w: window.innerWidth || 0, h: ` + LayoutViewportHeightJSExpr + `}))()`
 	var raw string
 	if err := chromedp.Run(ctx, chromedp.Evaluate(js, &raw)); err != nil {
 		return 0, 0, fmt.Errorf("%w: read viewport size: %v", ErrActFailed, err)

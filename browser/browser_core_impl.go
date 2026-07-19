@@ -349,6 +349,7 @@ type browserCoreImpl struct {
 	workspace          Workspace
 	ownerIdentityKey   IdentityKey
 	chromeSim          *BrowserChromeSpec // 非 nil = browser chrome 仿真启用（open 定死；SSOT 经 preset）
+	vfNavArmed         bool               // 本进程已挂 frameNavigated → 视口事实重放监听（防重复挂）
 
 	// policyMu 独立保护 policy/lastURL，与 mu 解耦：Navigate 在持有 mu.RLock
 	// 期间也需刷新 lastURL，若复用 mu 会触发 RWMutex 不可重入的写锁死锁。
@@ -893,6 +894,18 @@ func (impl *browserCoreImpl) Navigate(ctx context.Context, url string) (*Snapsho
 			"elapsed_ms", time.Since(domSettleStart).Milliseconds())
 	}
 
+	// 视口事实重放（REQ-BC-11）：svh difference override 跨导航复位（探针实测 ■），
+	// 导航成功即重放（register=false——注册仅 open 一次，防浏览器内堆积）；
+	// 键盘态随导航收起（真机语义）。持 mu.RLock 中 → 走无锁核心。
+	// 首屏窗口由 armViewportFactsReplayOnNav 的 frameNavigated 监听兜底收窄。
+	if impl.chromeSim != nil {
+		impl.actEngine.restoreKeyboard(false)
+		if vfErr := applyViewportFactsCDP(runCtx, impl.chromeSim, false, false); vfErr != nil {
+			logger.Warn(logCtx, "browser navigate viewport facts replay failed",
+				"url", url, "error", vfErr)
+		}
+	}
+
 	// 终局语义: 地址栏导航应始终作用于"当前活跃 target"。
 	// 之前无条件回切 root target，会让新 tab / auth target 的 URL 输入回车误导航 root tab，
 	// 直接破坏多 tab 基本语义，也会让 ChatGPT/Apple 登录流程回错标签。
@@ -1092,7 +1105,7 @@ func (impl *browserCoreImpl) Screenshot(ctx context.Context, annotate bool) ([]b
 	// 主题取色（真机行为：底栏随页面 theme-color/背景）；探测失败用浅色缺省。
 	var theme string
 	_ = chromedp.Run(runCtx, chromedp.Evaluate(browserChromeThemeProbeJS, &theme))
-	composed, cErr := CompositeBrowserChrome(data, impl.chromeSim, theme, annotate)
+	composed, cErr := CompositeBrowserChrome(data, impl.chromeSim, theme, annotate, impl.actEngine.KeyboardVisible())
 	if cErr != nil {
 		log.Printf("[BROWSER] browser-chrome composite failed (returning raw screenshot): %v", cErr)
 		return data, nil
