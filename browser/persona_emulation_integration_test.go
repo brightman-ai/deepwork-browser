@@ -41,6 +41,10 @@ func TestPersonaEmulation_Integration(t *testing.T) {
 			chromedp.Flag("headless", "new"),
 			chromedp.NoSandbox,
 			chromedp.DisableGPU,
+			// Kernel-level guarantee against orphaning Chrome if this test
+			// binary is killed hard (timeout, CI cancel, Ctrl-C) before
+			// cancelA()/defer ever runs — see ApplyParentDeathKill doc.
+			chromedp.ModifyCmdFunc(ApplyParentDeathKill),
 		)...)
 	defer cancelA()
 	ctx, cancel := chromedp.NewContext(allocCtx)

@@ -14,6 +14,13 @@ import (
 // Exported so dw-browser CLI (headless path) can call it cross-platform.
 func ApplyDetachedProcAttr(cmd *exec.Cmd) {}
 
+// ApplyParentDeathKill is a no-op on Windows: Pdeathsig has no direct
+// Windows equivalent (Job Objects would give the same guarantee but are a
+// bigger lift, not done here) — ad-hoc chromedp callers on Windows can still
+// leak a Chrome process if the parent is killed hard. See the unix version's
+// doc comment for what this is for.
+func ApplyParentDeathKill(cmd *exec.Cmd) {}
+
 // KillChromeProcessGroup falls back to a plain single-process kill on
 // Windows: ApplyDetachedProcAttr above doesn't group Chrome's children here,
 // so there's no group to target yet (see its doc comment).
