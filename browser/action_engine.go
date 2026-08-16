@@ -46,14 +46,29 @@ type actionEngine struct {
 	// keyboardVisible 镜像当前键盘态（act "keyboard"/焦点自动同步更新；psMu 保护）。
 	keyboardCtl     func(ctx context.Context, show bool) error
 	keyboardVisible bool
+
+	// One action owns the mutation channel at a time. A timeout means input may
+	// already have reached Chrome, so the channel stays tainted until teardown.
+	actionMu      sync.Mutex
+	actionGate    chan struct{}
+	actionCloseCh chan struct{}
+	actionWG      sync.WaitGroup
+	actionCancel  context.CancelFunc
+	actionID      uint64
+	actionTainted bool
+	actionClosing bool
 }
 
 // newActionEngine 创建 ActionEngine 实例。
 func newActionEngine(snapEngine *snapshotEngine) *actionEngine {
-	return &actionEngine{
-		snapEngine: snapEngine,
-		humanInput: NewInputGateway(nil, nil),
+	engine := &actionEngine{
+		snapEngine:    snapEngine,
+		humanInput:    NewInputGateway(nil, nil),
+		actionGate:    make(chan struct{}, 1),
+		actionCloseCh: make(chan struct{}),
 	}
+	engine.actionGate <- struct{}{}
+	return engine
 }
 
 func (e *actionEngine) setSeeToClick(enabled bool) {
@@ -241,6 +256,7 @@ func ParseSelector(selector string) (*ParsedSelector, error) {
 		if n > 0 {
 			return &ParsedSelector{SType: SelectorSessionRef, SessionRef: n, Raw: selector}, nil
 		}
+		return nil, fmt.Errorf("%w: invalid session ref %q (want @r followed by a positive integer)", ErrActFailed, selector)
 	}
 
 	// 2. e{N} 位置编码 → 拒绝
@@ -256,7 +272,10 @@ func ParseSelector(selector string) (*ParsedSelector, error) {
 	}
 
 	// 3. #testid — # 后跟纯标识符（字母/数字/连字符/下划线）
-	if selector[0] == '#' && isIdentifier(selector[1:]) {
+	if selector[0] == '#' {
+		if !isIdentifier(selector[1:]) {
+			return nil, fmt.Errorf("%w: invalid data-testid selector %q (use css=... for CSS IDs)", ErrActFailed, selector)
+		}
 		return &ParsedSelector{SType: SelectorTestID, TestID: selector[1:], Raw: selector}, nil
 	}
 
@@ -284,25 +303,30 @@ func ParseSelector(selector string) (*ParsedSelector, error) {
 
 	// 6. css=... — explicit CSS
 	if strings.HasPrefix(selector, "css=") {
+		if strings.TrimSpace(selector[4:]) == "" {
+			return nil, fmt.Errorf("%w: css= selector is empty", ErrActFailed)
+		}
 		return &ParsedSelector{SType: SelectorCSS, Raw: selector[4:]}, nil
 	}
 
 	// 7. role:'name' — shorthand（contains）
 	if idx := strings.Index(selector, ":"); idx > 0 && isAlphaOnly(selector[:idx]) {
 		nameRaw := selector[idx+1:]
-		if len(nameRaw) >= 2 && (nameRaw[0] == '\'' || nameRaw[0] == '"') {
-			name := strings.Trim(nameRaw, "'\"")
+		if len(nameRaw) >= 2 && (nameRaw[0] == '\'' || nameRaw[0] == '"') && nameRaw[len(nameRaw)-1] == nameRaw[0] {
+			name := nameRaw[1 : len(nameRaw)-1]
 			return &ParsedSelector{SType: SelectorRoleName, Role: selector[:idx], Name: name, NameOp: "*=", Raw: selector}, nil
 		}
+		return nil, fmt.Errorf("%w: malformed role:name selector %q (name must be one complete quoted string)", ErrActFailed, selector)
 	}
 
 	// 8. role="name" — shorthand（exact）
 	if idx := strings.Index(selector, "="); idx > 0 && isAlphaOnly(selector[:idx]) {
 		nameRaw := selector[idx+1:]
-		if len(nameRaw) >= 2 && (nameRaw[0] == '\'' || nameRaw[0] == '"') {
-			name := strings.Trim(nameRaw, "'\"")
+		if len(nameRaw) >= 2 && (nameRaw[0] == '\'' || nameRaw[0] == '"') && nameRaw[len(nameRaw)-1] == nameRaw[0] {
+			name := nameRaw[1 : len(nameRaw)-1]
 			return &ParsedSelector{SType: SelectorRoleNameExact, Role: selector[:idx], Name: name, NameOp: "=", Raw: selector}, nil
 		}
+		return nil, fmt.Errorf("%w: malformed role=name selector %q (name must be one complete quoted string)", ErrActFailed, selector)
 	}
 
 	// 9. 纯标识符单词 → ARIA role
@@ -329,8 +353,8 @@ func parseCanonicalSelector(selector string) (*ParsedSelector, error) {
 		filterStr = rest[roleEnd:]
 	}
 	role = strings.TrimSpace(role)
-	if role == "" {
-		return nil, fmt.Errorf("%w: canonical selector missing role", ErrActFailed)
+	if role == "" || !isIdentifier(role) {
+		return nil, fmt.Errorf("%w: canonical selector has invalid or missing role %q", ErrActFailed, role)
 	}
 
 	ps := &ParsedSelector{SType: SelectorCanonical, Role: role, Raw: selector}
@@ -342,11 +366,11 @@ func parseCanonicalSelector(selector string) (*ParsedSelector, error) {
 			break
 		}
 		if filterStr[0] != '[' {
-			break
+			return nil, fmt.Errorf("%w: canonical selector has trailing syntax %q", ErrActFailed, filterStr)
 		}
-		end := strings.IndexByte(filterStr, ']')
+		end := closingBracketOutsideQuotes(filterStr)
 		if end < 0 {
-			break
+			return nil, fmt.Errorf("%w: canonical selector has an unclosed filter in %q", ErrActFailed, selector)
 		}
 		inner := filterStr[1:end]
 		filterStr = filterStr[end+1:]
@@ -355,11 +379,18 @@ func parseCanonicalSelector(selector string) (*ParsedSelector, error) {
 		inner = strings.TrimSpace(inner)
 		if strings.HasPrefix(inner, "nth=") {
 			nStr := inner[4:]
+			if nStr == "" {
+				return nil, fmt.Errorf("%w: canonical nth filter is empty", ErrActFailed)
+			}
 			n := 0
 			for _, c := range nStr {
-				if c >= '0' && c <= '9' {
-					n = n*10 + int(c-'0')
+				if c < '0' || c > '9' {
+					return nil, fmt.Errorf("%w: canonical nth filter %q is not a positive integer", ErrActFailed, nStr)
 				}
+				n = n*10 + int(c-'0')
+			}
+			if n <= 0 {
+				return nil, fmt.Errorf("%w: canonical nth filter must be positive", ErrActFailed)
 			}
 			ps.Nth = n
 			continue
@@ -373,12 +404,22 @@ func parseCanonicalSelector(selector string) (*ParsedSelector, error) {
 				field = strings.TrimSpace(inner[:idx])
 				op = candidate
 				val = strings.TrimSpace(inner[idx+len(candidate):])
-				val = strings.Trim(val, `"'`)
 				break
 			}
 		}
-		if field == "" {
-			continue
+		if field == "" || val == "" {
+			return nil, fmt.Errorf("%w: invalid canonical filter %q", ErrActFailed, inner)
+		}
+		if field != "name" && field != "placeholder" && field != "testid" {
+			return nil, fmt.Errorf("%w: unsupported canonical filter field %q", ErrActFailed, field)
+		}
+		if val[0] == '\'' || val[0] == '"' {
+			if len(val) < 2 || val[len(val)-1] != val[0] {
+				return nil, fmt.Errorf("%w: canonical filter value must be one complete quoted string", ErrActFailed)
+			}
+			val = val[1 : len(val)-1]
+		} else if strings.ContainsAny(val, "'\"") {
+			return nil, fmt.Errorf("%w: canonical filter value has unmatched quote", ErrActFailed)
 		}
 
 		// Shorthand: if field is "name", populate top-level Name/NameOp
@@ -390,6 +431,24 @@ func parseCanonicalSelector(selector string) (*ParsedSelector, error) {
 	}
 
 	return ps, nil
+}
+
+func closingBracketOutsideQuotes(value string) int {
+	var quote rune
+	for index, current := range value {
+		if current == '\'' || current == '"' {
+			if quote == 0 {
+				quote = current
+			} else if quote == current {
+				quote = 0
+			}
+			continue
+		}
+		if current == ']' && quote == 0 {
+			return index
+		}
+	}
+	return -1
 }
 
 // isIdentifier 判断字符串是否为纯标识符（字母/数字/连字符/下划线，无空格或 CSS 特殊字符）。
@@ -458,13 +517,25 @@ func isLegacyRef(s string) bool {
 //   - "focus #selector"
 //   - "scrollinto #selector" | "scrollto @r4"
 //   - "check #selector" | "uncheck #selector"
-func ParseAction(action string) (*ParsedAction, error) {
+func ParseAction(action string) (parsed *ParsedAction, err error) {
+	defer func() {
+		if err != nil || parsed == nil {
+			return
+		}
+		if validationErr := validateParsedActionSelectors(parsed); validationErr != nil {
+			parsed = nil
+			err = validationErr
+		}
+	}()
 	action = strings.TrimSpace(action)
 	if action == "" {
 		return nil, fmt.Errorf("%w: empty action", ErrActFailed)
 	}
 
-	parts := splitActionParts(action)
+	parts, err := splitActionParts(action)
+	if err != nil {
+		return nil, err
+	}
 	if len(parts) == 0 {
 		return nil, fmt.Errorf("%w: empty action", ErrActFailed)
 	}
@@ -659,7 +730,11 @@ func ParseAction(action string) (*ParsedAction, error) {
 		if len(parts) != 2 {
 			return nil, fmt.Errorf("%w: zoom requires exactly factor (1..5) or 'reset'", ErrActFailed)
 		}
-		return &ParsedAction{Op: "zoom", Value: strings.ToLower(parts[1])}, nil
+		value := strings.ToLower(parts[1])
+		if _, err := parseZoomFactor(value); err != nil {
+			return nil, err
+		}
+		return &ParsedAction{Op: "zoom", Value: value}, nil
 
 	// 软键盘态（REQ-BC-12）：显式切换；click/tap/fill 后另有焦点自动同步。
 	//   "keyboard show" / "keyboard hide"
@@ -677,12 +752,9 @@ func ParseAction(action string) (*ParsedAction, error) {
 		if len(parts) < 3 {
 			return nil, fmt.Errorf("%w: fill requires selector and value", ErrActFailed)
 		}
-		value, quoted := extractQuotedValue(action, parts[1])
-		if !quoted {
-			if err := checkWithKeywordMisuse("fill", parts); err != nil {
-				return nil, err
-			}
-			value = strings.Join(parts[2:], " ")
+		value, err := parseActionValue("fill", parts, true)
+		if err != nil {
+			return nil, err
 		}
 		return &ParsedAction{Op: "fill", Ref: parts[1], Value: value}, nil
 
@@ -691,12 +763,9 @@ func ParseAction(action string) (*ParsedAction, error) {
 			return nil, fmt.Errorf("%w: type requires selector and value", ErrActFailed)
 		}
 		// 提取引号内的值（支持多词）
-		value, quoted := extractQuotedValue(action, parts[1])
-		if !quoted {
-			if err := checkWithKeywordMisuse("type", parts); err != nil {
-				return nil, err
-			}
-			value = strings.Join(parts[2:], " ")
+		value, err := parseActionValue("type", parts, true)
+		if err != nil {
+			return nil, err
 		}
 		return &ParsedAction{Op: "type", Ref: parts[1], Value: value}, nil
 
@@ -707,12 +776,9 @@ func ParseAction(action string) (*ParsedAction, error) {
 		if len(parts) < 3 {
 			return nil, fmt.Errorf("%w: fillsecret requires selector and value", ErrActFailed)
 		}
-		value, quoted := extractQuotedValue(action, parts[1])
-		if !quoted {
-			if err := checkWithKeywordMisuse("fillsecret", parts); err != nil {
-				return nil, err
-			}
-			value = strings.Join(parts[2:], " ")
+		value, err := parseActionValue("fillsecret", parts, true)
+		if err != nil {
+			return nil, err
 		}
 		return &ParsedAction{Op: "fillsecret", Ref: parts[1], Value: value}, nil
 
@@ -762,9 +828,9 @@ func ParseAction(action string) (*ParsedAction, error) {
 		if len(parts) < 3 {
 			return nil, fmt.Errorf("%w: select requires selector and value", ErrActFailed)
 		}
-		value, quoted := extractQuotedValue(action, parts[1])
-		if !quoted {
-			value = strings.Join(parts[2:], " ")
+		value, err := parseActionValue("select", parts, false)
+		if err != nil {
+			return nil, err
 		}
 		return &ParsedAction{Op: "select", Ref: parts[1], Value: value}, nil
 
@@ -846,7 +912,7 @@ func validatePressKeySyntax(key string) error {
 func parseDelta(raw string) (float64, error) {
 	raw = strings.TrimSpace(raw)
 	v, err := strconv.ParseFloat(raw, 64)
-	if err != nil {
+	if err != nil || math.IsNaN(v) || math.IsInf(v, 0) {
 		return 0, fmt.Errorf("%w: invalid wheel delta %q", ErrActFailed, raw)
 	}
 	return v, nil
@@ -860,7 +926,7 @@ func parseNormalizedCoordinate(raw string) (float64, error) {
 
 	if strings.HasSuffix(raw, "%") {
 		v, err := strconv.ParseFloat(strings.TrimSuffix(raw, "%"), 64)
-		if err != nil {
+		if err != nil || math.IsNaN(v) || math.IsInf(v, 0) {
 			return 0, fmt.Errorf("%w: invalid percentage coordinate %q", ErrActFailed, raw)
 		}
 		if v < 0 || v > 100 {
@@ -870,7 +936,7 @@ func parseNormalizedCoordinate(raw string) (float64, error) {
 	}
 
 	v, err := strconv.ParseFloat(raw, 64)
-	if err != nil {
+	if err != nil || math.IsNaN(v) || math.IsInf(v, 0) {
 		return 0, fmt.Errorf("%w: invalid coordinate %q", ErrActFailed, raw)
 	}
 	if v < 0 || v > 1 {
@@ -883,15 +949,22 @@ func parseNormalizedCoordinate(raw string) (float64, error) {
 // 例: "click button:'open dialog'" → ["click", "button:'open dialog'"]
 //
 //	"type textbox:'名称' 'hello'" → ["type", "textbox:'名称'", "'hello'"]
-func splitActionParts(action string) []string {
+func splitActionParts(action string) ([]string, error) {
 	var parts []string
 	var cur strings.Builder
 	inSingle := false
 	inDouble := false
+	escaped := false
 
 	for i := 0; i < len(action); i++ {
 		c := action[i]
 		switch {
+		case escaped:
+			escaped = false
+			cur.WriteByte(c)
+		case c == '\\' && (inSingle || inDouble):
+			escaped = true
+			cur.WriteByte(c)
 		case c == '\'' && !inDouble:
 			inSingle = !inSingle
 			cur.WriteByte(c)
@@ -907,33 +980,45 @@ func splitActionParts(action string) []string {
 			cur.WriteByte(c)
 		}
 	}
+	if escaped || inSingle || inDouble {
+		return nil, fmt.Errorf("%w: unclosed quoted argument", ErrActFailed)
+	}
 	if cur.Len() > 0 {
 		parts = append(parts, cur.String())
 	}
-	return parts
+	return parts, nil
 }
 
-// extractQuotedValue 从操作字符串中提取引号内的值。
-// 第二个返回值表示“是否真的提供了引号包裹的参数”，
-// 用于区分 fill #x ” 与未加引号的 fallback 解析。
-func extractQuotedValue(action string, afterRef string) (string, bool) {
-	// 找到 ref 之后的内容
-	idx := strings.Index(action, afterRef)
-	if idx < 0 {
-		return "", false
+func parseActionValue(op string, parts []string, rejectWithKeyword bool) (string, error) {
+	first := parts[2]
+	if len(first) >= 2 && (first[0] == '\'' || first[0] == '"') && first[len(first)-1] == first[0] {
+		if len(parts) != 3 {
+			return "", fmt.Errorf("%w: %s has trailing arguments after its quoted value", ErrActFailed, op)
+		}
+		return first[1 : len(first)-1], nil
 	}
-	rest := strings.TrimSpace(action[idx+len(afterRef):])
-
-	// 处理单引号或双引号
-	for _, quote := range []byte{'\'', '"'} {
-		if len(rest) > 0 && rest[0] == quote {
-			end := strings.LastIndexByte(rest, quote)
-			if end > 0 {
-				return rest[1:end], true
-			}
+	if rejectWithKeyword {
+		if err := checkWithKeywordMisuse(op, parts); err != nil {
+			return "", err
 		}
 	}
-	return "", false
+	return strings.Join(parts[2:], " "), nil
+}
+
+func validateParsedActionSelectors(parsed *ParsedAction) error {
+	selectors := make([]string, 0, 2)
+	if parsed.ScrollTarget != "" {
+		selectors = append(selectors, parsed.ScrollTarget)
+	}
+	if parsed.Ref != "" && !(parsed.Op == "scroll" && parsed.ScrollTarget == "") {
+		selectors = append(selectors, parsed.Ref)
+	}
+	for _, selector := range selectors {
+		if _, err := ParseSelector(selector); err != nil {
+			return fmt.Errorf("%w: %s selector %q: %v", ErrActFailed, parsed.Op, selector, err)
+		}
+	}
+	return nil
 }
 
 // checkWithKeywordMisuse 拦截 `fill <loc> with 'v'` 这类不存在的 `with` 语法 [BUG-FILL-WITH]。
@@ -999,10 +1084,10 @@ func (e *actionExecutionTimeoutError) Unwrap() []error {
 	return []error{ErrActFailed, context.DeadlineExceeded}
 }
 
-// runActionWithTimeout is the innermost action watchdog. The worker receives a
-// cancellable child context, but the caller does not depend on a CDP transport
-// honoring cancellation: even a wedged worker cannot keep Act blocked forever.
-func runActionWithTimeout(
+// runActionWithTimeout is the mutation-channel lifecycle SSOT. Timeout returns
+// promptly but never claims the worker stopped: the channel is tainted and
+// remains owned until the worker really exits. Later actions fail closed.
+func (e *actionEngine) runActionWithTimeout(
 	parent context.Context,
 	timeout time.Duration,
 	action string,
@@ -1024,33 +1109,130 @@ func runActionWithTimeout(
 		}
 	}
 
+	e.actionMu.Lock()
+	if e.actionClosing {
+		e.actionMu.Unlock()
+		return nil, fmt.Errorf("%w: action engine is closing", ErrActFailed)
+	}
+	if e.actionTainted {
+		e.actionMu.Unlock()
+		return nil, fmt.Errorf("%w: previous action outcome is unknown; close this browser connection, then observe again", ErrActFailed)
+	}
+	gate := e.actionGate
+	closeCh := e.actionCloseCh
+	e.actionMu.Unlock()
+
+	select {
+	case <-parent.Done():
+		return nil, parent.Err()
+	case <-closeCh:
+		return nil, fmt.Errorf("%w: action engine is closing", ErrActFailed)
+	case <-gate:
+	}
+
+	e.actionMu.Lock()
+	if e.actionClosing || e.actionTainted {
+		closing, tainted := e.actionClosing, e.actionTainted
+		e.actionMu.Unlock()
+		gate <- struct{}{}
+		if closing {
+			return nil, fmt.Errorf("%w: action engine is closing", ErrActFailed)
+		}
+		if tainted {
+			return nil, fmt.Errorf("%w: previous action outcome is unknown; close this browser connection, then observe again", ErrActFailed)
+		}
+	}
+
 	actionCtx, cancelAction := context.WithCancel(parent)
+	e.actionID++
+	actionID := e.actionID
+	e.actionCancel = cancelAction
+	e.actionWG.Add(1)
+	e.actionMu.Unlock()
+
 	done := make(chan actionExecutionResult, 1)
 	go func() {
 		snap, err := run(actionCtx)
 		done <- actionExecutionResult{snap: snap, err: err}
+		e.actionMu.Lock()
+		if e.actionID == actionID {
+			e.actionCancel = nil
+		}
+		e.actionMu.Unlock()
+		cancelAction()
+		e.actionWG.Done()
+		gate <- struct{}{}
 	}()
 
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
-	defer cancelAction()
 	select {
 	case result := <-done:
 		return result.snap, result.err
 	case <-parent.Done():
+		cancelAction()
+		e.markActionOutcomeUnknown(actionID)
 		if parent.Err() == context.DeadlineExceeded {
 			return nil, &actionExecutionTimeoutError{Action: action, Timeout: timeout}
 		}
 		return nil, parent.Err()
 	case <-timer.C:
+		cancelAction()
+		e.markActionOutcomeUnknown(actionID)
 		return nil, &actionExecutionTimeoutError{Action: action, Timeout: timeout}
+	}
+}
+
+func (e *actionEngine) markActionOutcomeUnknown(actionID uint64) {
+	e.actionMu.Lock()
+	if e.actionID == actionID {
+		e.actionTainted = true
+	}
+	e.actionMu.Unlock()
+}
+
+// closeActions cancels the active action, invokes abortTransport to make a
+// cancellation-ignoring CDP call terminal, then joins its worker. Add and Wait
+// are ordered by actionMu; once closing is set no new actionWG.Add is possible.
+func (e *actionEngine) closeActions(ctx context.Context, abortTransport func() error) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	e.actionMu.Lock()
+	if !e.actionClosing {
+		e.actionClosing = true
+		close(e.actionCloseCh)
+	}
+	activeCancel := e.actionCancel
+	e.actionMu.Unlock()
+
+	var abortErr error
+	if activeCancel != nil {
+		activeCancel()
+		if abortTransport != nil {
+			abortErr = abortTransport()
+		}
+	}
+	done := make(chan struct{})
+	go func() {
+		e.actionWG.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return abortErr
+	case <-ctx.Done():
+		if abortErr != nil {
+			return fmt.Errorf("action shutdown: %v; join: %w", abortErr, ctx.Err())
+		}
+		return fmt.Errorf("action shutdown did not reach terminal state: %w", ctx.Err())
 	}
 }
 
 // ExecuteWithInteractionMode executes one action with a step-local fidelity
 // choice. It never mutates the scenario/global posture.
 func (e *actionEngine) ExecuteWithInteractionMode(ctx context.Context, action string, observe bool, sessionMode bool, mode InteractionMode) (*Snapshot, error) {
-	return runActionWithTimeout(ctx, actionExecutionTimeout, action, func(actionCtx context.Context) (*Snapshot, error) {
+	return e.runActionWithTimeout(ctx, actionExecutionTimeout, action, func(actionCtx context.Context) (*Snapshot, error) {
 		return e.executeWithInteractionMode(actionCtx, action, observe, sessionMode, mode)
 	})
 }
@@ -1309,7 +1491,7 @@ func (e *actionEngine) resolveSemanticSelectorForMode(selector string, sessionMo
 		// @rN → look up in refTable using @rN key
 		refKey := fmt.Sprintf("@r%d", sel.SessionRef)
 		if _, ok := e.snapEngine.LookupRef(refKey); !ok {
-			return "", fmt.Errorf("%w: %s not found in current snapshot (run snap first)", ErrRefNotFound, refKey)
+			return "", fmt.Errorf("%w: %s not found in current snapshot (run observe --id <id> first)", ErrRefNotFound, refKey)
 		}
 		// Return as internal ref string so executeClick etc. can use it
 		return refKey, nil
@@ -2211,7 +2393,7 @@ func parseZoomFactor(value string) (float64, error) {
 		return 1, nil
 	}
 	v, err := strconv.ParseFloat(value, 64)
-	if err != nil {
+	if err != nil || math.IsNaN(v) || math.IsInf(v, 0) {
 		return 0, fmt.Errorf("%w: zoom expects factor 1..5 or 'reset', got %q", ErrActFailed, value)
 	}
 	if v < 1 || v > 5 {

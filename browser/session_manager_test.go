@@ -1,9 +1,43 @@
 package browser
 
-import "testing"
+import (
+	"errors"
+	"strings"
+	"testing"
+)
+
+func TestSessionMutationIsExclusiveAcrossProcessesAndRequiredForCommit(t *testing.T) {
+	sessionID := "mutation-exclusive-" + t.Name()
+	mutation, err := BeginSessionMutation(sessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	output := runProcessLeaseHelper(t, "session", sessionID)
+	if !strings.HasPrefix(output, "BUSY") {
+		mutation.Release()
+		t.Fatalf("concurrent process entered same session mutation: %q", output)
+	}
+	if _, err := BeginSessionMutation(sessionID); !errors.Is(err, ErrSessionMutationBusy) {
+		mutation.Release()
+		t.Fatalf("same-process concurrent mutation error=%v, want ErrSessionMutationBusy", err)
+	}
+	wrong := &SessionInfo{SessionID: sessionID + "-other"}
+	if err := mutation.Fence(wrong); err == nil {
+		mutation.Release()
+		t.Fatal("session-scoped mutation capability accepted another session")
+	}
+	mutation.Release()
+
+	next, err := BeginSessionMutation(sessionID)
+	if err != nil {
+		t.Fatalf("released session mutation was not reacquirable: %v", err)
+	}
+	next.Release()
+}
 
 func TestSessionRefsFromSnapshotIsTheCompletePersistenceBoundary(t *testing.T) {
 	snap := &Snapshot{
+		DocumentGeneration: "loader-observed-1",
 		SeeToClick: true,
 		Refs: []ElementRef{
 			{
@@ -43,6 +77,65 @@ func TestSessionRefsFromSnapshotIsTheCompletePersistenceBoundary(t *testing.T) {
 	unobserved := SessionRefsFromSnapshot(snap, false)
 	if len(unobserved) != 1 || unobserved[0].Observed {
 		t.Fatalf("observed parameter was not honored: %+v", unobserved)
+	}
+}
+
+func TestSessionDocumentGenerationMismatchRevokesEveryRefShape(t *testing.T) {
+	info := &SessionInfo{
+		SessionID:          "document-generation-mismatch-" + t.Name(),
+		DocumentGeneration: "target-a/loader-a",
+		LastActionOutcome:  SessionActionOutcomeConfirmed,
+		Refs: []SessionRef{
+			{Ref: "@r1", BackendNodeID: 42, Observed: true},
+			{Ref: "@r2", BackendNodeID: 0, TestID: "pay", Observed: true},
+		},
+	}
+	mutation, err := BeginSessionMutation(info.SessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mutation.Release()
+
+	err = mutation.ReconcileDocumentGeneration(info, "target-a/loader-b")
+	if !errors.Is(err, ErrSessionObservationNeeded) {
+		t.Fatalf("mismatch error=%v, want ErrSessionObservationNeeded", err)
+	}
+	if len(info.Refs) != 0 {
+		t.Fatalf("mismatch retained stale refs: %+v", info.Refs)
+	}
+	if info.LastActionOutcome != SessionActionOutcomeUnknown {
+		t.Fatalf("outcome=%q, want unknown", info.LastActionOutcome)
+	}
+	if info.DocumentGeneration != "target-a/loader-a" {
+		t.Fatalf("observation generation was overwritten without an observation: %q", info.DocumentGeneration)
+	}
+
+	onDisk, err := LoadSession(info.SessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(onDisk.Refs) != 0 || onDisk.LastActionOutcome != SessionActionOutcomeUnknown {
+		t.Fatalf("revocation was not atomic on disk: %+v", onDisk)
+	}
+}
+
+func TestSessionDocumentGenerationMatchPreservesRefs(t *testing.T) {
+	info := &SessionInfo{
+		SessionID:          "document-generation-match-" + t.Name(),
+		DocumentGeneration: "target-a/loader-a",
+		LastActionOutcome:  SessionActionOutcomeConfirmed,
+		Refs:               []SessionRef{{Ref: "@r1", BackendNodeID: 42, Observed: true}},
+	}
+	mutation, err := BeginSessionMutation(info.SessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mutation.Release()
+	if err := mutation.ReconcileDocumentGeneration(info, "target-a/loader-a"); err != nil {
+		t.Fatal(err)
+	}
+	if len(info.Refs) != 1 || info.LastActionOutcome != SessionActionOutcomeConfirmed {
+		t.Fatalf("matching generation lost authority: %+v", info)
 	}
 }
 
@@ -149,7 +242,7 @@ func TestNormalizeSessionInfoBackfillsBrowserSessionContract(t *testing.T) {
 }
 
 func TestNormalizeSessionInfoRevokesRefsAcrossUnknownActionBoundary(t *testing.T) {
-	for _, outcome := range []string{"in_progress", "unknown"} {
+	for _, outcome := range []string{SessionActionOutcomeInProgress, SessionActionOutcomeUnknown} {
 		info := &SessionInfo{
 			SessionID:         "action-fence-" + outcome,
 			LastActionOutcome: outcome,
@@ -167,11 +260,46 @@ func TestNormalizeSessionInfoRevokesRefsAcrossUnknownActionBoundary(t *testing.T
 
 	confirmed := &SessionInfo{
 		SessionID:         "action-fence-confirmed",
-		LastActionOutcome: "confirmed",
+		LastActionOutcome: SessionActionOutcomeConfirmed,
 		Refs:              []SessionRef{{Ref: "@r1", Visible: true, Observed: true}},
 	}
 	NormalizeSessionInfo(confirmed)
 	if len(confirmed.Refs) != 1 {
 		t.Fatalf("confirmed outcome revoked valid refs: %+v", confirmed.Refs)
+	}
+}
+
+func TestSuccessfulObservationReconcilesUnknownOutcomeAndKeepsFreshRefs(t *testing.T) {
+	info := &SessionInfo{
+		SessionID:         "action-fence-reconcile",
+		LastActionOutcome: SessionActionOutcomeUnknown,
+		Refs:              []SessionRef{{Ref: "@r-old", Visible: true, Observed: true}},
+	}
+	NormalizeSessionInfo(info)
+	if len(info.Refs) != 0 {
+		t.Fatalf("unknown outcome retained stale refs: %+v", info.Refs)
+	}
+
+	fresh := []SessionRef{{Ref: "@r1", BackendNodeID: 42, Visible: true, Observed: true}}
+	mutation, err := BeginSessionMutation(info.SessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer mutation.Release()
+	if err := mutation.RequireActionReady(info); !errors.Is(err, ErrSessionObservationNeeded) {
+		t.Fatalf("unknown session action gate error=%v, want ErrSessionObservationNeeded", err)
+	}
+	if err := mutation.Observe(info, &Snapshot{URL: "http://example.test/reconciled"}, fresh); err != nil {
+		t.Fatal(err)
+	}
+	if err := mutation.RequireActionReady(info); err != nil {
+		t.Fatalf("fresh observation did not unlock session action: %v", err)
+	}
+	if info.LastActionOutcome != SessionActionOutcomeReconciled {
+		t.Fatalf("outcome=%q, want reconciled", info.LastActionOutcome)
+	}
+	NormalizeSessionInfo(info)
+	if len(info.Refs) != 1 || info.Refs[0].Ref != "@r1" || info.PageURL != "http://example.test/reconciled" {
+		t.Fatalf("reloaded reconciled state lost fresh authority: %+v", info)
 	}
 }
