@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -416,16 +417,39 @@ func observeListing(snap *browser.Snapshot, censusOnly bool, topN, budget int) (
 			"actionable": false,
 		}, false
 	}
-	elements, selectedTotal, truncated := briefElements(snap.Refs, topN, budget)
+	elements, selectedTotal, truncated, omitted := briefElements(snap.Refs, topN, budget)
 	total := selectedTotal
 	if snap.SeeToClick {
 		total = snap.DocumentInteractableCount
 	}
-	return map[string]interface{}{
+	// 三个计数是三件事,必须同时出现才不会被读成互相矛盾:
+	//   shown   本次真的打印了几个 (受 --top/--budget 约束)
+	//   visible 当前截图可见集全量 = 已铸 @rN 数 = hit_audit 采样口径
+	//   total   全文档可交互数; total - visible = offscreen
+	listing := map[string]interface{}{
 		"elements": elements,
 		"shown":    len(elements),
+		"visible":  len(snap.Refs),
 		"total":    total,
-	}, truncated
+	}
+	if len(omitted) > 0 {
+		listing["omitted_by_role"] = omitted
+	}
+	return listing, truncated
+}
+
+// formatRoleCounts 把 role→数量 渲染成稳定次序的可读串 (map 迭代序不可信)。
+func formatRoleCounts(counts map[string]int) string {
+	roles := make([]string, 0, len(counts))
+	for role := range counts {
+		roles = append(roles, role)
+	}
+	sort.Strings(roles)
+	parts := make([]string, 0, len(roles))
+	for _, role := range roles {
+		parts = append(parts, fmt.Sprintf("%s %d", role, counts[role]))
+	}
+	return strings.Join(parts, ", ")
 }
 
 func stripObserveHitAuditFlag(args []string) ([]string, bool) {
@@ -599,7 +623,10 @@ func runObserve(args []string) {
 			hitAudit = []browser.HitAuditFinding{}
 		}
 		output["hit_audit"] = hitAudit
+		// 采样口径 = 可见集全量(与 listing.visible 同一个数),不是 shown。
+		// 二者不同时曾被读成"审计比可见集还多",故把口径写进输出本身。
 		output["hit_audit_sampled"] = len(snap.Refs)
+		output["hit_audit_scope"] = "visible_set"
 	}
 	if snap.SeeToClick {
 		output["offscreen"] = snap.OffscreenInteractableCount
@@ -624,7 +651,12 @@ func runObserve(args []string) {
 	}
 	if truncated {
 		output["truncated"] = true
-		output["hint"] = "当前选择集仍有元素被省略; --top N / --budget BYTES 放宽"
+		hint := fmt.Sprintf("可见集 %d 个, 本次只打印 %d 个(--top/--budget 所限); 未打印的元素句柄仍然存在, --top N / --budget BYTES 放宽即可取到",
+			len(snap.Refs), listing["shown"])
+		if omitted, ok := listing["omitted_by_role"].(map[string]int); ok && len(omitted) > 0 {
+			hint += "; 省略明细见 omitted_by_role: " + formatRoleCounts(omitted)
+		}
+		output["hint"] = hint
 	}
 	if snap.SeeToClick && snap.OffscreenInteractableCount > 0 {
 		output["scroll_hint"] = "还有元素不在当前截图可见集；滚动后重新 observe"
@@ -734,10 +766,18 @@ func printObserveHelp() {
 	fmt.Fprintln(os.Stderr, "  --health        附健康通道 (诊断/grader lens)")
 	fmt.Fprintln(os.Stderr, "  --tree          附全 a11y 树文本")
 	fmt.Fprintln(os.Stderr, "  --all           调试: 全文档 census，仅 role/name；无 @rN、不持久化 refs、不可 act")
-	fmt.Fprintln(os.Stderr, "  --hit-audit     对可见 refs 做 5 点命中普查，仅输出 hit_coverage < 5/5 的警示")
+	fmt.Fprintln(os.Stderr, "  --hit-audit     对 **可见集全量** 做 5 点命中普查 (hit_audit_scope=visible_set,")
+	fmt.Fprintln(os.Stderr, "                  hit_audit_sampled=visible ≠ shown)，仅输出 hit_coverage < 5/5 的警示")
 	fmt.Fprintln(os.Stderr, "  --top <N>       elements 上限 (默认 20)")
 	fmt.Fprintln(os.Stderr, "  --budget <B>    elements 输出字节硬上限 (默认 4096)")
 	fmt.Fprintln(os.Stderr, "  --json <path>   整个 JSON 落盘 (默认 stdout)")
+	fmt.Fprintln(os.Stderr, "")
+	fmt.Fprintln(os.Stderr, "三个计数各说各的事 (同时出现, 互相可解释):")
+	fmt.Fprintln(os.Stderr, "  shown   本次真的打印了几个 (受 --top/--budget 约束; 未打印 ≠ 没句柄)")
+	fmt.Fprintln(os.Stderr, "  visible 当前截图可见集全量 = 已铸 @rN 数 = hit_audit 采样域")
+	fmt.Fprintln(os.Stderr, "  total   全文档可交互数; total - visible = offscreen (滚动可达)")
+	fmt.Fprintln(os.Stderr, "  截断时 omitted_by_role 逐 role 列出被省略数; 打印集按 role 轮转选,")
+	fmt.Fprintln(os.Stderr, "  单个大文案元素无法把别的 role(原生 select/checkbox) 整类挤出清单。")
 	fmt.Fprintln(os.Stderr, "")
 	fmt.Fprintln(os.Stderr, "证据关联: 每次输出带 run_id (会话稳定) + step (单调), 把截图↔a11y↔finding 对齐。")
 	fmt.Fprintln(os.Stderr, "三场景输出 viewport={width,height,dpr,scroll_x,scroll_y}; 截图像素 = CSS px × dpr。")

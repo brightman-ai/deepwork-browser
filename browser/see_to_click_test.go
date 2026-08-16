@@ -4,9 +4,15 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"math"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestOpenBeforeObserveClickIsRejected(t *testing.T) {
@@ -243,4 +249,175 @@ func TestFallbackViewportFactsPreserveScreenshotCoordinateContract(t *testing.T)
 	if got := viewportFactsFromPageLoadProbe(pageLoadProbe{}); got.DevicePixelRatio != 1 {
 		t.Fatalf("default dpr=%v, want 1", got.DevicePixelRatio)
 	}
+}
+
+// ============================================================
+// § 可见集塌缩回归 [BUG-VISIBLE-SET-COLLAPSE]
+// ============================================================
+
+// serveStrictHumanFixture 起一个本地 server 托管 tests/strict-human-fixture/index.html
+// (含原生 select + checkbox + 大文案 card button)。
+func serveStrictHumanFixture(t *testing.T) *httptest.Server {
+	t.Helper()
+	body, err := os.ReadFile(filepath.Join("..", "tests", "strict-human-fixture", "index.html"))
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = w.Write(body)
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// TestVisibleSetKeepsNativeControlsAndIsStableAcrossObserves 钉死症状 1 与症状 2:
+//
+//	① 原生 select/checkbox 必须拿到 @rN + bbox —— 它们既没有 ContentQuads 语义
+//	   也不是 DOM-only 元素, 任何"几何信息缺失就剥夺句柄"的路径都会在这里现形。
+//	② 页面完全静止时, 连续两次 observe 的可见集与 total/offscreen 必须逐字节一致;
+//	   漂移只允许来自页面自身变化, 不允许来自探测时序。
+func TestVisibleSetKeepsNativeControlsAndIsStableAcrossObserves(t *testing.T) {
+	requireChromeForPool(t)
+	srv := serveStrictHumanFixture(t)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	core, err := NewBrowserCore(ctx, fmt.Sprintf("visible-set-%d", time.Now().UnixNano()), WithMode(ModeHeadless))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer core.Close(context.Background())
+	core.SetPolicy(SessionPolicy{RemoteWrites: RemoteWriteDeny}, srv.URL)
+	core.(ScenarioInteractionCapable).SetInteractionScenario(ScenarioAppTestExplore)
+	if _, err := core.Navigate(ctx, srv.URL); err != nil {
+		t.Fatal(err)
+	}
+	sessionCore := core.(SessionCore)
+
+	roleOf := func(snap *Snapshot, testID string) *ElementRef {
+		for i := range snap.Refs {
+			if snap.Refs[i].TestID == testID {
+				return &snap.Refs[i]
+			}
+		}
+		return nil
+	}
+
+	first, err := sessionCore.SnapWithSessionMode(ctx, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// dom-only-tile 没有 AX 身份 → BackendNodeID=0 → 只有 getBoundingClientRect
+	// 这一条几何来源。它和原生控件一起验证"几何来源缺一层就退一层, 不剥夺句柄"。
+	for _, tc := range []struct{ testID, role string }{
+		{"native-select", "combobox"},
+		{"native-check", "checkbox"},
+		{"dom-only-tile", "clickable"},
+	} {
+		ref := roleOf(first, tc.testID)
+		if ref == nil {
+			t.Fatalf("native %s (%s) is missing from the visible set: %s", tc.role, tc.testID, compactRefRoles(first.Refs))
+		}
+		if !ref.VisibilityKnown || !ref.VisibleInViewport {
+			t.Fatalf("%s visibility stripped: %+v", tc.testID, ref)
+		}
+		if ref.BBox.Width <= 0 || ref.BBox.Height <= 0 {
+			t.Fatalf("%s has no bbox: %+v", tc.testID, ref)
+		}
+		if !strings.HasPrefix(ref.Ref, "@r") {
+			t.Fatalf("%s got no session handle: %q", tc.testID, ref.Ref)
+		}
+	}
+
+	second, err := sessionCore.SnapWithSessionMode(ctx, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.DocumentInteractableCount != second.DocumentInteractableCount ||
+		first.VisibleInteractableCount != second.VisibleInteractableCount ||
+		first.OffscreenInteractableCount != second.OffscreenInteractableCount {
+		t.Fatalf("counts drifted on a static page: first{total:%d visible:%d offscreen:%d} second{total:%d visible:%d offscreen:%d}",
+			first.DocumentInteractableCount, first.VisibleInteractableCount, first.OffscreenInteractableCount,
+			second.DocumentInteractableCount, second.VisibleInteractableCount, second.OffscreenInteractableCount)
+	}
+	if first.DocumentInteractableCount != first.VisibleInteractableCount+first.OffscreenInteractableCount {
+		t.Fatalf("total != visible + offscreen: %+v", first)
+	}
+	if got, want := compactRefRoles(second.Refs), compactRefRoles(first.Refs); got != want {
+		t.Fatalf("visible set drifted on a static page:\n first=%s\nsecond=%s", want, got)
+	}
+}
+
+// TestHitAuditSamplesExactlyTheVisibleSet 钉死症状 3 的口径:
+// hit_audit 的采样域 = 可见集全量, 不是打印出来的那几个。
+func TestHitAuditSamplesExactlyTheVisibleSet(t *testing.T) {
+	requireChromeForPool(t)
+	srv := serveStrictHumanFixture(t)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	core, err := NewBrowserCore(ctx, fmt.Sprintf("hit-audit-scope-%d", time.Now().UnixNano()), WithMode(ModeHeadless))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer core.Close(context.Background())
+	core.SetPolicy(SessionPolicy{RemoteWrites: RemoteWriteDeny}, srv.URL)
+	core.(ScenarioInteractionCapable).SetInteractionScenario(ScenarioAppTestExplore)
+	if _, err := core.Navigate(ctx, srv.URL); err != nil {
+		t.Fatal(err)
+	}
+	snap, err := core.(SessionCore).SnapWithSessionMode(ctx, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	findings, err := core.(HitAuditCapable).AuditHitCoverage(ctx, snap.Refs)
+	if err != nil {
+		t.Fatalf("AuditHitCoverage: %v", err)
+	}
+	visible := map[string]bool{}
+	for _, ref := range snap.Refs {
+		if ref.VisibleInViewport && ref.VisibilityKnown {
+			visible[ref.Ref] = true
+		}
+	}
+	if len(visible) == 0 {
+		t.Fatal("fixture produced an empty visible set")
+	}
+	for _, f := range findings {
+		if !visible[f.Ref] {
+			t.Fatalf("hit-audit reported %q which is not in the visible set", f.Ref)
+		}
+		if f.AimSource == "" {
+			t.Fatalf("finding without aim_source: %+v", f)
+		}
+	}
+	// 部分遮挡的 #partial 是 fixture 里唯一"该被点名"的元素。
+	var partialRef string
+	for _, ref := range snap.Refs {
+		if ref.TestID == "partial" {
+			partialRef = ref.Ref
+		}
+	}
+	if partialRef == "" {
+		t.Fatalf("partial target missing from visible set: %s", compactRefRoles(snap.Refs))
+	}
+	found := false
+	for _, f := range findings {
+		if f.Ref == partialRef {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("occluded target %s not reported by hit-audit: %+v", partialRef, findings)
+	}
+}
+
+func compactRefRoles(refs []ElementRef) string {
+	var sb strings.Builder
+	for i := range refs {
+		fmt.Fprintf(&sb, "[%s %s %q %.0fx%.0f@%.0f,%.0f vis=%t]", refs[i].Ref, refs[i].Role, refs[i].NameShort,
+			refs[i].BBox.Width, refs[i].BBox.Height, refs[i].BBox.X, refs[i].BBox.Y, refs[i].VisibleInViewport)
+	}
+	return sb.String()
 }

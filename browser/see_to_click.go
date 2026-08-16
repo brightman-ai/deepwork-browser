@@ -448,6 +448,13 @@ func probeMetaVisibilityNow(ctx context.Context, ref *ElementRef) (elementVisibi
 			topRatio float64
 			hasTop   bool
 		)
+		// 这里刻意 **不** 做 enrichSeeToClickRefs 那样的 bbox 回退。
+		// 两处对几何的要求不同:
+		//   observe 只需要"能不能看见" —— getBoundingClientRect 够用, 拿不到 quad
+		//     也不该把句柄吞掉 (见 enrichSeeToClickRefs)。
+		//   act 需要"往顶层视口的哪个坐标发真鼠标" —— getBoundingClientRect 是
+		//     元素所在 frame 的局部坐标, 拿它当顶层坐标发指针就是在瞎点。
+		// 所以顶层盒读不到时必须 fail-loud, 不许猜 [strict-human 不回退]。
 		if ref != nil && ref.BackendNodeID != 0 {
 			model, modelErr := dom.GetBoxModel().WithBackendNodeID(cdp.BackendNodeID(ref.BackendNodeID)).Do(execCtx)
 			if modelErr != nil {
@@ -540,29 +547,31 @@ func enrichSeeToClickRefs(ctx context.Context, refs []ElementRef) ([]ElementRef,
 				topAreaRatio float64
 				hasTopBox    bool
 			)
+			// DOM.getBoxModel 是"便宜的顶层视口盒"快路径,不是唯一真相。
+			// 它对某些元素(布局中/无 layout object/跨进程 frame 内的原生控件)会
+			// 报错或给出空 quad —— 那只是几何信息缺失,不是"该元素不可见"。
+			// 此时必须回退到元素自身 realm 里的 getBoundingClientRect 探针再判定,
+			// 绝不能因为拿不到 quad 就把句柄整个吞掉 [BUG-VISIBLE-SET-COLLAPSE]。
 			if refs[i].BackendNodeID != 0 {
 				model, modelErr := dom.GetBoxModel().
 					WithBackendNodeID(cdp.BackendNodeID(refs[i].BackendNodeID)).
 					Do(execCtx)
-				if modelErr != nil || model == nil {
-					if execCtx.Err() != nil {
-						return execCtx.Err()
+				if execCtx.Err() != nil {
+					return execCtx.Err()
+				}
+				if modelErr == nil && model != nil {
+					if box, ok := rectFromQuad(model.Border); ok {
+						topBox = box
+						hasTopBox = true
+						probe.Box = box
+						probe.AreaRatio = visibleAreaRatio(box, viewport.Width, viewport.Height)
+						topAreaRatio = probe.AreaRatio
+						refs[i].BBox = box
+						refs[i].VisibilityKnown = true
+						if probe.AreaRatio <= visibleAreaThreshold {
+							continue
+						}
 					}
-					continue
-				}
-				box, ok := rectFromQuad(model.Border)
-				if !ok {
-					continue
-				}
-				topBox = box
-				hasTopBox = true
-				probe.Box = box
-				probe.AreaRatio = visibleAreaRatio(box, viewport.Width, viewport.Height)
-				topAreaRatio = probe.AreaRatio
-				refs[i].BBox = box
-				refs[i].VisibilityKnown = true
-				if probe.AreaRatio <= visibleAreaThreshold {
-					continue
 				}
 			}
 

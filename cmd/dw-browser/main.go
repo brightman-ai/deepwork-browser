@@ -1186,7 +1186,8 @@ func printUsage() {
 	p("  observe --id X                      ★感知: 三场景仅列当前截图可见 elements@rN + bbox(CSS px)")
 	p("      --out shot.png                  + 存截图, 返回 {screenshot:\"<path>\"} (Read 图判 UX)")
 	p("      --all                           调试: 全文档 ref-less census(role/name), 不返回/持久化 @ref")
-	p("      --hit-audit                     可见 ref 五点命中普查，列出 hit_coverage 警示")
+	p("      --hit-audit                     可见集全量五点命中普查，列出 hit_coverage 警示")
+	p("                                      计数口径: shown(打印数) ≤ visible(可见集=@rN 数) ; total-visible=offscreen")
 	p("      --health                        + {telemetry:{console_errors,network_failures,visible_errors}}")
 	p("      --tree                          + {tree:\"<全 a11y 文本>\"} (罕用)")
 	p("                                      flag 自由组合 (加法, 非互斥)")
@@ -1999,6 +2000,10 @@ const (
 	// perElementBudgetEst 单元素 JSON 的字节量级估算(实测 ~90-140B)。
 	// 用于显式 --top N 时把 budget 放大到真的装得下 N 个,避免"要 320 静默给 37"。
 	perElementBudgetEst = 256
+	// nameFullDisplayRunes 单元素 name_full 的展示上限。name_full 是消歧提示而非
+	// 正文抽取通道:整卡片文案(实测 401 runes / 581B)会独吞默认 4096B 预算的
+	// 1/7,把同屏其他元素挤出清单。截断只削文案,ref/locator/bbox 全保留。
+	nameFullDisplayRunes = 120
 )
 
 // isStructuralRole 判断是否为非操作性的结构容器 role (brief 模式跳过)。
@@ -2030,7 +2035,7 @@ func leanElement(ref browser.ElementRef) map[string]interface{} {
 		"locator": locator,
 	}
 	if ref.NameFull != "" && ref.NameFull != name {
-		el["name_full"] = ref.NameFull
+		el["name_full"] = clampRunes(ref.NameFull, nameFullDisplayRunes)
 	}
 	if ref.MatchCount > 1 {
 		el["match"] = ref.MatchCount
@@ -2065,9 +2070,26 @@ func modalNotice(refs []browser.ElementRef) (int, int, bool) {
 	return active, blocked, active > 0 || blocked > 0
 }
 
+// clampRunes 按 rune 截断并加省略号,不切坏 UTF-8。
+func clampRunes(s string, limit int) string {
+	runes := []rune(s)
+	if limit <= 0 || len(runes) <= limit {
+		return s
+	}
+	return string(runes[:limit]) + "…"
+}
+
 // briefElements 返回 top-N 可操作元素(优先 Interactable),并在 budget 内截断。
-// 返回 (元素切片, 总可操作数, 是否截断)。
-func briefElements(refs []browser.ElementRef, topN, budget int) ([]map[string]interface{}, int, bool) {
+//
+// 选择是 **角色公平** 的 [BUG-VISIBLE-SET-COLLAPSE]:先按 role 轮转(每轮各 role
+// 取下一个),装得下就收,装不下 **跳过继续试下一个**,最后按原 DFS 次序输出。
+// 旧实现是"DFS 前缀 + 遇到装不下就整体停",于是同屏一两个把整卡片文案当
+// accessible name 的大 button(实测单元素 1416B = 默认 4096B 预算的 35%)就能
+// 把它后面的 **全部** 原生 select/checkbox 挤出清单 —— 句柄明明已经铸好
+// (user_state 里还在计数),调用方却一个 @rN 都拿不到。
+//
+// 返回 (元素切片, 总可操作数, 是否截断, 被省略元素的 role→数量)。
+func briefElements(refs []browser.ElementRef, topN, budget int) ([]map[string]interface{}, int, bool, map[string]int) {
 	if topN <= 0 {
 		topN = defaultBriefTopN
 	}
@@ -2092,27 +2114,79 @@ func briefElements(refs []browser.ElementRef, topN, budget int) ([]map[string]in
 		}
 	}
 	total := len(pool)
-	out := make([]map[string]interface{}, 0, topN)
-	running := 0
-	truncated := false
+
+	encoded := make([]map[string]interface{}, total)
+	sizes := make([]int, total)
 	for i, r := range pool {
-		if i >= topN {
-			truncated = true
-			break
-		}
 		el := leanElement(r)
 		b, _ := json.Marshal(el)
-		if running+len(b) > budget && len(out) > 0 {
-			truncated = true
+		encoded[i] = el
+		sizes[i] = len(b)
+	}
+
+	picked := make([]bool, total)
+	running, taken := 0, 0
+	for _, i := range roleFairOrder(pool) {
+		if taken >= topN {
 			break
 		}
-		running += len(b)
-		out = append(out, el)
+		if taken > 0 && running+sizes[i] > budget {
+			continue // 大文案元素让位,不再把它后面的整类元素一起腰斩
+		}
+		picked[i] = true
+		running += sizes[i]
+		taken++
 	}
-	if len(out) < total {
-		truncated = true
+
+	out := make([]map[string]interface{}, 0, taken)
+	omitted := make(map[string]int)
+	for i := range pool {
+		if picked[i] {
+			out = append(out, encoded[i])
+			continue
+		}
+		role := pool[i].Role
+		if role == "" {
+			role = "unknown"
+		}
+		omitted[role]++
 	}
-	return out, total, truncated
+	if len(omitted) == 0 {
+		omitted = nil
+	}
+	return out, total, len(out) < total, omitted
+}
+
+// roleFairOrder 返回 pool 下标的"按 role 轮转"取用次序:role 首次出现的先后决定
+// 轮转顺序,每轮各 role 取自己队列里的下一个。保证任何单一 role 都无法凭体积
+// 独占预算而把别的 role 整类饿死。
+func roleFairOrder(pool []browser.ElementRef) []int {
+	queues := make(map[string][]int, 8)
+	order := make([]string, 0, 8)
+	for i := range pool {
+		role := pool[i].Role
+		if _, seen := queues[role]; !seen {
+			order = append(order, role)
+		}
+		queues[role] = append(queues[role], i)
+	}
+	out := make([]int, 0, len(pool))
+	for len(out) < len(pool) {
+		progressed := false
+		for _, role := range order {
+			q := queues[role]
+			if len(q) == 0 {
+				continue
+			}
+			out = append(out, q[0])
+			queues[role] = q[1:]
+			progressed = true
+		}
+		if !progressed {
+			break
+		}
+	}
+	return out
 }
 
 // sessionRunID 从 session 派生稳定的证据 run_id (CLI 表现层概念,不落引擎 schema)。

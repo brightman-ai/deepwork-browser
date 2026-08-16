@@ -12,6 +12,10 @@
       position: absolute; left: 50px; top: 150px; width: 40px; height: 30px;
       z-index: 5; background: rgba(255, 0, 0, .2);
     }
+    /* 现场复刻: 把整卡片文案当 accessible name 的大 button, 单元素 JSON ~1.4KB。
+       原生 select/checkbox 排在它之后 —— 可见集清单必须仍然带上它们。 */
+    .card { display: block; width: 300px; text-align: left; margin: 16px; }
+    select, input[type=checkbox] { display: inline-block; width: auto; height: auto; margin: 16px; }
   </style>
 </head>
 <body>
@@ -20,6 +24,21 @@
   <button id="partial" data-testid="partial">Partially hittable</button>
   <div id="occluder" aria-hidden="true"></div>
   <output id="clicked"></output>
+
+  <button class="card" data-testid="verbose-card">damem 原理 ▸ 当前代际 100%（24/24） 成功侧产出（每 SESSION 最新成功 RUN） 86 / 0 每 SESSION 均产出 6.1（成功率 100%） 产出分布 decision 18 · fact 23 · gotcha 19 · persona 14 · skill 12 运行中 / 排队 0 / 0 失败 0 失败分类 llm 0 · truncated 0 · parse 0 · other 0 P50 / P95 35101ms / 89537ms TOKENS(累计) IN/OUT/CACHE 217.8k / 22.3k / 3.6k · 24 run MODEL k3-256k 会话覆盖 14 / 71 流程符合度 ✓1 · ◐0 · ✗0 · ?23 覆盖率 1/24，暂不足以判优</button>
+  <button class="card" data-testid="verbose-card-2">tencent 原理 ▸ 当前代际 100%（4/4） 基建中断 3（不计入） 成功侧产出（每 SESSION 最新成功 RUN） 41 / 0 每 SESSION 均产出 5.9（成功率 100%） 产出分布 decision 9 · fact 14 · gotcha 8 · persona 6 · skill 4 运行中 / 排队 0 / 0 失败 0 失败分类 llm 0 · truncated 0 · parse 0 · other 0 P50 / P95 41022ms / 91188ms TOKENS(累计) IN/OUT/CACHE 118.4k / 12.9k / 2.1k · 4 run</button>
+
+  <label for="native-select">Pipeline</label>
+  <select id="native-select" data-testid="native-select" aria-label="Pipeline">
+    <option value="a">Alpha</option>
+    <option value="b">Beta</option>
+  </select>
+  <label for="native-check">Hide short sessions</label>
+  <input id="native-check" type="checkbox" data-testid="native-check" aria-label="Hide short sessions">
+
+  <!-- 无 role、无 a11y 身份、因此也没有 AX backend node 的可点区:
+       它只能靠 getBoundingClientRect 回退拿到几何。可见集不得因此把它吞掉。 -->
+  <div data-testid="dom-only-tile" style="cursor:pointer;width:220px;height:44px;margin:16px;background:#eee">DOM-only tile</div>
   <script>
     window.__humanEvents = [];
     for (const type of ['mousedown', 'click', 'focus', 'keydown', 'keyup', 'beforeinput', 'input']) {

@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
@@ -507,5 +508,154 @@ func TestParseCommonFlagsExplicitProfileMakesTaskDedicated(t *testing.T) {
 	}
 	if got := defaultProfileID(flags); got != "task-task1" {
 		t.Fatalf("defaultProfileID=%q", got)
+	}
+}
+
+// ============================================================
+// § 可见集塌缩回归 [BUG-VISIBLE-SET-COLLAPSE]
+// ============================================================
+
+// buildCollapseFixtureRefs 复刻实机现场: 同屏 55 个可见元素,其中若干 button 把
+// 整张卡片文案当 accessible name (实测 401 runes / 单元素 JSON 1416B),原生
+// select/checkbox 排在它们之后。
+func buildCollapseFixtureRefs() []browser.ElementRef {
+	giant := strings.Repeat("当前代际产出分布决策事实坑位人格技能运行中排队失败分类", 20)
+	refs := make([]browser.ElementRef, 0, 55)
+	add := func(role, name string) {
+		i := len(refs) + 1
+		short := name
+		if r := []rune(short); len(r) > 50 {
+			short = string(r[:47]) + "..."
+		}
+		refs = append(refs, browser.ElementRef{
+			Ref:                fmt.Sprintf("@r%d", i),
+			BackendNodeID:      int64(100 + i),
+			Role:               role,
+			Name:               name,
+			NameFull:           name,
+			NameShort:          short,
+			RecommendedLocator: role + ":'" + name + "'",
+			Interactable:       true,
+			VisibilityKnown:    true,
+			VisibleInViewport:  true,
+			MatchCount:         1,
+		})
+	}
+	for i := 0; i < 14; i++ {
+		add("button", fmt.Sprintf("导航 %d", i))
+	}
+	for i := 0; i < 5; i++ {
+		add("button", fmt.Sprintf("卡片 %d %s", i, giant))
+		add("button", "原理 ▸")
+	}
+	for i := 0; i < 4; i++ {
+		add("checkbox", fmt.Sprintf("选择 session %d", i))
+	}
+	for i := 0; i < 5; i++ {
+		add("combobox", "")
+	}
+	for i := 0; i < 22; i++ {
+		add("button", fmt.Sprintf("尾部按钮 %d", i))
+	}
+	return refs
+}
+
+// TestBriefElementsKeepsEveryRoleUnderDefaultBudget 钉死症状 1:
+// 默认 --top/--budget 下,同屏的 combobox/checkbox 不得被大文案 button 整类挤掉。
+func TestBriefElementsKeepsEveryRoleUnderDefaultBudget(t *testing.T) {
+	refs := buildCollapseFixtureRefs()
+	elements, total, truncated, omitted := briefElements(refs, defaultBriefTopN, defaultBriefBudget)
+	if total != len(refs) {
+		t.Fatalf("total=%d, want %d", total, len(refs))
+	}
+	if !truncated {
+		t.Fatal("fixture must truncate at the default budget, otherwise it does not reproduce the bug")
+	}
+	seen := map[string]int{}
+	for _, el := range elements {
+		seen[el["role"].(string)]++
+	}
+	for _, role := range []string{"button", "checkbox", "combobox"} {
+		if seen[role] == 0 {
+			t.Fatalf("role %q vanished from the printed set: %v (omitted=%v)", role, seen, omitted)
+		}
+	}
+	// 预算是硬约束,不能靠"全打印"取巧通过。
+	encoded, err := json.Marshal(elements)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if len(encoded) > defaultBriefBudget+perElementBudgetEst {
+		t.Fatalf("printed %dB, budget %dB", len(encoded), defaultBriefBudget)
+	}
+	if omitted == nil {
+		t.Fatal("truncated output must account for what it dropped (omitted_by_role)")
+	}
+	sum := 0
+	for _, n := range omitted {
+		sum += n
+	}
+	if sum+len(elements) != total {
+		t.Fatalf("shown %d + omitted %d != total %d", len(elements), sum, total)
+	}
+	// 输出次序必须仍是 DFS 阅读序(ref 编号单调递增),公平选择不得打乱视觉次序。
+	prev := 0
+	for _, el := range elements {
+		n := 0
+		if _, err := fmt.Sscanf(el["ref"].(string), "@r%d", &n); err != nil {
+			t.Fatalf("bad ref %v", el["ref"])
+		}
+		if n <= prev {
+			t.Fatalf("printed order is not DFS-monotonic: %d after %d", n, prev)
+		}
+		prev = n
+	}
+}
+
+// TestLeanElementCapsNameFullSoOneElementCannotEatTheBudget 钉死"单元素独吞预算"。
+func TestLeanElementCapsNameFullSoOneElementCannotEatTheBudget(t *testing.T) {
+	giant := strings.Repeat("整卡片文案", 200)
+	el := leanElement(browser.ElementRef{
+		Ref: "@r1", Role: "button", Name: giant, NameFull: giant, NameShort: "卡片",
+		RecommendedLocator: "button:'卡片'", Interactable: true,
+	})
+	full, ok := el["name_full"].(string)
+	if !ok {
+		t.Fatalf("name_full missing: %#v", el)
+	}
+	if r := []rune(full); len(r) > nameFullDisplayRunes+1 {
+		t.Fatalf("name_full=%d runes, want <= %d", len(r), nameFullDisplayRunes+1)
+	}
+	if el["locator"] != "button:'卡片'" {
+		t.Fatalf("locator must stay verbatim (it is the act handle): %#v", el["locator"])
+	}
+}
+
+// TestObserveListingCountsAreSelfConsistent 钉死症状 3: shown/visible/total 三个数
+// 必须同时出现且可互相解释, hit_audit 的采样口径 = visible 而非 shown。
+func TestObserveListingCountsAreSelfConsistent(t *testing.T) {
+	refs := buildCollapseFixtureRefs()
+	snap := &browser.Snapshot{
+		SeeToClick:                 true,
+		Refs:                       refs,
+		DocumentInteractableCount:  len(refs) + 146,
+		VisibleInteractableCount:   len(refs),
+		OffscreenInteractableCount: 146,
+	}
+	listing, truncated := observeListing(snap, false, defaultBriefTopN, defaultBriefBudget)
+	if !truncated {
+		t.Fatal("fixture must truncate")
+	}
+	shown := listing["shown"].(int)
+	visible := listing["visible"].(int)
+	total := listing["total"].(int)
+	if visible != len(refs) {
+		t.Fatalf("visible=%d, want %d (= hit_audit_sampled)", visible, len(refs))
+	}
+	if shown > visible {
+		t.Fatalf("shown=%d must never exceed visible=%d", shown, visible)
+	}
+	if total != visible+snap.OffscreenInteractableCount {
+		t.Fatalf("total=%d != visible=%d + offscreen=%d", total, visible, snap.OffscreenInteractableCount)
 	}
 }
