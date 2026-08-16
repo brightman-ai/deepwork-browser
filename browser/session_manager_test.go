@@ -211,3 +211,24 @@ func TestSaveObservedSessionAtomicallyReconcilesFreshRefs(t *testing.T) {
 		t.Fatal("SaveObservedSession retained caller-owned refs backing storage")
 	}
 }
+
+func TestNormalizeSessionInfoKeepsOnlyCurrentEpochHumanFocusProof(t *testing.T) {
+	current := &SessionInfo{
+		SessionID:               "focus-current",
+		PageURL:                 "https://example.test/",
+		SnapEpoch:               9,
+		HumanFocusBackendNodeID: 42,
+		HumanFocusPageURL:       "https://example.test/",
+		HumanFocusEpoch:         9,
+	}
+	NormalizeSessionInfo(current)
+	if current.HumanFocusBackendNodeID != 42 {
+		t.Fatalf("current focus proof was revoked: %+v", current)
+	}
+
+	current.SnapEpoch++
+	NormalizeSessionInfo(current)
+	if current.HumanFocusBackendNodeID != 0 || current.HumanFocusPageURL != "" || current.HumanFocusEpoch != 0 {
+		t.Fatalf("stale focus proof survived observation sequence change: %+v", current)
+	}
+}

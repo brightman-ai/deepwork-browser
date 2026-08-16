@@ -26,6 +26,48 @@ type elementVisibilityProbe struct {
 	Occluder     string  `json:"occluder"`
 }
 
+type actionPoint struct {
+	X float64 `json:"x"`
+	Y float64 `json:"y"`
+}
+
+type humanTargetGeometry struct {
+	Aim       actionPoint
+	Quad      []float64
+	TargetBox Rect
+	AimSource string
+}
+
+type hitCoverageProbe struct {
+	Hits      []bool   `json:"hits"`
+	Occluders []string `json:"occluders"`
+}
+
+func (p hitCoverageProbe) count() int {
+	count := 0
+	for _, hit := range p.Hits {
+		if hit {
+			count++
+		}
+	}
+	return count
+}
+
+func (p hitCoverageProbe) String() string {
+	return fmt.Sprintf("%d/%d", p.count(), len(p.Hits))
+}
+
+func (p hitCoverageProbe) centerHit() bool {
+	return len(p.Hits) > 0 && p.Hits[0]
+}
+
+func (p hitCoverageProbe) centerOccluder() string {
+	if len(p.Occluders) == 0 {
+		return ""
+	}
+	return p.Occluders[0]
+}
+
 func visibleAreaRatio(box Rect, viewportWidth, viewportHeight float64) float64 {
 	if box.Width <= 0 || box.Height <= 0 || viewportWidth <= 0 || viewportHeight <= 0 {
 		return 0
@@ -60,6 +102,202 @@ func rectFromQuad(quad []float64) (Rect, bool) {
 	}
 	box := Rect{X: minX, Y: minY, Width: maxX - minX, Height: maxY - minY}
 	return box, box.Width > 0 && box.Height > 0
+}
+
+func polygonAreaAndCentroid(quad []float64) (float64, actionPoint, bool) {
+	if len(quad) < 8 || len(quad)%2 != 0 {
+		return 0, actionPoint{}, false
+	}
+	var twiceArea, cxNumerator, cyNumerator float64
+	points := len(quad) / 2
+	for i := 0; i < points; i++ {
+		j := (i + 1) % points
+		x1, y1 := quad[i*2], quad[i*2+1]
+		x2, y2 := quad[j*2], quad[j*2+1]
+		cross := x1*y2 - x2*y1
+		twiceArea += cross
+		cxNumerator += (x1 + x2) * cross
+		cyNumerator += (y1 + y2) * cross
+	}
+	if math.Abs(twiceArea) < 1e-9 {
+		return 0, actionPoint{}, false
+	}
+	centroid := actionPoint{
+		X: cxNumerator / (3 * twiceArea),
+		Y: cyNumerator / (3 * twiceArea),
+	}
+	return math.Abs(twiceArea) / 2, centroid, true
+}
+
+func largestContentQuad(quads [][]float64) ([]float64, actionPoint, bool) {
+	var (
+		bestQuad     []float64
+		bestCentroid actionPoint
+		bestArea     float64
+	)
+	for _, quad := range quads {
+		area, centroid, ok := polygonAreaAndCentroid(quad)
+		if ok && area > bestArea {
+			bestArea = area
+			bestQuad = append([]float64(nil), quad...)
+			bestCentroid = centroid
+		}
+	}
+	return bestQuad, bestCentroid, len(bestQuad) >= 8
+}
+
+func rectangleQuad(box Rect) []float64 {
+	return []float64{
+		box.X, box.Y,
+		box.X + box.Width, box.Y,
+		box.X + box.Width, box.Y + box.Height,
+		box.X, box.Y + box.Height,
+	}
+}
+
+// fivePointSamples returns the aim point followed by four points halfway from
+// the centroid toward each visual quad corner. Every sample stays inside a
+// convex content quad while exposing narrow/partially occluded hit regions.
+func fivePointSamples(quad []float64, centroid actionPoint) []actionPoint {
+	points := []actionPoint{centroid}
+	for i := 0; i+1 < len(quad) && len(points) < 5; i += 2 {
+		points = append(points, actionPoint{
+			X: centroid.X + (quad[i]-centroid.X)*0.5,
+			Y: centroid.Y + (quad[i+1]-centroid.Y)*0.5,
+		})
+	}
+	return points
+}
+
+func contentQuadsForMeta(ctx context.Context, ref *ElementRef) ([][]float64, error) {
+	var quads [][]float64
+	err := chromedp.Run(ctx, chromedp.ActionFunc(func(execCtx context.Context) error {
+		if ref == nil {
+			return fmt.Errorf("element metadata unavailable")
+		}
+		if ref.BackendNodeID != 0 {
+			got, err := dom.GetContentQuads().WithBackendNodeID(cdp.BackendNodeID(ref.BackendNodeID)).Do(execCtx)
+			if err != nil {
+				return err
+			}
+			for _, quad := range got {
+				quads = append(quads, append([]float64(nil), quad...))
+			}
+			return nil
+		}
+		obj, err := resolveElementObjectForMeta(execCtx, ref)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = runtime.ReleaseObject(obj.ObjectID).Do(execCtx) }()
+		got, err := dom.GetContentQuads().WithObjectID(obj.ObjectID).Do(execCtx)
+		if err != nil {
+			return err
+		}
+		for _, quad := range got {
+			quads = append(quads, append([]float64(nil), quad...))
+		}
+		return nil
+	}))
+	return quads, err
+}
+
+func resolveHumanTargetGeometry(ctx context.Context, ref *ElementRef, fallback Rect) humanTargetGeometry {
+	if quads, err := contentQuadsForMeta(ctx, ref); err == nil {
+		if quad, centroid, ok := largestContentQuad(quads); ok {
+			return humanTargetGeometry{Aim: centroid, Quad: quad, TargetBox: fallback, AimSource: AimSourceContentQuadCentroid}
+		}
+	}
+	quad := rectangleQuad(fallback)
+	return humanTargetGeometry{
+		Aim:       actionPoint{X: fallback.X + fallback.Width*0.5, Y: fallback.Y + fallback.Height*0.5},
+		Quad:      quad,
+		TargetBox: fallback,
+		AimSource: AimSourceBBoxCenter,
+	}
+}
+
+func probeMetaHitCoverage(ctx context.Context, ref *ElementRef, geometry humanTargetGeometry) (hitCoverageProbe, error) {
+	var coverage hitCoverageProbe
+	points := fivePointSamples(geometry.Quad, geometry.Aim)
+	pointsJSON, err := json.Marshal(points)
+	if err != nil {
+		return coverage, err
+	}
+	targetBoxJSON, err := json.Marshal(geometry.TargetBox)
+	if err != nil {
+		return coverage, err
+	}
+	err = chromedp.Run(ctx, chromedp.ActionFunc(func(execCtx context.Context) error {
+		obj, resolveErr := resolveElementObjectForMeta(execCtx, ref)
+		if resolveErr != nil {
+			return fmt.Errorf("resolve target object: %w", resolveErr)
+		}
+		defer func() { _ = runtime.ReleaseObject(obj.ObjectID).Do(execCtx) }()
+		fn := `function() {
+			const el = this;
+			const points = ` + string(pointsJSON) + `;
+			const globalBox = ` + string(targetBoxJSON) + `;
+			const localBox = el.getBoundingClientRect();
+			// DOM.getContentQuads/getBoxModel coordinates are relative to the top
+			// viewport, while elementFromPoint in an iframe realm consumes that
+			// frame's local viewport coordinates. Map through the live border box;
+			// this also handles scaled iframe content without DOM mutation.
+			const scaleX = globalBox.width > 0 ? localBox.width / globalBox.width : 1;
+			const scaleY = globalBox.height > 0 ? localBox.height / globalBox.height : 1;
+			const localPoint = point => ({
+				x: localBox.left + (point.x - globalBox.x) * scaleX,
+				y: localBox.top + (point.y - globalBox.y) * scaleY
+			});
+			const ownedHit = node => {
+				for (let n = node; n; ) {
+					if (n === el) return true;
+					if (n.parentElement) { n = n.parentElement; continue; }
+					const root = typeof n.getRootNode === 'function' ? n.getRootNode() : null;
+					n = root && root.host ? root.host : null;
+				}
+				return false;
+			};
+			const clean = value => (value || '').replace(/\s+/g, ' ').trim().slice(0, 80);
+			const describe = node => {
+				if (!node || node.nodeType !== 1) return 'empty hit region';
+				const role = clean(node.getAttribute('role'));
+				const name = clean(node.getAttribute('aria-label') || node.getAttribute('title') || node.innerText);
+				if (role && name) return role + '[name="' + name.replace(/"/g, '\\"') + '"]';
+				const testid = clean(node.getAttribute('data-testid'));
+				if (testid) return '[data-testid="' + testid.replace(/"/g, '\\"') + '"]';
+				if (node.id) return '#' + node.id;
+				return String(node.tagName || 'element').toLowerCase();
+			};
+			const root = typeof el.getRootNode === 'function' ? el.getRootNode() : document;
+			const hits = [], occluders = [];
+			for (const point of points) {
+				const local = localPoint(point);
+				const node = root && typeof root.elementFromPoint === 'function'
+					? root.elementFromPoint(local.x, local.y)
+					: document.elementFromPoint(local.x, local.y);
+				const owned = ownedHit(node);
+				hits.push(owned);
+				occluders.push(owned ? '' : describe(node));
+			}
+			return {hits, occluders};
+		}`
+		result, exc, callErr := runtime.CallFunctionOn(fn).
+			WithObjectID(obj.ObjectID).
+			WithReturnByValue(true).
+			Do(execCtx)
+		if callErr != nil {
+			return fmt.Errorf("call target hit probe: %w", callErr)
+		}
+		if exc != nil {
+			return fmt.Errorf("hit coverage probe failed: %s", exc.Text)
+		}
+		if result == nil || len(result.Value) == 0 {
+			return fmt.Errorf("hit coverage probe returned no value")
+		}
+		return json.Unmarshal(result.Value, &coverage)
+	}))
+	return coverage, err
 }
 
 var viewportFactsJS = `(() => ({

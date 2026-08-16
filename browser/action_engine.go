@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"math"
+	goruntime "runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -31,7 +32,13 @@ type actionEngine struct {
 	// reuses the existing InputGateway dispatch path (Gaussian jitter + real CDP
 	// mouse events) without acquiring a takeover lease.
 	seeToClick bool
-	humanInput *InputGateway
+	// interactionPolicy is assigned only from ScenarioInteractionPolicy. The
+	// legacy seeToClick mirror remains for the established visibility code.
+	interactionPolicy       InteractionPolicy
+	humanInput              *InputGateway
+	fidelityMu              sync.Mutex
+	lastReport              ActionFidelityReport
+	humanFocusBackendNodeID int64
 	// pointerGuard 指针动作前置守卫（browser chrome 仿真：拒绝点击遮挡带内的点）。
 	// nil = 无守卫。由 browserCoreImpl.EnableBrowserChromeSim 在会话启用时安装
 	// （单写者：act 执行前设置，执行期只读）。
@@ -58,6 +65,51 @@ func newActionEngine(snapEngine *snapshotEngine) *actionEngine {
 
 func (e *actionEngine) setSeeToClick(enabled bool) {
 	e.seeToClick = enabled
+}
+
+func (e *actionEngine) setInteractionPolicy(policy InteractionPolicy) {
+	e.interactionPolicy = policy
+	e.seeToClick = policy.SeeToClick
+}
+
+func (e *actionEngine) beginActionFidelity() {
+	e.fidelityMu.Lock()
+	e.lastReport = ActionFidelityReport{Fidelity: e.interactionPolicy.Fidelity}
+	e.fidelityMu.Unlock()
+}
+
+func (e *actionEngine) updateActionFidelity(update func(*ActionFidelityReport)) {
+	e.fidelityMu.Lock()
+	update(&e.lastReport)
+	e.fidelityMu.Unlock()
+}
+
+func (e *actionEngine) lastActionFidelity() ActionFidelityReport {
+	e.fidelityMu.Lock()
+	defer e.fidelityMu.Unlock()
+	report := e.lastReport
+	report.HumanPath = append([]string(nil), report.HumanPath...)
+	return report
+}
+
+func (e *actionEngine) restoreHumanFocus(state HumanFocusState) {
+	e.fidelityMu.Lock()
+	e.humanFocusBackendNodeID = state.BackendNodeID
+	e.fidelityMu.Unlock()
+}
+
+func (e *actionEngine) recordHumanFocus(backendNodeID int64) {
+	e.fidelityMu.Lock()
+	e.humanFocusBackendNodeID = backendNodeID
+	e.lastReport.FocusUpdated = true
+	e.lastReport.FocusedBackend = backendNodeID
+	e.fidelityMu.Unlock()
+}
+
+func (e *actionEngine) currentHumanFocus() int64 {
+	e.fidelityMu.Lock()
+	defer e.fidelityMu.Unlock()
+	return e.humanFocusBackendNodeID
 }
 
 // setPointerGuard 安装指针守卫（见 pointerGuard 字段）。
@@ -1056,12 +1108,17 @@ func (e *actionEngine) ExecuteWithInteractionMode(ctx context.Context, action st
 }
 
 func (e *actionEngine) executeWithInteractionMode(ctx context.Context, action string, observe bool, sessionMode bool, mode InteractionMode) (*Snapshot, error) {
+	e.beginActionFidelity()
 	normalizedMode, err := NormalizeInteractionMode(string(mode))
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrActFailed, err)
 	}
 	elementMode := normalizedMode == InteractionModeElement
+	if elementMode && e.interactionPolicy.StrictHuman() {
+		return nil, fmt.Errorf("%w: mode element is unavailable in strict-human scenario", ErrActFailed)
+	}
 	seeToClick := e.seeToClick && !elementMode
+	strictHuman := e.interactionPolicy.StrictHuman()
 
 	parsed, err := ParseAction(action)
 	if err != nil {
@@ -1157,19 +1214,39 @@ func (e *actionEngine) executeWithInteractionMode(ctx context.Context, action st
 			return nil, err
 		}
 	case "fill":
-		if err := e.executeFill(ctx, resolvedRef, parsed.Value); err != nil {
+		if strictHuman {
+			err = e.executeStrictHumanText(ctx, resolvedRef, parsed.Value, true, false)
+		} else {
+			err = e.executeFill(ctx, resolvedRef, parsed.Value)
+		}
+		if err != nil {
 			return nil, err
 		}
 	case "fillsecret":
-		if err := e.executeFillSecret(ctx, resolvedRef, parsed.Value); err != nil {
+		if strictHuman {
+			err = e.executeStrictHumanText(ctx, resolvedRef, parsed.Value, true, true)
+		} else {
+			err = e.executeFillSecret(ctx, resolvedRef, parsed.Value)
+		}
+		if err != nil {
 			return nil, err
 		}
 	case "type":
-		if err := e.executeType(ctx, resolvedRef, parsed.Value); err != nil {
+		if strictHuman {
+			err = e.executeStrictHumanText(ctx, resolvedRef, parsed.Value, false, false)
+		} else {
+			err = e.executeType(ctx, resolvedRef, parsed.Value)
+		}
+		if err != nil {
 			return nil, err
 		}
 	case "press":
-		if err := e.executePress(ctx, resolvedRef, parsed.Value); err != nil {
+		if strictHuman {
+			err = e.executeStrictHumanPress(ctx, resolvedRef, parsed.Value)
+		} else {
+			err = e.executePress(ctx, resolvedRef, parsed.Value)
+		}
+		if err != nil {
 			return nil, err
 		}
 	case "hover":
@@ -1184,6 +1261,10 @@ func (e *actionEngine) executeWithInteractionMode(ctx context.Context, action st
 		if err := e.executeSelect(ctx, resolvedRef, parsed.Value); err != nil {
 			return nil, err
 		}
+		e.updateActionFidelity(func(report *ActionFidelityReport) {
+			report.Synthetic = true
+			report.SyntheticNote = "native <select> uses DOM state plus synthetic input/change events; this is not evidence that a human can operate the picker"
+		})
 	case "back":
 		if err := e.executeBack(ctx); err != nil {
 			return nil, err
@@ -1193,7 +1274,12 @@ func (e *actionEngine) executeWithInteractionMode(ctx context.Context, action st
 			return nil, err
 		}
 	case "focus":
-		if err := e.executeFocusSelector(ctx, resolvedRef); err != nil {
+		if strictHuman {
+			err = e.executeStrictHumanFocus(ctx, resolvedRef)
+		} else {
+			err = e.executeFocusSelector(ctx, resolvedRef)
+		}
+		if err != nil {
 			return nil, err
 		}
 	case "scrollinto":
@@ -1722,14 +1808,76 @@ func (e *actionEngine) executeSeeToClick(ctx context.Context, ref string) error 
 		return fmt.Errorf("%w: resolve click target %q without scrolling: %v — run observe again", ErrRefNotFound, ref, err)
 	}
 	if err := validateSeeToClickProbe("click", ref, meta, requireObserved, probe); err != nil {
+		// The legacy visibility probe uses the bounding-box center. ContentQuads
+		// below owns the authoritative aim/hit decision, so defer only the
+		// center-occlusion branch and retain all other visibility failures.
+		if probe.Box.Width <= 0 || probe.Box.Height <= 0 || !probe.StyleVisible || probe.AreaRatio <= visibleAreaThreshold {
+			return err
+		}
+	}
+	geometry := resolveHumanTargetGeometry(ctx, meta, probe.Box)
+	coverage, err := probeMetaHitCoverage(ctx, meta, geometry)
+	if err != nil {
+		return fmt.Errorf("%w: sample click target %q: %v", ErrActFailed, ref, err)
+	}
+	probe.HitTarget = coverage.centerHit()
+	probe.Occluder = coverage.centerOccluder()
+	if err := validateSeeToClickProbe("click", ref, meta, requireObserved, probe); err != nil {
 		return err
 	}
-	x := probe.Box.X + probe.Box.Width*0.5
-	y := probe.Box.Y + probe.Box.Height*0.5
-	if err := e.guardPoint(ctx, x, y); err != nil {
+	e.updateActionFidelity(func(report *ActionFidelityReport) {
+		report.AimSource = geometry.AimSource
+		if coverage.count() < len(coverage.Hits) {
+			report.HitCoverage = coverage.String()
+		}
+		if e.interactionPolicy.StrictHuman() {
+			report.HumanPath = []string{"mouse_click"}
+		}
+	})
+	if err := e.guardPoint(ctx, geometry.Aim.X, geometry.Aim.Y); err != nil {
 		return err
 	}
-	return e.dispatchHumanMouseClick(ctx, x, y)
+	if err := e.dispatchHumanMouseClick(ctx, geometry.Aim.X, geometry.Aim.Y); err != nil {
+		return err
+	}
+	if e.interactionPolicy.StrictHuman() {
+		focused, backendNodeID, focusErr := activeElementMatchesMeta(ctx, meta)
+		if focusErr != nil || !focused {
+			e.recordHumanFocus(0)
+		} else {
+			e.recordHumanFocus(backendNodeID)
+		}
+	}
+	return nil
+}
+
+func (e *actionEngine) auditHitCoverage(ctx context.Context, refs []ElementRef) ([]HitAuditFinding, error) {
+	findings := make([]HitAuditFinding, 0)
+	for i := range refs {
+		ref := &refs[i]
+		if !ref.VisibleInViewport || !ref.VisibilityKnown {
+			continue
+		}
+		geometry := resolveHumanTargetGeometry(ctx, ref, ref.BBox)
+		coverage, err := probeMetaHitCoverage(ctx, ref, geometry)
+		if err != nil {
+			return nil, fmt.Errorf("hit-audit %s: %w", ref.Ref, err)
+		}
+		if coverage.count() < len(coverage.Hits) {
+			name := ref.NameFull
+			if name == "" {
+				name = ref.Name
+			}
+			findings = append(findings, HitAuditFinding{
+				Ref:         ref.Ref,
+				Role:        ref.Role,
+				Name:        name,
+				HitCoverage: coverage.String(),
+				AimSource:   geometry.AimSource,
+			})
+		}
+	}
+	return findings, nil
 }
 
 // dispatchHumanMouseClick reuses InputGateway's real mouse dispatcher so the
@@ -2311,6 +2459,302 @@ func (e *actionEngine) executeSwipeAt(ctx context.Context, ref string, relX1, re
 	x2 := box.Left + box.Width*relX2
 	y2 := box.Top + box.Height*relY2
 	return dispatchTouchSwipe(ctx, x1, y1, x2, y2, mouseDragInterpolationSteps)
+}
+
+var activeElementChainFunction = `function() {
+	const target = this;
+	if (!target || typeof target.getRootNode !== 'function') return {focused:false};
+	let current = target;
+	let root = current.getRootNode();
+	for (let depth = 0; depth < 32; depth++) {
+		if (!root || root.activeElement !== current) return {focused:false};
+		if (root.nodeType === 11 && root.host) {
+			current = root.host;
+			root = current.getRootNode();
+			continue;
+		}
+		if (root.nodeType === 9) {
+			const win = root.defaultView;
+			if (!win || win === win.top) return {focused:true};
+			let frame = null;
+			try { frame = win.frameElement; } catch (_) { return {focused:false}; }
+			if (!frame) return {focused:false};
+			current = frame;
+			root = current.getRootNode();
+			continue;
+		}
+		return {focused:false};
+	}
+	return {focused:false};
+}`
+
+func activeElementMatchesMeta(ctx context.Context, meta *ElementRef) (bool, int64, error) {
+	var (
+		focused       bool
+		backendNodeID int64
+	)
+	err := chromedp.Run(ctx, chromedp.ActionFunc(func(execCtx context.Context) error {
+		obj, err := resolveElementObjectForMeta(execCtx, meta)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = runtime.ReleaseObject(obj.ObjectID).Do(execCtx) }()
+		result, exc, err := runtime.CallFunctionOn(activeElementChainFunction).
+			WithObjectID(obj.ObjectID).
+			WithReturnByValue(true).
+			Do(execCtx)
+		if err != nil {
+			return err
+		}
+		if exc != nil {
+			return fmt.Errorf("activeElement chain probe failed: %s", exc.Text)
+		}
+		var probe struct {
+			Focused bool `json:"focused"`
+		}
+		if result == nil || len(result.Value) == 0 || json.Unmarshal(result.Value, &probe) != nil {
+			return fmt.Errorf("activeElement chain probe returned no usable value")
+		}
+		focused = probe.Focused
+		if meta != nil {
+			backendNodeID = meta.BackendNodeID
+		}
+		if backendNodeID == 0 {
+			node, describeErr := dom.DescribeNode().WithObjectID(obj.ObjectID).Do(execCtx)
+			if describeErr != nil {
+				return describeErr
+			}
+			if node != nil {
+				backendNodeID = int64(node.BackendNodeID)
+			}
+		}
+		return nil
+	}))
+	return focused, backendNodeID, err
+}
+
+type strictEditableState struct {
+	Focused        bool   `json:"focused"`
+	Editable       bool   `json:"editable"`
+	Password       bool   `json:"password"`
+	Tag            string `json:"tag"`
+	Value          string `json:"value"`
+	Prefix         string `json:"prefix"`
+	Suffix         string `json:"suffix"`
+	SelectionKnown bool   `json:"selection_known"`
+}
+
+var strictEditableStateFunction = `function() {
+	const el = this;
+	const target = el;
+	let current = target;
+	let root = current && typeof current.getRootNode === 'function' ? current.getRootNode() : null;
+	let focused = !!root;
+	for (let depth = 0; focused && depth < 32; depth++) {
+		if (!root || root.activeElement !== current) { focused = false; break; }
+		if (root.nodeType === 11 && root.host) {
+			current = root.host; root = current.getRootNode(); continue;
+		}
+		if (root.nodeType === 9) {
+			const win = root.defaultView;
+			if (!win || win === win.top) break;
+			try { current = win.frameElement; } catch (_) { focused = false; break; }
+			if (!current) { focused = false; break; }
+			root = current.getRootNode(); continue;
+		}
+		focused = false;
+	}
+	const tag = String(el && el.tagName || '').toUpperCase();
+	const editable = tag === 'INPUT' || tag === 'TEXTAREA';
+	const type = tag === 'INPUT' ? String(el.type || '').toLowerCase() : '';
+	const ac = String(el && el.autocomplete || '').toLowerCase();
+	const name = String(el && el.name || '').toLowerCase();
+	const password = type === 'password' || ac === 'current-password' || ac === 'new-password' ||
+		name === 'passwd' || name === 'password' || name === 'pwd';
+	const value = editable ? String(el.value ?? '') : '';
+	const selectionKnown = editable && Number.isInteger(el.selectionStart) && Number.isInteger(el.selectionEnd);
+	return {
+		focused, editable, password, tag, value, selection_known: selectionKnown,
+		prefix: selectionKnown ? value.slice(0, el.selectionStart) : value,
+		suffix: selectionKnown ? value.slice(el.selectionEnd) : ''
+	};
+}`
+
+func strictEditableStateForMeta(ctx context.Context, meta *ElementRef) (strictEditableState, error) {
+	var state strictEditableState
+	err := chromedp.Run(ctx, chromedp.ActionFunc(func(execCtx context.Context) error {
+		obj, err := resolveElementObjectForMeta(execCtx, meta)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = runtime.ReleaseObject(obj.ObjectID).Do(execCtx) }()
+		result, exc, err := runtime.CallFunctionOn(strictEditableStateFunction).
+			WithObjectID(obj.ObjectID).
+			WithReturnByValue(true).
+			Do(execCtx)
+		if err != nil {
+			return err
+		}
+		if exc != nil {
+			return fmt.Errorf("editable focus probe failed: %s", exc.Text)
+		}
+		if result == nil || len(result.Value) == 0 {
+			return fmt.Errorf("editable focus probe returned no value")
+		}
+		return json.Unmarshal(result.Value, &state)
+	}))
+	return state, err
+}
+
+func (e *actionEngine) strictTargetMeta(ref string) (*ElementRef, error) {
+	if isCSSSelector(ref) {
+		return nil, fmt.Errorf("%w: strict-human target %q was not granted by the most recent visible observation", ErrRefNotFound, ref)
+	}
+	meta, ok := e.snapEngine.LookupRefMeta(ref)
+	if !ok || !meta.Observed || !meta.VisibleInViewport {
+		return nil, fmt.Errorf("%w: strict-human target %q is not in the visible set from the most recent observe", ErrRefNotFound, ref)
+	}
+	return meta, nil
+}
+
+func (e *actionEngine) executeStrictHumanFocus(ctx context.Context, ref string) error {
+	meta, err := e.strictTargetMeta(ref)
+	if err != nil {
+		return err
+	}
+	if err := e.executeSeeToClick(ctx, ref); err != nil {
+		return err
+	}
+	focused, backendNodeID, err := activeElementMatchesMeta(ctx, meta)
+	if err != nil || !focused {
+		e.recordHumanFocus(0)
+		return fmt.Errorf("%w: focus not acquired by real click — human cannot type here", ErrActFailed)
+	}
+	e.recordHumanFocus(backendNodeID)
+	e.updateActionFidelity(func(report *ActionFidelityReport) {
+		report.HumanPath = []string{"mouse_click", "active_element_verified"}
+	})
+	return nil
+}
+
+func dispatchStrictSelectAllAndBackspace(ctx context.Context) error {
+	modifier := input.ModifierCtrl
+	if goruntime.GOOS == "darwin" {
+		modifier = input.ModifierMeta
+	}
+	if err := dispatchModifierCombo(ctx, modifier, "a"); err != nil {
+		return err
+	}
+	return chromedp.Run(ctx, chromedp.KeyEvent(mapKeyName("Backspace")))
+}
+
+func insertTextPerCharacter(ctx context.Context, value string) error {
+	return chromedp.Run(ctx, chromedp.ActionFunc(func(execCtx context.Context) error {
+		for _, char := range value {
+			if err := input.InsertText(string(char)).Do(execCtx); err != nil {
+				return err
+			}
+			time.Sleep(humanJitter())
+		}
+		return nil
+	}))
+}
+
+func waitForStrictEditableValue(ctx context.Context, meta *ElementRef, want string) error {
+	deadline := time.Now().Add(1500 * time.Millisecond)
+	for {
+		state, err := strictEditableStateForMeta(ctx, meta)
+		if err == nil && state.Focused && state.Editable && state.Value == want {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("%w: strict-human editable value mismatch", ErrActFailed)
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
+}
+
+func (e *actionEngine) executeStrictHumanText(ctx context.Context, ref, value string, clear, allowPassword bool) error {
+	meta, err := e.strictTargetMeta(ref)
+	if err != nil {
+		return err
+	}
+	if err := e.executeStrictHumanFocus(ctx, ref); err != nil {
+		return err
+	}
+	state, err := strictEditableStateForMeta(ctx, meta)
+	if err != nil {
+		return fmt.Errorf("%w: inspect strict-human editable %q: %v", ErrActFailed, ref, err)
+	}
+	if !state.Focused {
+		return fmt.Errorf("%w: focus not acquired by real click — human cannot type here", ErrActFailed)
+	}
+	if !state.Editable {
+		return fmt.Errorf("%w: target %q is not an editable INPUT/TEXTAREA", ErrActFailed, ref)
+	}
+	if state.Password && !allowPassword {
+		return ErrPasswordField
+	}
+
+	want := state.Prefix + value + state.Suffix
+	path := []string{"mouse_click", "active_element_verified"}
+	if clear {
+		if err := dispatchStrictSelectAllAndBackspace(ctx); err != nil {
+			return fmt.Errorf("%w: clear %q through keyboard: %v", ErrActFailed, ref, err)
+		}
+		if err := waitForStrictEditableValue(ctx, meta, ""); err != nil {
+			return err
+		}
+		want = value
+		path = append(path, "keyboard_select_all", "keyboard_backspace")
+	}
+	if err := insertTextPerCharacter(ctx, value); err != nil {
+		return fmt.Errorf("%w: Input.insertText %q: %v", ErrActFailed, ref, err)
+	}
+	if err := waitForStrictEditableValue(ctx, meta, want); err != nil {
+		return err
+	}
+	path = append(path, "Input.insertText_per_character", "value_verified")
+	e.updateActionFidelity(func(report *ActionFidelityReport) {
+		report.HumanPath = path
+	})
+	return nil
+}
+
+func (e *actionEngine) executeStrictHumanPress(ctx context.Context, ref, key string) error {
+	if ref != "" {
+		meta, err := e.strictTargetMeta(ref)
+		if err != nil {
+			return err
+		}
+		focused, backendNodeID, err := activeElementMatchesMeta(ctx, meta)
+		if err != nil || !focused || backendNodeID == 0 || backendNodeID != e.currentHumanFocus() {
+			return fmt.Errorf("%w: focus not acquired by real click — run click %s first", ErrActFailed, ref)
+		}
+		state, stateErr := strictEditableStateForMeta(ctx, meta)
+		if stateErr == nil && state.Tag == "SELECT" {
+			return fmt.Errorf("%w: strict-human press on native <select> is blocked; use select %s '<label-or-value>' (reported synthetic)", ErrActFailed, ref)
+		}
+		// A verified key event does not revoke the focus established by the
+		// earlier real click. Renew the persisted proof against the caller's
+		// post-action snapshot epoch so consecutive press actions remain valid.
+		e.recordHumanFocus(backendNodeID)
+		e.updateActionFidelity(func(report *ActionFidelityReport) {
+			report.HumanPath = []string{"human_focus_proof_verified", "Input.dispatchKeyEvent"}
+		})
+	} else {
+		e.updateActionFidelity(func(report *ActionFidelityReport) {
+			report.HumanPath = []string{"Input.dispatchKeyEvent"}
+		})
+	}
+	if mods, baseKey, hasMod := parseKeyCombo(key); hasMod {
+		return dispatchModifierCombo(ctx, mods, baseKey)
+	}
+	return chromedp.Run(ctx, chromedp.KeyEvent(mapKeyName(key)))
 }
 
 // executeType 执行文本输入操作，密码字段拒绝 [TC-09-U-07, TC-09-U-08]。

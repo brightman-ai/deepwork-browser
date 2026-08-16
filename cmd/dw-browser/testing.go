@@ -428,6 +428,19 @@ func observeListing(snap *browser.Snapshot, censusOnly bool, topN, budget int) (
 	}, truncated
 }
 
+func stripObserveHitAuditFlag(args []string) ([]string, bool) {
+	clean := make([]string, 0, len(args))
+	want := false
+	for _, arg := range args {
+		if arg == "--hit-audit" {
+			want = true
+			continue
+		}
+		clean = append(clean, arg)
+	}
+	return clean, want
+}
+
 // runObserve 采集当前 session 的多通道 Observation 快照。
 // dw-browser observe --id <session-id> [--layers structural,behavior,telemetry] [--out file.json]
 // runObserve — SSOT 感知动词。瘦默认 + 加法 flag。
@@ -446,6 +459,7 @@ func runObserve(args []string) {
 		printObserveHelp()
 		os.Exit(exitOK)
 	}
+	args, wantHitAudit := stripObserveHitAuditFlag(args)
 	var jsonOut, outFile string
 	wantHealth, wantTree, wantAnnotate, wantAll := false, false, false, false
 	topN, budget := defaultBriefTopN, defaultBriefBudget
@@ -548,6 +562,19 @@ func runObserve(args []string) {
 		fmt.Fprintln(os.Stderr, "dw-browser observe: empty snapshot")
 		os.Exit(exitRunErr)
 	}
+	var hitAudit []browser.HitAuditFinding
+	if wantHitAudit {
+		capable, ok := impl.(browser.HitAuditCapable)
+		if !ok {
+			fmt.Fprintln(os.Stderr, "dw-browser observe: --hit-audit is unavailable for this browser engine")
+			os.Exit(exitRunErr)
+		}
+		hitAudit, err = capable.AuditHitCoverage(ctx, snap.Refs)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "dw-browser observe: hit audit failed: %v\n", err)
+			os.Exit(exitRunErr)
+		}
+	}
 
 	// 显式 --top N 未配 --budget 时，放大字节预算以真的兑现 N 个元素。
 	// budget 的职责是保护"默认"上下文开销；调用方明确要 N 个却静默只给 ~37 个 = 骗人。
@@ -566,6 +593,13 @@ func runObserve(args []string) {
 	}
 	for key, value := range listing {
 		output[key] = value
+	}
+	if wantHitAudit {
+		if hitAudit == nil {
+			hitAudit = []browser.HitAuditFinding{}
+		}
+		output["hit_audit"] = hitAudit
+		output["hit_audit_sampled"] = len(snap.Refs)
 	}
 	if snap.SeeToClick {
 		output["offscreen"] = snap.OffscreenInteractableCount
@@ -700,6 +734,7 @@ func printObserveHelp() {
 	fmt.Fprintln(os.Stderr, "  --health        附健康通道 (诊断/grader lens)")
 	fmt.Fprintln(os.Stderr, "  --tree          附全 a11y 树文本")
 	fmt.Fprintln(os.Stderr, "  --all           调试: 全文档 census，仅 role/name；无 @rN、不持久化 refs、不可 act")
+	fmt.Fprintln(os.Stderr, "  --hit-audit     对可见 refs 做 5 点命中普查，仅输出 hit_coverage < 5/5 的警示")
 	fmt.Fprintln(os.Stderr, "  --top <N>       elements 上限 (默认 20)")
 	fmt.Fprintln(os.Stderr, "  --budget <B>    elements 输出字节硬上限 (默认 4096)")
 	fmt.Fprintln(os.Stderr, "  --json <path>   整个 JSON 落盘 (默认 stdout)")

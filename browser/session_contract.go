@@ -263,4 +263,9 @@ func NormalizeSessionInfo(info *SessionInfo) {
 	case "in_progress", "unknown":
 		info.Refs = nil
 	}
+	if info.HumanFocusBackendNodeID <= 0 || info.HumanFocusEpoch != info.SnapEpoch || info.HumanFocusPageURL != info.PageURL {
+		info.HumanFocusBackendNodeID = 0
+		info.HumanFocusPageURL = ""
+		info.HumanFocusEpoch = 0
+	}
 }

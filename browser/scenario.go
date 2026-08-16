@@ -47,13 +47,33 @@ var ScenarioValues = []Scenario{
 // default.
 type InteractionPolicy struct {
 	SeeToClick bool
+	Fidelity   InteractionFidelity
+}
+
+// InteractionFidelity is the scenario-owned input fidelity tier. It is not a
+// caller-selectable technical flag: ScenarioInteractionPolicy is the single
+// table that assigns one tier to each business scenario.
+type InteractionFidelity string
+
+const (
+	InteractionFidelityStrictHuman InteractionFidelity = "strict-human"
+	InteractionFidelityDual        InteractionFidelity = "dual"
+	InteractionFidelityUtility     InteractionFidelity = "utility"
+)
+
+func (p InteractionPolicy) StrictHuman() bool {
+	return p.Fidelity == InteractionFidelityStrictHuman
 }
 
 // ScenarioInteractionPolicy is the SSOT for scenario interaction semantics.
 func ScenarioInteractionPolicy(s Scenario) InteractionPolicy {
 	switch s {
-	case ScenarioAppTestExplore, ScenarioAppTestBaseline, ScenarioWebVisit:
-		return InteractionPolicy{SeeToClick: true}
+	case ScenarioAppTestExplore:
+		return InteractionPolicy{SeeToClick: true, Fidelity: InteractionFidelityStrictHuman}
+	case ScenarioAppTestBaseline:
+		return InteractionPolicy{SeeToClick: true, Fidelity: InteractionFidelityDual}
+	case ScenarioWebVisit:
+		return InteractionPolicy{SeeToClick: true, Fidelity: InteractionFidelityUtility}
 	default:
 		return InteractionPolicy{}
 	}

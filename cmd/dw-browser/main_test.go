@@ -57,6 +57,47 @@ func TestIsPointerAction(t *testing.T) {
 	}
 }
 
+func TestActionFidelityOutputAndSessionFocusReconcile(t *testing.T) {
+	output := map[string]interface{}{"success": true}
+	report := browser.ActionFidelityReport{
+		Fidelity:       browser.InteractionFidelityStrictHuman,
+		Synthetic:      true,
+		SyntheticNote:  "synthetic marker",
+		HumanPath:      []string{"mouse_click", "active_element_verified"},
+		AimSource:      browser.AimSourceContentQuadCentroid,
+		HitCoverage:    "4/5",
+		FocusUpdated:   true,
+		FocusedBackend: 42,
+	}
+	injectActionFidelity(output, report)
+	if output["fidelity"] != browser.InteractionFidelityStrictHuman || output["synthetic"] != true ||
+		output["synthetic_note"] != "synthetic marker" || output["aim_source"] != browser.AimSourceContentQuadCentroid ||
+		output["hit_coverage"] != "4/5" {
+		t.Fatalf("fidelity output=%+v", output)
+	}
+
+	info := &browser.SessionInfo{PageURL: "https://example.test/", SnapEpoch: 7}
+	reconcileSessionHumanFocus(info, report, false)
+	if info.HumanFocusBackendNodeID != 42 || info.HumanFocusPageURL != info.PageURL || info.HumanFocusEpoch != 7 {
+		t.Fatalf("persisted human focus=%+v", info)
+	}
+	reconcileSessionHumanFocus(info, browser.ActionFidelityReport{}, true)
+	if info.HumanFocusBackendNodeID != 0 || info.HumanFocusPageURL != "" || info.HumanFocusEpoch != 0 {
+		t.Fatalf("navigation retained human focus=%+v", info)
+	}
+}
+
+func TestObserveHitAuditFlagIsAdditiveAndRemovedBeforeCommonParsing(t *testing.T) {
+	clean, want := stripObserveHitAuditFlag([]string{"--id", "s1", "--hit-audit", "--health", "--hit-audit"})
+	if !want || strings.Join(clean, " ") != "--id s1 --health" {
+		t.Fatalf("stripObserveHitAuditFlag=(%q,%t)", clean, want)
+	}
+	clean, want = stripObserveHitAuditFlag([]string{"--id", "s1"})
+	if want || strings.Join(clean, " ") != "--id s1" {
+		t.Fatalf("flag unexpectedly enabled=(%q,%t)", clean, want)
+	}
+}
+
 func TestSelectSessionTargetIDPrefersExactURLOverBlankTabs(t *testing.T) {
 	targets := []map[string]interface{}{
 		{

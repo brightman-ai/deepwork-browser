@@ -57,8 +57,14 @@ type SessionInfo struct {
 	// LastActionOutcome is a crash/timeout fence for persisted ref authority.
 	// "in_progress" and "unknown" mean no ref may be trusted until observe.
 	LastActionOutcome string `json:"last_action_outcome,omitempty"`
-	Ephemeral         bool   `json:"ephemeral"` // true if --ephemeral was used
-	XvfbPID           int    `json:"xvfb_pid"`  // Xvfb process PID (headed mode, Linux)
+	// HumanFocus* proves that a strict-human press target was focused by a real
+	// pointer action in this exact persisted snapshot epoch. A later observe
+	// advances SnapEpoch and therefore invalidates the proof.
+	HumanFocusBackendNodeID int64  `json:"human_focus_backend_node_id,omitempty"`
+	HumanFocusPageURL       string `json:"human_focus_page_url,omitempty"`
+	HumanFocusEpoch         int    `json:"human_focus_epoch,omitempty"`
+	Ephemeral               bool   `json:"ephemeral"` // true if --ephemeral was used
+	XvfbPID                 int    `json:"xvfb_pid"`  // Xvfb process PID (headed mode, Linux)
 
 	BrowserMuxHostID      string `json:"browser_mux_host_id,omitempty"`
 	BrowserMuxHostPID     int    `json:"browser_mux_host_pid,omitempty"`

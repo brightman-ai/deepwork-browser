@@ -1075,6 +1075,7 @@ func runOnce(args []string) {
 			"refs_count": len(snap.Refs),
 			"elements":   buildRefsOutput(snap.Refs),
 		}
+		injectActionFidelity(output, actionFidelityReport(bc))
 		injectSnapshotState(output, snap)
 		enc, _ := json.MarshalIndent(output, "", "  ")
 		fmt.Println(string(enc))
@@ -1176,15 +1177,16 @@ func printUsage() {
 	p("")
 	p("─── --scenario <必选> · 业务主入口 (open/once/session start 必带) ──")
 	p("  Policy(公网写门控)+render(默认视图)+kind 全由场景自动导出, 不再有裸技术开关:")
-	p("  app-test-explore    Claude 探索本地 App: 所见即可点+真鼠标; 本地写放行/公网写拦, 允许内部 LLM")
-	p("  app-test-baseline   本地 App 确定性回归: 默认同样所见即可点; 硬锁内部 LLM")
-	p("  webvisit            访问真实公网站: 默认同样所见即可点; 全站写拦, 仅 --allow-host 放行")
+	p("  app-test-explore    strict-human: 所见即可点+真鼠标/键盘; 本地写放行/公网写拦, 允许内部 LLM")
+	p("  app-test-baseline   dual: 视觉默认+单步 mode:element; 硬锁内部 LLM")
+	p("  webvisit            utility: 所见即可点, 元素通道允许; 全站写拦, 仅 --allow-host 放行")
 	p("")
 	p("─── A 探索循环 ─────────────────────────────────────────────")
 	p("  open <url> --id X --scenario <场景>  打开/导航 (--scenario 必选; render 由场景定, --mode 可覆盖)")
 	p("  observe --id X                      ★感知: 三场景仅列当前截图可见 elements@rN + bbox(CSS px)")
 	p("      --out shot.png                  + 存截图, 返回 {screenshot:\"<path>\"} (Read 图判 UX)")
 	p("      --all                           调试: 全文档 ref-less census(role/name), 不返回/持久化 @ref")
+	p("      --hit-audit                     可见 ref 五点命中普查，列出 hit_coverage 警示")
 	p("      --health                        + {telemetry:{console_errors,network_failures,visible_errors}}")
 	p("      --tree                          + {tree:\"<全 a11y 文本>\"} (罕用)")
 	p("                                      flag 自由组合 (加法, 非互斥)")
@@ -1438,6 +1440,13 @@ func connectSession(ctx context.Context, sessionInfo *browser.SessionInfo, cmdNa
 		os.Exit(exitRunErr)
 	}
 	applyInteractionScenario(impl, sessionInfo.Scenario)
+	if capable, ok := impl.(browser.ActionFidelityCapable); ok {
+		state := browser.HumanFocusState{}
+		if sessionInfo.HumanFocusEpoch == sessionInfo.SnapEpoch && sessionInfo.HumanFocusPageURL == sessionInfo.PageURL {
+			state.BackendNodeID = sessionInfo.HumanFocusBackendNodeID
+		}
+		capable.RestoreHumanFocus(state)
+	}
 
 	width := sessionInfo.ViewportW
 	height := sessionInfo.ViewportH
@@ -1488,6 +1497,57 @@ func applyInteractionScenario(core browser.BrowserCore, raw string) {
 func scenarioUsesSeeToClick(raw string) bool {
 	scenario, err := browser.NormalizeScenario(raw)
 	return err == nil && browser.ScenarioInteractionPolicy(scenario).SeeToClick
+}
+
+func actionFidelityReport(core browser.BrowserCore) browser.ActionFidelityReport {
+	if capable, ok := core.(browser.ActionFidelityCapable); ok {
+		return capable.LastActionFidelity()
+	}
+	return browser.ActionFidelityReport{}
+}
+
+func injectActionFidelity(output map[string]interface{}, report browser.ActionFidelityReport) {
+	if output == nil {
+		return
+	}
+	if report.Fidelity != "" {
+		output["fidelity"] = report.Fidelity
+	}
+	if report.Synthetic {
+		output["synthetic"] = true
+		output["synthetic_note"] = report.SyntheticNote
+	}
+	if len(report.HumanPath) > 0 {
+		output["human_path"] = report.HumanPath
+	}
+	if report.AimSource != "" {
+		output["aim_source"] = report.AimSource
+	}
+	if report.HitCoverage != "" {
+		output["hit_coverage"] = report.HitCoverage
+	}
+}
+
+func reconcileSessionHumanFocus(info *browser.SessionInfo, report browser.ActionFidelityReport, navigated bool) {
+	if info == nil {
+		return
+	}
+	if navigated {
+		info.HumanFocusBackendNodeID = 0
+		info.HumanFocusPageURL = ""
+		info.HumanFocusEpoch = 0
+		return
+	}
+	if report.FocusUpdated {
+		info.HumanFocusBackendNodeID = report.FocusedBackend
+		if report.FocusedBackend > 0 {
+			info.HumanFocusPageURL = info.PageURL
+			info.HumanFocusEpoch = info.SnapEpoch
+		} else {
+			info.HumanFocusPageURL = ""
+			info.HumanFocusEpoch = 0
+		}
+	}
 }
 
 // connectSafariSession 重建 Safari SessionCore（通过 UDID 重连已启动的 Simulator）。
@@ -2247,6 +2307,7 @@ func runAct(args []string) {
 	output := map[string]interface{}{
 		"success": true,
 	}
+	injectActionFidelity(output, actionFidelityReport(bc))
 	if snap != nil {
 		output["snap"] = snap.Text
 	}
@@ -2373,9 +2434,12 @@ func runActSession(flags commonFlags, action string, awaitStable bool, snapAfter
 	// the action outcome before any optional stabilization sleep or auxiliary
 	// recording, so another CLI process cannot observe the in-progress fence as
 	// though the action never completed.
+	report := actionFidelityReport(impl)
+	navigated := false
 	if snap != nil {
-		applyPostActionSnapshot(sessionInfo, snap)
+		navigated = applyPostActionSnapshot(sessionInfo, snap)
 	}
+	reconcileSessionHumanFocus(sessionInfo, report, navigated)
 	committedSnap := snap
 	sessionInfo.LastActionOutcome = "confirmed"
 	if err := browser.SaveSession(sessionInfo); err != nil {
@@ -2458,6 +2522,7 @@ func runActSession(flags commonFlags, action string, awaitStable bool, snapAfter
 		"session_kind":       sessionInfo.SessionKind,
 		"success":            true,
 	}
+	injectActionFidelity(output, report)
 	if zoomAction {
 		if bcc, ok := impl.(browser.BrowserChromeCapable); ok {
 			output["page_scale"] = bcc.PageScale()
@@ -2522,6 +2587,7 @@ func runActSession(flags commonFlags, action string, awaitStable bool, snapAfter
 					sessionInfo.TargetID = tid
 					sessionInfo.PageURL = turl
 					sessionInfo.Refs = nil // invalidate: new page needs fresh snap
+					reconcileSessionHumanFocus(sessionInfo, browser.ActionFidelityReport{}, true)
 					_ = browser.SaveSession(sessionInfo)
 					output["new_tab"] = map[string]interface{}{
 						"target_id": tid,
