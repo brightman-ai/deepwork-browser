@@ -522,22 +522,35 @@ func validateSeeToClickProbe(action, ref string, meta *ElementRef, requireObserv
 	return nil
 }
 
+// OccludedRef is an interactable that observe dropped from the visible set for
+// one specific reason: it is geometrically on screen and styled visible, yet
+// something else owns its centre pixel. Silently dropping these made "元素消失"
+// indistinguishable between 屏外 / 被遮挡 / 未渲染, and hid exactly the elements
+// a user can see but cannot click. They are counted and auditable, but they are
+// deliberately NOT refs — no handle is minted for something you cannot hit
+// [BUG-OCCLUDED-SILENTLY-DROPPED].
+type OccludedRef struct {
+	Element  ElementRef
+	Occluder string
+}
+
 // enrichSeeToClickRefs aligns refs with the screenshot viewport. DOM.getBoxModel
 // is one cheap lookup per AX node; expensive object resolution + hit-testing is
 // performed only for boxes that already pass the >50% area threshold.
-func enrichSeeToClickRefs(ctx context.Context, refs []ElementRef) ([]ElementRef, ViewportFacts, int, error) {
+func enrichSeeToClickRefs(ctx context.Context, refs []ElementRef) ([]ElementRef, ViewportFacts, int, []OccludedRef, error) {
 	var viewport ViewportFacts
 	if err := chromedp.Run(ctx, chromedp.Evaluate(viewportFactsJS, &viewport)); err != nil {
-		return nil, ViewportFacts{}, 0, fmt.Errorf("browser: read see-to-click viewport: %w", err)
+		return nil, ViewportFacts{}, 0, nil, fmt.Errorf("browser: read see-to-click viewport: %w", err)
 	}
 	if viewport.DevicePixelRatio <= 0 {
 		viewport.DevicePixelRatio = 1
 	}
 	if viewport.Width <= 0 || viewport.Height <= 0 {
-		return nil, viewport, 0, fmt.Errorf("browser: invalid see-to-click viewport %.1fx%.1f", viewport.Width, viewport.Height)
+		return nil, viewport, 0, nil, fmt.Errorf("browser: invalid see-to-click viewport %.1fx%.1f", viewport.Width, viewport.Height)
 	}
 
 	visibleCount := 0
+	occluded := make([]OccludedRef, 0)
 	err := chromedp.Run(ctx, chromedp.ActionFunc(func(execCtx context.Context) error {
 		for i := range refs {
 			refs[i].Observed = true
@@ -599,12 +612,21 @@ func enrichSeeToClickRefs(ctx context.Context, refs []ElementRef) ([]ElementRef,
 			refs[i].VisibleInViewport = probeIsVisible(probe)
 			if refs[i].VisibleInViewport {
 				visibleCount++
+			} else if probe.Box.Width > 0 && probe.Box.Height > 0 &&
+				probe.StyleVisible && probe.AreaRatio > visibleAreaThreshold && !probe.HitTarget {
+				// 在屏、有样式、面积够 —— 唯一落选原因是中心被别人占了。
+				// 记下遮挡者, 它就是"看得见却点不到"的 UX 缺陷候选。
+				occluder := strings.TrimSpace(probe.Occluder)
+				if occluder == "" {
+					occluder = "another element"
+				}
+				occluded = append(occluded, OccludedRef{Element: refs[i], Occluder: occluder})
 			}
 		}
 		return nil
 	}))
 	if err != nil {
-		return nil, viewport, visibleCount, fmt.Errorf("browser: see-to-click visibility probe: %w", err)
+		return nil, viewport, visibleCount, occluded, fmt.Errorf("browser: see-to-click visibility probe: %w", err)
 	}
 
 	selected := make([]ElementRef, 0, len(refs))
@@ -616,5 +638,5 @@ func enrichSeeToClickRefs(ctx context.Context, refs []ElementRef) ([]ElementRef,
 	for i := range selected {
 		selected[i].Ref = fmt.Sprintf("e%d", i+1)
 	}
-	return selected, viewport, visibleCount, nil
+	return selected, viewport, visibleCount, occluded, nil
 }

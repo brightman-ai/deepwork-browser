@@ -34,6 +34,10 @@ type snapshotEngine struct {
 	// click-time visibility guards.
 	seeToClick bool
 	observeAll bool
+	// occluded 记录最近一次 see-to-click 观察中"在屏但中心被别人占住"的可交互元素。
+	// 它们不是 ref（点不到的东西不该发句柄），但必须被计数并可审计，否则
+	// "元素消失"在 屏外/被遮挡/未渲染 之间不可区分 [BUG-OCCLUDED-SILENTLY-DROPPED]。
+	occluded []OccludedRef
 }
 
 // elementCandidate deliberately has no Ref field. It retains just enough live
@@ -215,12 +219,15 @@ func (e *snapshotEngine) GetSnapshot(ctx context.Context) (*Snapshot, error) {
 		census = censusFromCandidates(e.elementCandidates)
 	}
 	var viewport ViewportFacts
+	e.occluded = nil
 	if e.seeToClick {
 		var visibilityErr error
-		refs, viewport, visibleInteractableCount, visibilityErr = enrichSeeToClickRefs(ctx, refs)
+		var occluded []OccludedRef
+		refs, viewport, visibleInteractableCount, occluded, visibilityErr = enrichSeeToClickRefs(ctx, refs)
 		if visibilityErr != nil {
 			return nil, visibilityErr
 		}
+		e.occluded = occluded
 	}
 
 	// 步骤 5: 构建 compact 文本 + TokenEst
@@ -617,20 +624,88 @@ func (e *snapshotEngine) AllTestIDs() []string {
 	return ids
 }
 
-// AllByRole 返回当前快照中指定 role 的所有元素名称（用于错误提示）。
-func (e *snapshotEngine) AllByRole(role string) []string {
-	seen := make(map[string]bool)
-	var names []string
+// observationSize 返回当前 observation 持有的去重 ref 数（testid 索引不计）。
+// 0 = 本进程没有任何 observation（refs 已作废或尚未 observe），这与"页面上没有
+// 元素"是两件事，错误信息必须区分 [BUG-FALSE-NEGATIVE-ROLE-CLAIM]。
+func (e *snapshotEngine) observationSize() int {
+	seen := make(map[string]bool, len(e.refMeta))
 	for key, meta := range e.refMeta {
-		if strings.HasPrefix(key, "#") {
+		if strings.HasPrefix(key, "#") || meta == nil {
 			continue
 		}
-		if strings.EqualFold(meta.Role, role) && !seen[meta.Name] {
-			seen[meta.Name] = true
-			names = append(names, meta.Name)
-		}
+		seen[meta.Ref] = true
 	}
-	return names
+	return len(seen)
+}
+
+// observationRoleHistogram 返回当前 observation 的 role→数量分布。
+func (e *snapshotEngine) observationRoleHistogram() map[string]int {
+	counts := make(map[string]int)
+	seen := make(map[string]bool, len(e.refMeta))
+	for key, meta := range e.refMeta {
+		if strings.HasPrefix(key, "#") || meta == nil || seen[meta.Ref] {
+			continue
+		}
+		seen[meta.Ref] = true
+		role := meta.Role
+		if role == "" {
+			role = "(no role)"
+		}
+		counts[role]++
+	}
+	return counts
+}
+
+// observationCandidatesByRole 返回该 role 在当前 observation 中的全部条目，
+// 供"name 不匹配"时排最近似候选。
+func (e *snapshotEngine) observationCandidatesByRole(role string) []locatorCandidate {
+	var candidates []locatorCandidate
+	seen := make(map[string]bool, len(e.refMeta))
+	for key, meta := range e.refMeta {
+		if strings.HasPrefix(key, "#") || meta == nil || seen[meta.Ref] {
+			continue
+		}
+		if !strings.EqualFold(meta.Role, role) {
+			continue
+		}
+		seen[meta.Ref] = true
+		name := meta.NameFull
+		if name == "" {
+			name = meta.Name
+		}
+		candidates = append(candidates, locatorCandidate{Ref: meta.Ref, Role: meta.Role, Name: name})
+	}
+	sort.SliceStable(candidates, func(i, j int) bool {
+		return extractRefNth(candidates[i].Ref) < extractRefNth(candidates[j].Ref)
+	})
+	return candidates
+}
+
+// elementCandidateHistogram / elementCandidatesByRole 是 mode:element 通道的对偶。
+func (e *snapshotEngine) elementCandidateHistogram() map[string]int {
+	counts := make(map[string]int)
+	for i := range e.elementCandidates {
+		role := e.elementCandidates[i].Role
+		if role == "" {
+			role = "(no role)"
+		}
+		counts[role]++
+	}
+	return counts
+}
+
+func (e *snapshotEngine) elementCandidatesByRoleForDiagnostics(role string) []locatorCandidate {
+	var candidates []locatorCandidate
+	for i := range e.elementCandidates {
+		if !strings.EqualFold(e.elementCandidates[i].Role, role) {
+			continue
+		}
+		candidates = append(candidates, locatorCandidate{
+			Role: e.elementCandidates[i].Role,
+			Name: e.elementCandidates[i].Name,
+		})
+	}
+	return candidates
 }
 
 func (e *snapshotEngine) lookupElementCandidateByTestID(testID string) (elementCandidate, bool) {
@@ -654,19 +729,6 @@ func (e *snapshotEngine) lookupElementCandidatesByRoleName(role, name, op string
 		}
 	}
 	return results
-}
-
-func (e *snapshotEngine) allElementCandidateNamesByRole(role string) []string {
-	seen := make(map[string]bool)
-	var names []string
-	for i := range e.elementCandidates {
-		candidate := e.elementCandidates[i]
-		if strings.EqualFold(candidate.Role, role) && !seen[candidate.Name] {
-			seen[candidate.Name] = true
-			names = append(names, candidate.Name)
-		}
-	}
-	return names
 }
 
 // ============================================================
@@ -1446,12 +1508,15 @@ func (e *snapshotEngine) SnapWithOptions(ctx context.Context, opts SnapOptions) 
 			census = censusFromCandidates(e.elementCandidates)
 		}
 		var viewport ViewportFacts
+		e.occluded = nil
 		if e.seeToClick {
 			var visibilityErr error
-			rawRefs, viewport, visibleInteractableCount, visibilityErr = enrichSeeToClickRefs(ctx, rawRefs)
+			var occluded []OccludedRef
+			rawRefs, viewport, visibleInteractableCount, occluded, visibilityErr = enrichSeeToClickRefs(ctx, rawRefs)
 			if visibilityErr != nil {
 				return nil, visibilityErr
 			}
+			e.occluded = occluded
 		}
 
 		// Renumber refs in session mode (@rN) or positional (eN)

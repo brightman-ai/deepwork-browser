@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>coordinate hit + occlusion fixture</title>
+  <style>
+    /* 页面刻意可滚动: 不可滚动的页面上 CDP mouseWheel 不会 ack, 与本 fixture
+       要验的命中回报无关, 别把那个已知行为混进来。 */
+    body { margin: 0; font: 16px sans-serif; height: 2400px; }
+    button { position: absolute; }
+    /* #covered 的中心被 #cover 完全占住 —— observe 必须把它从可见集剔除,
+       同时如实计数并能点名遮挡者 [BUG-OCCLUDED-SILENTLY-DROPPED]。 */
+    #covered { left: 20px; top: 200px; width: 200px; height: 60px; }
+    #cover   { position: absolute; left: 0; top: 180px; width: 400px; height: 100px;
+               z-index: 5; background: rgba(0, 0, 0, .35); }
+    /* 完全自由的两个按钮: 可见集/句柄存活断言用。 */
+    #free      { left: 20px; top: 20px;  width: 200px; height: 60px; }
+    #also-free { left: 20px; top: 400px; width: 200px; height: 60px; }
+  </style>
+</head>
+<body>
+  <button id="free" data-testid="free" aria-label="Free target">Free target</button>
+  <button id="covered" data-testid="covered" aria-label="Covered target">Covered target</button>
+  <div id="cover" data-testid="cover"></div>
+  <button id="also-free" data-testid="also-free" aria-label="Second free target">Second free target</button>
+  <output id="log"></output>
+  <script>
+    // 真相记录: 谁真的收到了 click。用来证明工具回报的 hit 与页面事实一致,
+    // 而不是工具自说自话。
+    window.__lastClickedID = '';
+    document.addEventListener('click', event => {
+      window.__lastClickedID = (event.target && event.target.id) || '';
+      log.value = window.__lastClickedID;
+    }, true);
+  </script>
+</body>
+</html>

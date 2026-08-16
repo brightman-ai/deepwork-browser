@@ -74,8 +74,28 @@ func (e *actionEngine) setInteractionPolicy(policy InteractionPolicy) {
 
 func (e *actionEngine) beginActionFidelity() {
 	e.fidelityMu.Lock()
-	e.lastReport = ActionFidelityReport{Fidelity: e.interactionPolicy.Fidelity}
+	// Dispatched starts true on purpose. "Input may have reached the page" is the
+	// safe assumption; it is narrowed to false only on code paths that provably
+	// run before any input is sent. A missed narrowing costs an extra observe;
+	// a wrong narrowing would keep refs alive across a page change.
+	e.lastReport = ActionFidelityReport{Fidelity: e.interactionPolicy.Fidelity, Dispatched: true}
 	e.fidelityMu.Unlock()
+}
+
+// markPreDispatchFailure records that this action died in its validation phase:
+// nothing was parsed into input, nothing was sent, the page cannot have moved.
+// Callers of the CLI use it to keep the previous observation's refs alive.
+func (e *actionEngine) markPreDispatchFailure() {
+	e.fidelityMu.Lock()
+	e.lastReport.Dispatched = false
+	e.fidelityMu.Unlock()
+}
+
+// failedBeforeDispatch tags err as a validation-phase failure and returns it, so
+// error sites stay single-expression.
+func (e *actionEngine) failedBeforeDispatch(err error) error {
+	e.markPreDispatchFailure()
+	return err
 }
 
 func (e *actionEngine) updateActionFidelity(update func(*ActionFidelityReport)) {
@@ -118,11 +138,15 @@ func (e *actionEngine) setPointerGuard(g func(ctx context.Context, x, y float64)
 }
 
 // guardPoint 指针动作统一前置：把 (x,y) 交守卫判定，守卫拒绝则动作 fail-loud。
+// 守卫按定义跑在派发之前，所以拒绝 = 校验期失败，不得作废既有 observation。
 func (e *actionEngine) guardPoint(ctx context.Context, x, y float64) error {
 	if e.pointerGuard == nil {
 		return nil
 	}
-	return e.pointerGuard(ctx, x, y)
+	if err := e.pointerGuard(ctx, x, y); err != nil {
+		return e.failedBeforeDispatch(err)
+	}
+	return nil
 }
 
 // PageScale 当前页面缩放（默认 1.0）。
@@ -1109,20 +1133,23 @@ func (e *actionEngine) ExecuteWithInteractionMode(ctx context.Context, action st
 
 func (e *actionEngine) executeWithInteractionMode(ctx context.Context, action string, observe bool, sessionMode bool, mode InteractionMode) (*Snapshot, error) {
 	e.beginActionFidelity()
+	// — 校验期 —— 以下每一步都跑在任何输入派发之前。失败 = 页面绝无可能被改动，
+	// 因此标记 pre-dispatch，调用方据此保留上一份 observation 的 @rN 句柄
+	// [BUG-ACT-FAILURE-REVOKES-OBSERVATION]。
 	normalizedMode, err := NormalizeInteractionMode(string(mode))
 	if err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrActFailed, err)
+		return nil, e.failedBeforeDispatch(fmt.Errorf("%w: %v", ErrActFailed, err))
 	}
 	elementMode := normalizedMode == InteractionModeElement
 	if elementMode && e.interactionPolicy.StrictHuman() {
-		return nil, fmt.Errorf("%w: mode element is unavailable in strict-human scenario", ErrActFailed)
+		return nil, e.failedBeforeDispatch(fmt.Errorf("%w: mode element is unavailable in strict-human scenario", ErrActFailed))
 	}
 	seeToClick := e.seeToClick && !elementMode
 	strictHuman := e.interactionPolicy.StrictHuman()
 
 	parsed, err := ParseAction(action)
 	if err != nil {
-		return nil, err
+		return nil, e.failedBeforeDispatch(err)
 	}
 
 	// page-level 操作不需要选择器
@@ -1134,7 +1161,7 @@ func (e *actionEngine) executeWithInteractionMode(ctx context.Context, action st
 	if !noSelectorOps[parsed.Op] && parsed.Ref != "" {
 		ref, err := e.resolveSemanticSelectorForMode(parsed.Ref, sessionMode, elementMode)
 		if err != nil {
-			return nil, err
+			return nil, e.failedBeforeDispatch(err)
 		}
 		resolvedRef = ref
 	} else {
@@ -1144,7 +1171,7 @@ func (e *actionEngine) executeWithInteractionMode(ctx context.Context, action st
 	if parsed.Op == "scroll" && parsed.ScrollTarget != "" {
 		resolvedScrollTarget, err = e.resolveSemanticSelectorForMode(parsed.ScrollTarget, sessionMode, elementMode)
 		if err != nil {
-			return nil, err
+			return nil, e.failedBeforeDispatch(err)
 		}
 	}
 
@@ -1423,13 +1450,7 @@ func (e *actionEngine) resolveSemanticSelectorForMode(selector string, sessionMo
 	case SelectorRoleName, SelectorRoleNameExact:
 		allMeta := e.snapEngine.LookupAllByRoleName(sel.Role, sel.Name, sel.NameOp)
 		if len(allMeta) == 0 {
-			byRole := e.snapEngine.AllByRole(sel.Role)
-			if len(byRole) == 0 {
-				return "", fmt.Errorf("%w: 元素 %s:'%s' 未找到。当前页面无 %s 元素",
-					ErrRefNotFound, sel.Role, sel.Name, sel.Role)
-			}
-			return "", fmt.Errorf("%w: 元素 %s:'%s' 未找到。可用的 %s: %v",
-				ErrRefNotFound, sel.Role, sel.Name, sel.Role, byRole)
+			return "", e.locatorMissError(sel.Role, sel.Name)
 		}
 		if len(allMeta) > 1 {
 			return "", buildAmbiguousError(sel.Raw, allMeta)
@@ -1439,7 +1460,7 @@ func (e *actionEngine) resolveSemanticSelectorForMode(selector string, sessionMo
 	case SelectorRole:
 		meta, ok := e.snapEngine.LookupByRoleName(sel.Role, "")
 		if !ok {
-			return "", fmt.Errorf("%w: role=%s 的元素未找到", ErrRefNotFound, sel.Role)
+			return "", e.locatorMissError(sel.Role, "")
 		}
 		return meta.Ref, nil
 
@@ -1452,6 +1473,40 @@ func (e *actionEngine) resolveSemanticSelectorForMode(selector string, sessionMo
 		}
 		return sel.Raw, nil
 	}
+}
+
+// locatorMissError 把"没匹配上"拆成三种如实说法：没有 observation / observation
+// 里没这个 role / role 在但 name 不匹配。engine 只知道 observation，绝不代页面
+// 断言"页面上没有 X" [BUG-FALSE-NEGATIVE-ROLE-CLAIM]。
+func (e *actionEngine) locatorMissError(role, name string) error {
+	setLabel := "observation ref 集"
+	if e.seeToClick {
+		setLabel = "可见集"
+	}
+	size := e.snapEngine.observationSize()
+	if size == 0 {
+		return errNoObservation(role, name, setLabel)
+	}
+	candidates := e.snapEngine.observationCandidatesByRole(role)
+	if len(candidates) == 0 {
+		return errRoleAbsentFromObservation(role, name, setLabel, size, e.snapEngine.observationRoleHistogram())
+	}
+	return errNameNoMatch(role, name, setLabel, candidates)
+}
+
+// elementModeLocatorMissError 是 mode:element 通道的对偶（候选来自全文档索引，
+// 无 @ref，因此不给句柄，只给 role/name）。
+func (e *actionEngine) elementModeLocatorMissError(role, name string) error {
+	const setLabel = "element-mode 全文档索引"
+	if len(e.snapEngine.elementCandidates) == 0 {
+		return errNoObservation(role, name, setLabel)
+	}
+	candidates := e.snapEngine.elementCandidatesByRoleForDiagnostics(role)
+	if len(candidates) == 0 {
+		return errRoleAbsentFromObservation(role, name, setLabel,
+			len(e.snapEngine.elementCandidates), e.snapEngine.elementCandidateHistogram())
+	}
+	return errNameNoMatch(role, name, setLabel, candidates)
 }
 
 const internalBackendNodePrefix = "__dw_backend_node__:"
@@ -1480,13 +1535,7 @@ func (e *actionEngine) resolveElementModeSelector(sel *ParsedSelector) (string, 
 	case SelectorRoleName, SelectorRoleNameExact:
 		matches := e.snapEngine.lookupElementCandidatesByRoleName(sel.Role, sel.Name, sel.NameOp)
 		if len(matches) == 0 {
-			byRole := e.snapEngine.allElementCandidateNamesByRole(sel.Role)
-			if len(byRole) == 0 {
-				return "", fmt.Errorf("%w: 元素 %s:'%s' 未找到。当前页面无 %s 元素",
-					ErrRefNotFound, sel.Role, sel.Name, sel.Role)
-			}
-			return "", fmt.Errorf("%w: 元素 %s:'%s' 未找到。可用的 %s: %v",
-				ErrRefNotFound, sel.Role, sel.Name, sel.Role, byRole)
+			return "", e.elementModeLocatorMissError(sel.Role, sel.Name)
 		}
 		if len(matches) > 1 {
 			return "", buildAmbiguousCandidateError(sel.Raw, matches)
@@ -1605,7 +1654,9 @@ func (e *actionEngine) resolveCanonicalSelector(sel *ParsedSelector, sessionMode
 	}
 
 	if len(allMeta) == 0 {
-		return "", fmt.Errorf("%w: canonical selector %q matched no elements", ErrRefNotFound, sel.Raw)
+		// 同 SelectorRoleName 分支: 三分法如实报, 不糊成 "matched no elements"
+		// [BUG-FALSE-NEGATIVE-ROLE-CLAIM]。
+		return "", fmt.Errorf("canonical selector %q: %w", sel.Raw, e.locatorMissError(sel.Role, nameVal))
 	}
 
 	// Apply nth filter
@@ -1784,8 +1835,11 @@ func (e *actionEngine) executeElementModeClick(ctx context.Context, ref string) 
 // chromedp.Click, so no implicit scrollIntoView/wait can click content that was
 // absent from the witness viewport.
 func (e *actionEngine) executeSeeToClick(ctx context.Context, ref string) error {
+	// Everything up to dispatchHumanMouseClick below is validation: no input has
+	// been sent yet, so every failure here is marked pre-dispatch and leaves the
+	// caller's observation intact.
 	if isCSSSelector(ref) {
-		return fmt.Errorf("%w: selector %q was not granted by the most recent visible observation", ErrRefNotFound, ref)
+		return e.failedBeforeDispatch(fmt.Errorf("%w: selector %q was not granted by the most recent visible observation", ErrRefNotFound, ref))
 	}
 	var (
 		meta  *ElementRef
@@ -1796,34 +1850,34 @@ func (e *actionEngine) executeSeeToClick(ctx context.Context, ref string) error 
 	var ok bool
 	meta, ok = e.snapEngine.LookupRefMeta(ref)
 	if !ok {
-		return fmt.Errorf("%w: click ref %q is not from the most recent observe — run observe again", ErrRefNotFound, ref)
+		return e.failedBeforeDispatch(fmt.Errorf("%w: click ref %q is not from the most recent observe — run observe again", ErrRefNotFound, ref))
 	}
 	// Reject before touching the DOM when session persistence says this came
 	// from open/post-act rather than an explicit observe.
 	if !meta.Observed || !meta.VisibleInViewport {
-		return fmt.Errorf("%w: click target %q was not in the visible set from the most recent observe — scroll, then run observe again", ErrRefNotFound, ref)
+		return e.failedBeforeDispatch(fmt.Errorf("%w: click target %q was not in the visible set from the most recent observe — scroll, then run observe again", ErrRefNotFound, ref))
 	}
 	probe, err = probeMetaVisibilityNow(ctx, meta)
 	if err != nil {
-		return fmt.Errorf("%w: resolve click target %q without scrolling: %v — run observe again", ErrRefNotFound, ref, err)
+		return e.failedBeforeDispatch(fmt.Errorf("%w: resolve click target %q without scrolling: %v — run observe again", ErrRefNotFound, ref, err))
 	}
 	if err := validateSeeToClickProbe("click", ref, meta, requireObserved, probe); err != nil {
 		// The legacy visibility probe uses the bounding-box center. ContentQuads
 		// below owns the authoritative aim/hit decision, so defer only the
 		// center-occlusion branch and retain all other visibility failures.
 		if probe.Box.Width <= 0 || probe.Box.Height <= 0 || !probe.StyleVisible || probe.AreaRatio <= visibleAreaThreshold {
-			return err
+			return e.failedBeforeDispatch(err)
 		}
 	}
 	geometry := resolveHumanTargetGeometry(ctx, meta, probe.Box)
 	coverage, err := probeMetaHitCoverage(ctx, meta, geometry)
 	if err != nil {
-		return fmt.Errorf("%w: sample click target %q: %v", ErrActFailed, ref, err)
+		return e.failedBeforeDispatch(fmt.Errorf("%w: sample click target %q: %v", ErrActFailed, ref, err))
 	}
 	probe.HitTarget = coverage.centerHit()
 	probe.Occluder = coverage.centerOccluder()
 	if err := validateSeeToClickProbe("click", ref, meta, requireObserved, probe); err != nil {
-		return err
+		return e.failedBeforeDispatch(err)
 	}
 	e.updateActionFidelity(func(report *ActionFidelityReport) {
 		report.AimSource = geometry.AimSource
@@ -1851,6 +1905,50 @@ func (e *actionEngine) executeSeeToClick(ctx context.Context, ref string) error 
 	return nil
 }
 
+// auditOccludedInteractables audits the elements observe dropped for occlusion.
+// This is the blind spot --hit-audit used to have: its scope was exactly the
+// visible set, so the elements most worth warning about — on screen, covered,
+// unclickable — could never be sampled [BUG-OCCLUDED-SILENTLY-DROPPED].
+func (e *actionEngine) auditOccludedInteractables(ctx context.Context) ([]HitAuditFinding, error) {
+	findings := make([]HitAuditFinding, 0, len(e.snapEngine.occluded))
+	for i := range e.snapEngine.occluded {
+		entry := e.snapEngine.occluded[i]
+		element := entry.Element
+		geometry := resolveHumanTargetGeometry(ctx, &element, element.BBox)
+		coverage := hitCoverageProbe{}
+		occludedBy := entry.Occluder
+		if probed, err := probeMetaHitCoverage(ctx, &element, geometry); err == nil {
+			coverage = probed
+			if named := probed.centerOccluder(); named != "" {
+				occludedBy = named
+			}
+		}
+		hitCoverage := "0/5"
+		if len(coverage.Hits) > 0 {
+			hitCoverage = coverage.String()
+		}
+		name := element.NameFull
+		if name == "" {
+			name = element.Name
+		}
+		box := element.BBox
+		findings = append(findings, HitAuditFinding{
+			Role:        element.Role,
+			Name:        name,
+			HitCoverage: hitCoverage,
+			AimSource:   geometry.AimSource,
+			Scope:       "occluded",
+			OccludedBy:  occludedBy,
+			BBox:        &box,
+		})
+	}
+	return findings, nil
+}
+
+func (e *actionEngine) occludedInteractableCount() int {
+	return len(e.snapEngine.occluded)
+}
+
 func (e *actionEngine) auditHitCoverage(ctx context.Context, refs []ElementRef) ([]HitAuditFinding, error) {
 	findings := make([]HitAuditFinding, 0)
 	for i := range refs {
@@ -1874,6 +1972,8 @@ func (e *actionEngine) auditHitCoverage(ctx context.Context, refs []ElementRef) 
 				Name:        name,
 				HitCoverage: coverage.String(),
 				AimSource:   geometry.AimSource,
+				Scope:       "visible",
+				OccludedBy:  coverage.centerOccluder(),
 			})
 		}
 	}
@@ -2233,6 +2333,7 @@ func (e *actionEngine) executeClickAt(ctx context.Context, ref string, relX, rel
 	if err := e.guardPoint(ctx, x, y); err != nil {
 		return err
 	}
+	e.recordCoordinateHit(ctx, x, y)
 	return dispatchMouseClick(ctx, x, y, input.Left, 1)
 }
 
@@ -2271,11 +2372,15 @@ func (e *actionEngine) executeClickXY(ctx context.Context, x, y float64, seeToCl
 		return err
 	}
 	if x < 0 || y < 0 || x >= w || y >= h {
-		return fmt.Errorf("%w: click point (%.1f,%.1f) is outside the %.1fx%.1f CSS-pixel viewport", ErrActFailed, x, y, w, h)
+		return e.failedBeforeDispatch(fmt.Errorf("%w: click point (%.1f,%.1f) is outside the %.1fx%.1f CSS-pixel viewport", ErrActFailed, x, y, w, h))
 	}
 	if err := e.guardPoint(ctx, x, y); err != nil {
 		return err
 	}
+	// 坐标点击绕过 a11y 模型 —— 但不绕过证据: 派发前问页面"这个像素归谁",
+	// 结果如实写进 hit。不拦截(人类确实可能点在遮罩上), 由 agent 自行断言
+	// [BUG-COORD-SILENT-FALSE-SUCCESS]。
+	e.recordCoordinateHit(ctx, x, y)
 	if seeToClick {
 		return e.dispatchHumanMouseClick(ctx, x, y)
 	}
@@ -2296,6 +2401,7 @@ func (e *actionEngine) executeTapXY(ctx context.Context, fracX, fracY float64) e
 	if err := e.guardPoint(ctx, x, y); err != nil {
 		return err
 	}
+	e.recordCoordinateHit(ctx, x, y)
 	return dispatchMouseClick(ctx, x, y, input.Left, 1)
 }
 
@@ -2318,6 +2424,7 @@ func (e *actionEngine) executeDoubleClickAt(ctx context.Context, ref string, rel
 	if err := e.guardPoint(ctx, x, y); err != nil {
 		return err
 	}
+	e.recordCoordinateHit(ctx, x, y)
 	return dispatchMouseClick(ctx, x, y, input.Left, 2)
 }
 
@@ -2330,6 +2437,7 @@ func (e *actionEngine) executeRightClickAt(ctx context.Context, ref string, relX
 	if err := e.guardPoint(ctx, x, y); err != nil {
 		return err
 	}
+	e.recordCoordinateHit(ctx, x, y)
 	return dispatchMouseClick(ctx, x, y, input.Right, 1)
 }
 
@@ -2399,6 +2507,7 @@ func (e *actionEngine) executeTapAt(ctx context.Context, ref string, relX, relY 
 	if err := e.guardPoint(ctx, x, y); err != nil {
 		return err
 	}
+	e.recordCoordinateHit(ctx, x, y)
 	return dispatchTouchTapAt(ctx, x, y)
 }
 
@@ -2412,6 +2521,7 @@ func (e *actionEngine) executeHoverAt(ctx context.Context, ref string, relX, rel
 	if err != nil {
 		return err
 	}
+	e.recordCoordinateHit(ctx, x, y)
 	return dispatchMouseMove(ctx, x, y)
 }
 
@@ -2425,6 +2535,7 @@ func (e *actionEngine) executeWheelAt(ctx context.Context, ref string, relX, rel
 	if steps <= 0 {
 		steps = 1
 	}
+	e.recordCoordinateHit(ctx, x, y)
 	if err := dispatchMouseWheelSteps(ctx, x, y, deltaX, deltaY, steps); err != nil {
 		return fmt.Errorf("%w: wheelat: %v", ErrActFailed, err)
 	}

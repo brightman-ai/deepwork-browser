@@ -33,7 +33,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-const version = "0.11.0"
+const version = "0.11.2"
 
 // ActionEngine returns its own explicit error at 15s. The CLI watchdog is a
 // slightly wider process-level fence covering every BrowserCore implementation.
@@ -1262,6 +1262,10 @@ func printUsage() {
 	p("    wheelat 1200,800 down 6        视口 CSS px 定点滚 6 格 (无需 selector)")
 	p("    wheelat css=#chart 50% 50% -240     元素内滚轮缩放 (dy<0 放大)")
 	p("    tapat/swipeat <loc> <coords>   移动端真实触控点击/滑动")
+	p("    ↳ 坐标动作绕过 a11y 模型 (canvas 无子 DOM 时是唯一通路), 但不绕过证据:")
+	p("      每次坐标动作输出 hit={role,name,selector,tag} = 派发点上浏览器命中测试的实际归属。")
+	p("      它只报告不拦截 —— 人类同样点得到遮罩; 但 success:true 只证明输入已派发,")
+	p("      要证明\"点中了想点的东西\", 请核对 hit 或追加独立断言(URL/文本/eval)。")
 	p("")
 	p("─── 高级 / 运维 (非核心循环) ───────────────────────────────")
 	p("  tabs list|new|select|close --id X    同会话多标签")
@@ -1333,6 +1337,15 @@ func printCommandUsage(command string) {
 		fmt.Println("  hoverat x,y | wheelat x,y down|up [N]              # 视口 CSS px, 无需 selector")
 		fmt.Println("  元素内坐标动作(canvas): clickat/dblclickat/rclickat/hoverat/wheelat/dragat/tapat/swipeat")
 		fmt.Println("  @rN 取自上次 observe; 详细定位器/动作见 dw-browser --help")
+		fmt.Println()
+		fmt.Println("坐标动作的命中回报 (canvas/无 a11y 控件场景必读):")
+		fmt.Println("  click x,y / tapxy / hoverat / wheelat 等坐标动作在派发前做命中探测,")
+		fmt.Println("  输出 hit={role,name,selector,tag} —— 那一像素实际归谁。不拦截(人类同样点得到遮罩),")
+		fmt.Println("  如实回报, 由你断言。success:true ≠ 命中了目标; 请核对 hit, 或追加 URL/文本/eval 断言。")
+		fmt.Println()
+		fmt.Println("失败与 @rN 的关系:")
+		fmt.Println("  校验期失败(解析错/ref 不存在/定位器无匹配/守卫拒绝) 不派发任何输入,")
+		fmt.Println("  既有 @rN 保持有效, 无需重新 observe; 只有派发后失败才会作废 refs。")
 	case "check", "journey", "diff":
 		printTestingHelp()
 	case "tabs", "tabs list", "tabs new", "tabs select", "tabs close":
@@ -1507,6 +1520,36 @@ func actionFidelityReport(core browser.BrowserCore) browser.ActionFidelityReport
 	return browser.ActionFidelityReport{}
 }
 
+// actionFailedBeforeDispatch reports whether the engine proved the failed
+// action died in its validation phase, i.e. no input ever reached the page.
+// Engines that cannot prove it are treated as "may have dispatched" — the safe
+// side, since the cost of being wrong there is only one extra observe.
+func actionFailedBeforeDispatch(core browser.BrowserCore) bool {
+	capable, ok := core.(browser.ActionFidelityCapable)
+	if !ok {
+		return false
+	}
+	return !capable.LastActionFidelity().Dispatched
+}
+
+// applyFailedActionOutcome records what a failed act did to ref authority.
+//
+// 校验期失败(解析错 / ref 不存在 / 定位器无匹配 / 守卫拒绝) 没有派发任何输入,
+// 页面不可能变 —— 上一份 observation 的 @rN 依然成立, 一次打错的定位器不该
+// 报废整份可见集 [BUG-ACT-FAILURE-REVOKES-OBSERVATION]。
+// 派发之后失败则相反: 页面可能已被改动, 句柄必须作废。
+func applyFailedActionOutcome(info *browser.SessionInfo, failedBeforeDispatch bool) {
+	if info == nil {
+		return
+	}
+	if failedBeforeDispatch {
+		info.LastActionOutcome = browser.SessionActionOutcomeReconciled
+		return
+	}
+	info.Refs = nil
+	info.LastActionOutcome = browser.SessionActionOutcomeUnknown
+}
+
 func injectActionFidelity(output map[string]interface{}, report browser.ActionFidelityReport) {
 	if output == nil {
 		return
@@ -1526,6 +1569,13 @@ func injectActionFidelity(output map[string]interface{}, report browser.ActionFi
 	}
 	if report.HitCoverage != "" {
 		output["hit_coverage"] = report.HitCoverage
+	}
+	// 坐标动作的命中回报: 谁真的收到了这次输入 [BUG-COORD-SILENT-FALSE-SUCCESS]。
+	// 只报告不拦截 —— 人类同样可能点在遮罩上; 但 agent 必须能据此断言。
+	if report.Hit != nil {
+		output["hit"] = report.Hit
+		output["hit_note"] = "坐标动作命中回报: 上面是派发点上浏览器命中测试解析出的元素。" +
+			"success:true 只证明输入已派发, 不证明命中了你想点的东西 —— 请核对 hit 或追加独立断言"
 	}
 }
 
@@ -2497,10 +2547,21 @@ func runActSession(flags commonFlags, action string, awaitStable bool, snapAfter
 	if err != nil {
 		// [SC-19, TC-C5-12] act --snap: action 失败 → 不执行 snap，直接返回错误
 		fmt.Fprintf(os.Stderr, "dw-browser: act failed: %v\n", err)
-		sessionInfo.Refs = nil
-		sessionInfo.LastActionOutcome = "unknown"
+		// 失败分两种，后果完全不同 [BUG-ACT-FAILURE-REVOKES-OBSERVATION]:
+		//   校验期失败(解析错 / ref 不存在 / 定位器无匹配 / 守卫拒绝) —— 没有任何
+		//     输入到达页面, 页面不可能变, 上一份 observation 的 @rN 依然成立;
+		//     一次打错的定位器不该报废整份可见集。
+		//   派发后失败 —— 页面可能已被改动, 句柄不可再信, 必须重新 observe。
+		preDispatch := actionFailedBeforeDispatch(impl)
+		keptRefs := preDispatch && len(sessionInfo.Refs) > 0
+		applyFailedActionOutcome(sessionInfo, preDispatch)
+		if keptRefs {
+			fmt.Fprintf(os.Stderr,
+				"dw-browser: (校验期失败, 未派发任何输入; 既有 %d 个 @rN 仍然有效, 无需重新 observe)\n",
+				len(sessionInfo.Refs))
+		}
 		if saveErr := browser.SaveSession(sessionInfo); saveErr != nil {
-			fmt.Fprintf(os.Stderr, "dw-browser: persist unknown action outcome: %v\n", saveErr)
+			fmt.Fprintf(os.Stderr, "dw-browser: persist action outcome: %v\n", saveErr)
 		}
 		exitSessionCore(impl, exitFail)
 	}

@@ -46,6 +46,32 @@ func (impl *browserCoreImpl) AuditHitCoverage(ctx context.Context, refs []Elemen
 	return impl.actEngine.auditHitCoverage(runCtx, refs)
 }
 
+// OccludedInteractableCount reports how many interactables the most recent
+// observation dropped because something covered their centre. It is a plain
+// count, not a capability: these elements never receive a ref.
+func (impl *browserCoreImpl) OccludedInteractableCount() int {
+	impl.mu.RLock()
+	defer impl.mu.RUnlock()
+	if impl.actEngine == nil {
+		return 0
+	}
+	return impl.actEngine.occludedInteractableCount()
+}
+
+// AuditOccludedInteractables re-probes those dropped elements and names who
+// covers each one — the "user can see it but cannot click it" shortlist.
+func (impl *browserCoreImpl) AuditOccludedInteractables(ctx context.Context) ([]HitAuditFinding, error) {
+	impl.mu.RLock()
+	defer impl.mu.RUnlock()
+	if impl.actEngine == nil {
+		return nil, nil
+	}
+	targetCtx := impl.currentCtx()
+	runCtx, cancel := deriveTargetContext(ctx, targetCtx)
+	defer cancel()
+	return impl.actEngine.auditOccludedInteractables(runCtx)
+}
+
 // SetObserveAll toggles the observe-only census. It never changes the visible
 // ref selection or action authority; it only asks the next Snapshot to include
 // a separate, ref-less role/name inventory.

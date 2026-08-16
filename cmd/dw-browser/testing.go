@@ -396,9 +396,25 @@ const visibleErrorScanJS = `(() => {
   return out.slice(0, 20);
 })()`
 
-func sessionRefsForObservation(snap *browser.Snapshot, censusOnly bool) []browser.SessionRef {
-	if snap == nil || censusOnly {
+// sessionRefsForObservation decides what ref authority an observe leaves behind.
+//
+// A normal observe mints the visible set it just showed. `--all` is a read-only
+// census: it shows no @rN, so it must mint none — but it must not REVOKE the
+// handles a previous observe granted either. Wiping them turned a debug census
+// into a silent capability reset [BUG-CENSUS-REVOKES-REFS]. The one thing that
+// does revoke them is a document boundary: refs from another page are dead.
+func sessionRefsForObservation(info *browser.SessionInfo, snap *browser.Snapshot, censusOnly bool) []browser.SessionRef {
+	if snap == nil {
 		return nil
+	}
+	if censusOnly {
+		if info == nil {
+			return nil
+		}
+		if info.PageURL != "" && snap.URL != "" && snap.URL != info.PageURL {
+			return nil
+		}
+		return info.Refs
 	}
 	return browser.SessionRefsFromSnapshot(snap, true)
 }
@@ -452,17 +468,48 @@ func formatRoleCounts(counts map[string]int) string {
 	return strings.Join(parts, ", ")
 }
 
-func stripObserveHitAuditFlag(args []string) ([]string, bool) {
+const (
+	hitAuditScopeVisible = "visible"
+	hitAuditScopeAll     = "all"
+)
+
+// stripObserveHitAuditFlag pulls --hit-audit and its --scope out of the arg
+// list. scope=all widens the audit to the elements observe dropped for
+// occlusion — the ones the visible-set-only audit could never see.
+func stripObserveHitAuditFlag(args []string) ([]string, bool, string, error) {
 	clean := make([]string, 0, len(args))
 	want := false
-	for _, arg := range args {
-		if arg == "--hit-audit" {
-			want = true
-			continue
+	scope := hitAuditScopeVisible
+	setScope := func(value string) error {
+		switch value {
+		case hitAuditScopeVisible, "visible_set":
+			scope = hitAuditScopeVisible
+		case hitAuditScopeAll:
+			scope = hitAuditScopeAll
+		default:
+			return fmt.Errorf("--scope 只接受 visible|all, 收到 %q", value)
 		}
-		clean = append(clean, arg)
+		return nil
 	}
-	return clean, want
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		switch {
+		case arg == "--hit-audit":
+			want = true
+		case arg == "--scope" && i+1 < len(args):
+			if err := setScope(args[i+1]); err != nil {
+				return nil, false, "", err
+			}
+			i++
+		case strings.HasPrefix(arg, "--scope="):
+			if err := setScope(arg[len("--scope="):]); err != nil {
+				return nil, false, "", err
+			}
+		default:
+			clean = append(clean, arg)
+		}
+	}
+	return clean, want, scope, nil
 }
 
 // runObserve 采集当前 session 的多通道 Observation 快照。
@@ -483,7 +530,11 @@ func runObserve(args []string) {
 		printObserveHelp()
 		os.Exit(exitOK)
 	}
-	args, wantHitAudit := stripObserveHitAuditFlag(args)
+	args, wantHitAudit, hitAuditScope, scopeErr := stripObserveHitAuditFlag(args)
+	if scopeErr != nil {
+		fmt.Fprintf(os.Stderr, "dw-browser observe: %v\n", scopeErr)
+		os.Exit(exitRunErr)
+	}
 	var jsonOut, outFile string
 	wantHealth, wantTree, wantAnnotate, wantAll := false, false, false, false
 	topN, budget := defaultBriefTopN, defaultBriefBudget
@@ -561,7 +612,11 @@ func runObserve(args []string) {
 	impl.RestoreRefsFromSession(sessionInfo.Refs)
 
 	// — 感知 a11y (始终) —
-	sessionInfo.SnapEpoch++
+	// census 是只读普查: 不铸 ref、不撤 ref, 也不推进 epoch(推进会连带作废
+	// human-focus 证明) [BUG-CENSUS-REVOKES-REFS]。
+	if !wantAll {
+		sessionInfo.SnapEpoch++
+	}
 	snap, err := impl.SnapWithSessionMode(ctx, sessionInfo.SnapEpoch)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "dw-browser observe: snap failed: %v\n", err)
@@ -577,7 +632,7 @@ func runObserve(args []string) {
 	// URL + refs + reconciled outcome are one atomic session-file replacement;
 	// never print an observation whose authority failed to persist.
 	if snap != nil {
-		if err := browser.SaveObservedSession(sessionInfo, snap, sessionRefsForObservation(snap, wantAll)); err != nil {
+		if err := browser.SaveObservedSession(sessionInfo, snap, sessionRefsForObservation(sessionInfo, snap, wantAll)); err != nil {
 			fmt.Fprintf(os.Stderr, "dw-browser observe: save refs: %v\n", err)
 			os.Exit(exitRunErr)
 		}
@@ -586,6 +641,15 @@ func runObserve(args []string) {
 		fmt.Fprintln(os.Stderr, "dw-browser observe: empty snapshot")
 		os.Exit(exitRunErr)
 	}
+	// occluded 与 offscreen 是两种不同的"看不到句柄": offscreen 滚动可达,
+	// occluded 是在屏却被别的元素占住中心 —— 后者正是 UX 缺陷候选,
+	// 过去被静默丢弃, 现在始终计数 [BUG-OCCLUDED-SILENTLY-DROPPED]。
+	occludedCount := 0
+	occlusionCapable, hasOcclusionCensus := impl.(browser.OcclusionCensusCapable)
+	if hasOcclusionCensus {
+		occludedCount = occlusionCapable.OccludedInteractableCount()
+	}
+
 	var hitAudit []browser.HitAuditFinding
 	if wantHitAudit {
 		capable, ok := impl.(browser.HitAuditCapable)
@@ -597,6 +661,18 @@ func runObserve(args []string) {
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "dw-browser observe: hit audit failed: %v\n", err)
 			os.Exit(exitRunErr)
+		}
+		if hitAuditScope == hitAuditScopeAll {
+			if !hasOcclusionCensus {
+				fmt.Fprintln(os.Stderr, "dw-browser observe: --hit-audit --scope all is unavailable for this browser engine")
+				os.Exit(exitRunErr)
+			}
+			occludedFindings, auditErr := occlusionCapable.AuditOccludedInteractables(ctx)
+			if auditErr != nil {
+				fmt.Fprintf(os.Stderr, "dw-browser observe: occluded hit audit failed: %v\n", auditErr)
+				os.Exit(exitRunErr)
+			}
+			hitAudit = append(hitAudit, occludedFindings...)
 		}
 	}
 
@@ -625,10 +701,24 @@ func runObserve(args []string) {
 		output["hit_audit"] = hitAudit
 		// 采样口径 = 可见集全量(与 listing.visible 同一个数),不是 shown。
 		// 二者不同时曾被读成"审计比可见集还多",故把口径写进输出本身。
-		output["hit_audit_sampled"] = len(snap.Refs)
-		output["hit_audit_scope"] = "visible_set"
+		if hitAuditScope == hitAuditScopeAll {
+			output["hit_audit_sampled"] = len(snap.Refs) + occludedCount
+			output["hit_audit_scope"] = "visible_set+occluded"
+			output["hit_audit_note"] = "scope=all: 可见集全量 + observe 时因中心被遮挡而落选的可交互元素;" +
+				" 后者 scope=\"occluded\"、无 @ref(点不到的东西不发句柄), occluded_by 是遮挡者 —— " +
+				"这批正是\"用户看得见却点不到\"的 UX 缺陷候选"
+		} else {
+			output["hit_audit_sampled"] = len(snap.Refs)
+			output["hit_audit_scope"] = "visible_set"
+		}
 	}
 	if snap.SeeToClick {
+		output["occluded"] = occludedCount
+		if occludedCount > 0 {
+			output["occluded_hint"] = fmt.Sprintf(
+				"%d 个可交互元素在屏内却被别的元素占住中心, 因此不在可见集(既非屏外也非未渲染); "+
+					"`observe --hit-audit --scope all` 可列出它们与各自的遮挡者", occludedCount)
+		}
 		output["offscreen"] = snap.OffscreenInteractableCount
 		output["viewport"] = map[string]interface{}{
 			"width":             snap.Viewport.Width,
@@ -765,9 +855,12 @@ func printObserveHelp() {
 	fmt.Fprintln(os.Stderr, "  --annotate      配 --out: 证据标注截图 (chrome 仿真遮挡区红描边; 默认截图无标注)")
 	fmt.Fprintln(os.Stderr, "  --health        附健康通道 (诊断/grader lens)")
 	fmt.Fprintln(os.Stderr, "  --tree          附全 a11y 树文本")
-	fmt.Fprintln(os.Stderr, "  --all           调试: 全文档 census，仅 role/name；无 @rN、不持久化 refs、不可 act")
+	fmt.Fprintln(os.Stderr, "  --all           调试: 全文档 census，仅 role/name；无 @rN、不铸新 refs、不可 act")
+	fmt.Fprintln(os.Stderr, "                  (只读普查: 既有 @rN 继续有效, 不因 --all 失效)")
 	fmt.Fprintln(os.Stderr, "  --hit-audit     对 **可见集全量** 做 5 点命中普查 (hit_audit_scope=visible_set,")
 	fmt.Fprintln(os.Stderr, "                  hit_audit_sampled=visible ≠ shown)，仅输出 hit_coverage < 5/5 的警示")
+	fmt.Fprintln(os.Stderr, "  --scope all     配 --hit-audit: 把审计扩到 observe 时因中心被遮挡而落选的元素,")
+	fmt.Fprintln(os.Stderr, "                  逐条给 occluded_by 遮挡者 (它们无 @ref) —— \"看得见却点不到\"的缺陷候选")
 	fmt.Fprintln(os.Stderr, "  --top <N>       elements 上限 (默认 20)")
 	fmt.Fprintln(os.Stderr, "  --budget <B>    elements 输出字节硬上限 (默认 4096)")
 	fmt.Fprintln(os.Stderr, "  --json <path>   整个 JSON 落盘 (默认 stdout)")
@@ -776,6 +869,8 @@ func printObserveHelp() {
 	fmt.Fprintln(os.Stderr, "  shown   本次真的打印了几个 (受 --top/--budget 约束; 未打印 ≠ 没句柄)")
 	fmt.Fprintln(os.Stderr, "  visible 当前截图可见集全量 = 已铸 @rN 数 = hit_audit 采样域")
 	fmt.Fprintln(os.Stderr, "  total   全文档可交互数; total - visible = offscreen (滚动可达)")
+	fmt.Fprintln(os.Stderr, "  occluded 在屏但中心被别的元素占住 → 落选可见集 (offscreen 的子集口径外,")
+	fmt.Fprintln(os.Stderr, "          既非屏外也非未渲染); --hit-audit --scope all 逐条点名遮挡者")
 	fmt.Fprintln(os.Stderr, "  截断时 omitted_by_role 逐 role 列出被省略数; 打印集按 role 轮转选,")
 	fmt.Fprintln(os.Stderr, "  单个大文案元素无法把别的 role(原生 select/checkbox) 整类挤出清单。")
 	fmt.Fprintln(os.Stderr, "")

@@ -89,13 +89,13 @@ func TestActionFidelityOutputAndSessionFocusReconcile(t *testing.T) {
 }
 
 func TestObserveHitAuditFlagIsAdditiveAndRemovedBeforeCommonParsing(t *testing.T) {
-	clean, want := stripObserveHitAuditFlag([]string{"--id", "s1", "--hit-audit", "--health", "--hit-audit"})
-	if !want || strings.Join(clean, " ") != "--id s1 --health" {
-		t.Fatalf("stripObserveHitAuditFlag=(%q,%t)", clean, want)
+	clean, want, scope, err := stripObserveHitAuditFlag([]string{"--id", "s1", "--hit-audit", "--health", "--hit-audit"})
+	if err != nil || !want || scope != hitAuditScopeVisible || strings.Join(clean, " ") != "--id s1 --health" {
+		t.Fatalf("stripObserveHitAuditFlag=(%q,%t,%q,%v)", clean, want, scope, err)
 	}
-	clean, want = stripObserveHitAuditFlag([]string{"--id", "s1"})
-	if want || strings.Join(clean, " ") != "--id s1" {
-		t.Fatalf("flag unexpectedly enabled=(%q,%t)", clean, want)
+	clean, want, scope, err = stripObserveHitAuditFlag([]string{"--id", "s1"})
+	if err != nil || want || scope != hitAuditScopeVisible || strings.Join(clean, " ") != "--id s1" {
+		t.Fatalf("flag unexpectedly enabled=(%q,%t,%q,%v)", clean, want, scope, err)
 	}
 }
 
@@ -229,9 +229,10 @@ func TestScenarioUsesSeeToClickForEveryAgentScenario(t *testing.T) {
 	}
 }
 
-func TestObserveAllListingIsRefLessAndClearsSessionCapabilities(t *testing.T) {
+func TestObserveAllListingIsRefLessAndKeepsSessionCapabilities(t *testing.T) {
 	snap := &browser.Snapshot{
 		SeeToClick:                true,
+		URL:                       "http://127.0.0.1/page",
 		DocumentInteractableCount: 2,
 		Refs: []browser.ElementRef{{
 			Ref:               "@r1",
@@ -266,8 +267,20 @@ func TestObserveAllListingIsRefLessAndClearsSessionCapabilities(t *testing.T) {
 			t.Fatalf("--all JSON leaked %q: %s", forbidden, encoded)
 		}
 	}
-	if got := sessionRefsForObservation(snap, true); len(got) != 0 {
-		t.Fatalf("--all persisted refs: %+v", got)
+	// [BUG-CENSUS-REVOKES-REFS] census 是只读普查: 它不铸新 @rN, 但也绝不
+	// 撤销上一次 observe 已经发出的句柄。
+	info := &browser.SessionInfo{
+		PageURL: "http://127.0.0.1/page",
+		Refs:    []browser.SessionRef{{Ref: "@r1", BackendNodeID: 11, Visible: true, Observed: true}},
+	}
+	kept := sessionRefsForObservation(info, snap, true)
+	if len(kept) != 1 || kept[0].Ref != "@r1" || !kept[0].Observed {
+		t.Fatalf("--all revoked existing refs: %+v", kept)
+	}
+	// 跨文档边界仍必须撤销: 上一页的句柄在新页上是死的。
+	navigated := sessionRefsForObservation(info, &browser.Snapshot{SeeToClick: true, URL: "http://127.0.0.1/other"}, true)
+	if len(navigated) != 0 {
+		t.Fatalf("--all kept refs across a document boundary: %+v", navigated)
 	}
 }
 
@@ -280,7 +293,7 @@ func TestSessionRefsForStrictObservationDropsInvisibleEntries(t *testing.T) {
 			{Ref: "@r3", BackendNodeID: 3, VisibilityKnown: false, VisibleInViewport: true},
 		},
 	}
-	refs := sessionRefsForObservation(snap, false)
+	refs := sessionRefsForObservation(&browser.SessionInfo{}, snap, false)
 	if len(refs) != 1 || refs[0].Ref != "@r1" {
 		t.Fatalf("persisted refs=%+v, want only @r1", refs)
 	}
