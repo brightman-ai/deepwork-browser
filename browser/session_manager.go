@@ -46,6 +46,9 @@ type SessionInfo struct {
 	Touch            bool               `json:"touch"`
 	SnapEpoch        int                `json:"snap_epoch"` // Incremented on each snap
 	Refs             []SessionRef       `json:"refs"`       // Ref table from last snap
+	// LastActionOutcome is a crash/timeout fence for persisted ref authority.
+	// "in_progress" and "unknown" mean no ref may be trusted until observe.
+	LastActionOutcome string             `json:"last_action_outcome,omitempty"`
 	Ephemeral        bool               `json:"ephemeral"`  // true if --ephemeral was used
 	XvfbPID          int                `json:"xvfb_pid"`   // Xvfb process PID (headed mode, Linux)
 

@@ -257,4 +257,10 @@ func NormalizeSessionInfo(info *SessionInfo) {
 	if info.RuntimeID == "" {
 		info.RuntimeID = BrowserRuntimeIDFromBrowserSessionID(info.BrowserSessionID)
 	}
+	// An action without a recorded terminal result may already have changed the
+	// page. Pre-action refs cannot cross that uncertainty boundary.
+	switch info.LastActionOutcome {
+	case "in_progress", "unknown":
+		info.Refs = nil
+	}
 }

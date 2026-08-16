@@ -147,3 +147,31 @@ func TestNormalizeSessionInfoBackfillsBrowserSessionContract(t *testing.T) {
 		t.Fatal("BrowserRunID not backfilled")
 	}
 }
+
+func TestNormalizeSessionInfoRevokesRefsAcrossUnknownActionBoundary(t *testing.T) {
+	for _, outcome := range []string{"in_progress", "unknown"} {
+		info := &SessionInfo{
+			SessionID:         "action-fence-" + outcome,
+			LastActionOutcome: outcome,
+			Refs: []SessionRef{{
+				Ref:      "@r1",
+				Visible:  true,
+				Observed: true,
+			}},
+		}
+		NormalizeSessionInfo(info)
+		if len(info.Refs) != 0 {
+			t.Fatalf("outcome=%q retained stale refs: %+v", outcome, info.Refs)
+		}
+	}
+
+	confirmed := &SessionInfo{
+		SessionID:         "action-fence-confirmed",
+		LastActionOutcome: "confirmed",
+		Refs:              []SessionRef{{Ref: "@r1", Visible: true, Observed: true}},
+	}
+	NormalizeSessionInfo(confirmed)
+	if len(confirmed.Refs) != 1 {
+		t.Fatalf("confirmed outcome revoked valid refs: %+v", confirmed.Refs)
+	}
+}

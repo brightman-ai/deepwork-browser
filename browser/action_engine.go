@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/chromedp/cdproto/cdp"
 	"github.com/chromedp/cdproto/dom"
@@ -156,8 +157,8 @@ type ParsedAction struct {
 	Op      string  // "click" | "clickxy" | "clickat" | "hoverat" | "dragat" | "tap" | "tapat" | "type" | "scroll" | "hover" | "select"
 	Ref     string  // Element Ref（如 "e3"）或语义选择器（如 "#testid", "button:'name'"）
 	Value   string  // type/select 的值
-	CoordX  float64 // clickat/hoverat/dragat/wheelat/... 起点相对 X 坐标（0..1）
-	CoordY  float64 // clickat/hoverat/dragat/wheelat/... 起点相对 Y 坐标（0..1）
+	CoordX  float64 // 有 Ref: 元素内相对 X(0..1)；无 Ref: 视口 CSS px
+	CoordY  float64 // 有 Ref: 元素内相对 Y(0..1)；无 Ref: 视口 CSS px
 	CoordX2 float64 // dragat/swipeat 终点相对 X 坐标（0..1）
 	CoordY2 float64 // dragat/swipeat 终点相对 Y 坐标（0..1）
 	DeltaX  float64 // wheelat 横向滚轮位移（带符号像素）
@@ -440,8 +441,10 @@ func isLegacyRef(s string) bool {
 //   - "dblclickat css=#cell 30% 40%" — 真实鼠标双击（Univer 单元格进入编辑 / 缩放复位）
 //   - "rclickat css=#chart 30% 40%" — 真实鼠标右键（上下文菜单）
 //   - "hoverat css=#chart 50% 50%" — 真实鼠标悬停（echarts tooltip/十字线）
+//   - "hoverat 414,314" — 视口 CSS 像素绝对坐标悬停（无需 selector）
 //   - "dragat css=#chart 20% 50% 80% 50%" — 真实鼠标拖拽（echarts dataZoom/brush 框选）
 //   - "wheelat css=#chart 50% 50% -240" — 真实滚轮（echarts dataZoom:'inside'、Univer/地图缩放）
+//   - "wheelat 1200,800 down 6" — 在视口绝对坐标向下滚 6 格（无需 selector）
 //   - "tap button:'接管'" | "tapat #browser-liveview 92% 8%" — 真实触控点击
 //   - "swipeat css=#chart 80% 50% 20% 50%" — 真实触控滑动（移动端 canvas 平移）
 //     注意: #x 默认按 data-testid 解析；echarts/Univer 容器多为 id/class，需用 css= 前缀
@@ -450,7 +453,7 @@ func isLegacyRef(s string) bool {
 //   - "press Enter" | "press Ctrl+A" | "press #btn Ctrl+K"
 //   - "hover button:'名称'"
 //   - "scroll down" | "scroll up 3" | "scroll @r4 down 3"
-//   - "select e4 'opt2'"
+//   - "select combobox:'状态' 'opt2'"
 //   - "back" | "forward"
 //   - "focus #selector"
 //   - "scrollinto #selector" | "scrollto @r4"
@@ -479,8 +482,8 @@ func ParseAction(action string) (*ParsedAction, error) {
 		if op == "clickat" {
 			coordParts = parts[2:] // clickat viewport x y
 		}
-		if len(coordParts) < 2 {
-			return nil, fmt.Errorf("%w: tapxy requires xfrac and yfrac (0..1 or 0%%..100%%)", ErrActFailed)
+		if len(coordParts) != 2 {
+			return nil, fmt.Errorf("%w: %s requires exactly xfrac and yfrac (0..1 or 0%%..100%%)", ErrActFailed, op)
 		}
 		x, err := parseNormalizedCoordinate(coordParts[0])
 		if err != nil {
@@ -518,18 +521,76 @@ func ParseAction(action string) (*ParsedAction, error) {
 		}
 	}
 
+	// Vision-native absolute hover/wheel: the first argument is the same
+	// screenshot-derived CSS-pixel x,y pair accepted by click. These forms do
+	// not need an artificial selector merely to provide a coordinate origin.
+	if op == "hoverat" && len(parts) >= 2 {
+		if x, y, matched, err := parseViewportCoordinatePair(parts[1]); matched {
+			if err != nil {
+				return nil, err
+			}
+			if len(parts) != 2 {
+				return nil, fmt.Errorf("%w: hoverat x,y accepts no additional arguments", ErrActFailed)
+			}
+			return &ParsedAction{Op: "hoverat", CoordX: x, CoordY: y}, nil
+		}
+	}
+	if op == "wheelat" && len(parts) >= 2 {
+		if x, y, matched, err := parseViewportCoordinatePair(parts[1]); matched {
+			if err != nil {
+				return nil, err
+			}
+			if len(parts) < 3 {
+				return nil, fmt.Errorf("%w: wheelat x,y requires down|up [steps] or deltaY [deltaX]", ErrActFailed)
+			}
+			direction := strings.ToLower(parts[2])
+			if direction == "down" || direction == "up" {
+				steps, err := parseScrollSteps(parts, 3)
+				if err != nil {
+					return nil, err
+				}
+				if steps == 0 {
+					steps = 1
+				}
+				deltaY := humanWheelStepCSSPixels
+				if direction == "up" {
+					deltaY = -deltaY
+				}
+				return &ParsedAction{
+					Op: "wheelat", CoordX: x, CoordY: y,
+					DeltaY: deltaY, Direction: direction, Steps: steps,
+				}, nil
+			}
+			if len(parts) > 4 {
+				return nil, fmt.Errorf("%w: wheelat x,y delta form accepts deltaY and optional deltaX", ErrActFailed)
+			}
+			deltaY, err := parseDelta(parts[2])
+			if err != nil {
+				return nil, err
+			}
+			deltaX := 0.0
+			if len(parts) == 4 {
+				deltaX, err = parseDelta(parts[3])
+				if err != nil {
+					return nil, err
+				}
+			}
+			return &ParsedAction{Op: "wheelat", CoordX: x, CoordY: y, DeltaX: deltaX, DeltaY: deltaY, Steps: 1}, nil
+		}
+	}
+
 	switch op {
 	case "click", "tap", "hover", "focus", "scrollinto", "scrollto", "check", "uncheck":
-		if len(parts) < 2 {
-			return nil, fmt.Errorf("%w: %s requires selector argument", ErrActFailed, op)
+		if len(parts) != 2 {
+			return nil, fmt.Errorf("%w: %s requires exactly one selector argument", ErrActFailed, op)
 		}
 		return &ParsedAction{Op: op, Ref: parts[1]}, nil
 
 	// 坐标指针动作族 — 单点 (ref x y): 鼠标单/双/右击、悬停、触控点击。
 	// 按"形状/参数个数"而非逐个动词分支，新增同形动作零成本。
 	case "clickat", "dblclickat", "rclickat", "hoverat", "tapat":
-		if len(parts) < 4 {
-			return nil, fmt.Errorf("%w: %s requires selector, x, and y", ErrActFailed, op)
+		if len(parts) != 4 {
+			return nil, fmt.Errorf("%w: %s requires exactly selector, x, and y", ErrActFailed, op)
 		}
 		x, err := parseNormalizedCoordinate(parts[2])
 		if err != nil {
@@ -543,8 +604,8 @@ func ParseAction(action string) (*ParsedAction, error) {
 
 	// 坐标指针动作族 — 两点 (ref x1 y1 x2 y2): 鼠标拖拽、触控滑动。
 	case "dragat", "swipeat":
-		if len(parts) < 6 {
-			return nil, fmt.Errorf("%w: %s requires selector, x1, y1, x2, and y2", ErrActFailed, op)
+		if len(parts) != 6 {
+			return nil, fmt.Errorf("%w: %s requires exactly selector, x1, y1, x2, and y2", ErrActFailed, op)
 		}
 		x1, err := parseNormalizedCoordinate(parts[2])
 		if err != nil {
@@ -566,8 +627,8 @@ func ParseAction(action string) (*ParsedAction, error) {
 
 	// 滚轮 (ref x y deltaY [deltaX]): deltaY 必填，deltaX 可选默认 0。
 	case "wheelat":
-		if len(parts) < 5 {
-			return nil, fmt.Errorf("%w: wheelat requires selector, x, y, and deltaY", ErrActFailed)
+		if len(parts) != 5 && len(parts) != 6 {
+			return nil, fmt.Errorf("%w: wheelat requires exactly selector, x, y, deltaY, and optional deltaX", ErrActFailed)
 		}
 		x, err := parseNormalizedCoordinate(parts[2])
 		if err != nil {
@@ -582,7 +643,7 @@ func ParseAction(action string) (*ParsedAction, error) {
 			return nil, err
 		}
 		dx := 0.0
-		if len(parts) >= 6 {
+		if len(parts) == 6 {
 			dx, err = parseDelta(parts[5])
 			if err != nil {
 				return nil, err
@@ -595,18 +656,22 @@ func ParseAction(action string) (*ParsedAction, error) {
 	//   "zoom reset"          — 回到 1.0
 	// Safari 语义：页面缩放不改变布局视口，chrome 层（底栏）恒定不动。
 	case "zoom":
-		if len(parts) < 2 {
-			return nil, fmt.Errorf("%w: zoom requires factor (1..5) or 'reset'", ErrActFailed)
+		if len(parts) != 2 {
+			return nil, fmt.Errorf("%w: zoom requires exactly factor (1..5) or 'reset'", ErrActFailed)
 		}
 		return &ParsedAction{Op: "zoom", Value: strings.ToLower(parts[1])}, nil
 
 	// 软键盘态（REQ-BC-12）：显式切换；click/tap/fill 后另有焦点自动同步。
 	//   "keyboard show" / "keyboard hide"
 	case "keyboard":
-		if len(parts) < 2 {
-			return nil, fmt.Errorf("%w: keyboard requires 'show' or 'hide'", ErrActFailed)
+		if len(parts) != 2 {
+			return nil, fmt.Errorf("%w: keyboard requires exactly 'show' or 'hide'", ErrActFailed)
 		}
-		return &ParsedAction{Op: "keyboard", Value: strings.ToLower(parts[1])}, nil
+		value := strings.ToLower(parts[1])
+		if value != "show" && value != "hide" {
+			return nil, fmt.Errorf("%w: keyboard expects 'show' or 'hide', got %q", ErrActFailed, parts[1])
+		}
+		return &ParsedAction{Op: "keyboard", Value: value}, nil
 
 	case "fill":
 		if len(parts) < 3 {
@@ -653,15 +718,19 @@ func ParseAction(action string) (*ParsedAction, error) {
 
 	case "press":
 		// press <key>  OR  press <selector> <key>
-		if len(parts) < 2 {
-			return nil, fmt.Errorf("%w: press requires key argument", ErrActFailed)
+		if len(parts) != 2 && len(parts) != 3 {
+			return nil, fmt.Errorf("%w: press requires exactly key or selector + key", ErrActFailed)
+		}
+		key := parts[len(parts)-1]
+		if err := validatePressKeySyntax(key); err != nil {
+			return nil, err
 		}
 		if len(parts) == 2 {
 			// press <key> — page-level
-			return &ParsedAction{Op: "press", Ref: "", Value: parts[1]}, nil
+			return &ParsedAction{Op: "press", Ref: "", Value: key}, nil
 		}
 		// press <selector> <key>
-		return &ParsedAction{Op: "press", Ref: parts[1], Value: parts[2]}, nil
+		return &ParsedAction{Op: "press", Ref: parts[1], Value: key}, nil
 
 	case "scroll":
 		if len(parts) < 2 {
@@ -700,9 +769,15 @@ func ParseAction(action string) (*ParsedAction, error) {
 		return &ParsedAction{Op: "select", Ref: parts[1], Value: value}, nil
 
 	case "back":
+		if len(parts) != 1 {
+			return nil, fmt.Errorf("%w: back accepts no arguments", ErrActFailed)
+		}
 		return &ParsedAction{Op: "back"}, nil
 
 	case "forward":
+		if len(parts) != 1 {
+			return nil, fmt.Errorf("%w: forward accepts no arguments", ErrActFailed)
+		}
 		return &ParsedAction{Op: "forward"}, nil
 
 	default:
@@ -723,7 +798,7 @@ func parseViewportCoordinatePair(raw string) (x, y float64, matched bool, err er
 		return 0, 0, false, nil
 	}
 	if xErr != nil || yErr != nil || math.IsNaN(x) || math.IsNaN(y) || math.IsInf(x, 0) || math.IsInf(y, 0) {
-		return 0, 0, true, fmt.Errorf("%w: click coordinates must be finite CSS pixels in x,y form, got %q", ErrActFailed, raw)
+		return 0, 0, true, fmt.Errorf("%w: viewport coordinates must be finite CSS pixels in x,y form, got %q", ErrActFailed, raw)
 	}
 	return x, y, true, nil
 }
@@ -740,6 +815,31 @@ func parseScrollSteps(parts []string, index int) (int, error) {
 		return 0, fmt.Errorf("%w: scroll steps must be an integer in 1..100, got %q", ErrActFailed, parts[index])
 	}
 	return steps, nil
+}
+
+func validatePressKeySyntax(key string) error {
+	base := key
+	if strings.Contains(key, "+") {
+		_, parsedBase, ok := parseKeyCombo(key)
+		if !ok {
+			return fmt.Errorf("%w: press has an invalid modifier chord %q", ErrActFailed, key)
+		}
+		base = parsedBase
+	}
+	canonical := canonicalKeyName(base)
+	if utf8.RuneCountInString(canonical) == 1 {
+		return nil
+	}
+	switch canonical {
+	case "Enter", "Tab", "Space", "Escape", "Backspace", "Delete",
+		"ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight",
+		"Home", "End", "PageUp", "PageDown":
+		return nil
+	}
+	if _, ok := keyVirtualCodeMap[strings.ToUpper(canonical)]; ok && strings.HasPrefix(strings.ToUpper(canonical), "F") {
+		return nil
+	}
+	return fmt.Errorf("%w: press key %q is not a supported single key or modifier chord", ErrActFailed, key)
 }
 
 // parseDelta 解析滚轮位移量（带符号像素，如 -240 / 120），不做 0..1 归一。
@@ -879,9 +979,83 @@ func (e *actionEngine) ExecuteWithSessionMode(ctx context.Context, action string
 	return e.ExecuteWithInteractionMode(ctx, action, observe, sessionMode, InteractionModeVisual)
 }
 
+const actionExecutionTimeout = 15 * time.Second
+
+type actionExecutionResult struct {
+	snap *Snapshot
+	err  error
+}
+
+type actionExecutionTimeoutError struct {
+	Action  string
+	Timeout time.Duration
+}
+
+func (e *actionExecutionTimeoutError) Error() string {
+	return fmt.Sprintf("%v: action %q timed out after %s (internal watchdog)", ErrActFailed, e.Action, e.Timeout)
+}
+
+func (e *actionExecutionTimeoutError) Unwrap() []error {
+	return []error{ErrActFailed, context.DeadlineExceeded}
+}
+
+// runActionWithTimeout is the innermost action watchdog. The worker receives a
+// cancellable child context, but the caller does not depend on a CDP transport
+// honoring cancellation: even a wedged worker cannot keep Act blocked forever.
+func runActionWithTimeout(
+	parent context.Context,
+	timeout time.Duration,
+	action string,
+	run func(context.Context) (*Snapshot, error),
+) (*Snapshot, error) {
+	if parent == nil {
+		parent = context.Background()
+	}
+	if timeout <= 0 {
+		timeout = actionExecutionTimeout
+	}
+	if deadline, ok := parent.Deadline(); ok {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return nil, &actionExecutionTimeoutError{Action: action, Timeout: 0}
+		}
+		if remaining < timeout {
+			timeout = remaining
+		}
+	}
+
+	actionCtx, cancelAction := context.WithCancel(parent)
+	done := make(chan actionExecutionResult, 1)
+	go func() {
+		snap, err := run(actionCtx)
+		done <- actionExecutionResult{snap: snap, err: err}
+	}()
+
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	defer cancelAction()
+	select {
+	case result := <-done:
+		return result.snap, result.err
+	case <-parent.Done():
+		if parent.Err() == context.DeadlineExceeded {
+			return nil, &actionExecutionTimeoutError{Action: action, Timeout: timeout}
+		}
+		return nil, parent.Err()
+	case <-timer.C:
+		return nil, &actionExecutionTimeoutError{Action: action, Timeout: timeout}
+	}
+}
+
 // ExecuteWithInteractionMode executes one action with a step-local fidelity
 // choice. It never mutates the scenario/global posture.
 func (e *actionEngine) ExecuteWithInteractionMode(ctx context.Context, action string, observe bool, sessionMode bool, mode InteractionMode) (*Snapshot, error) {
+	return runActionWithTimeout(ctx, actionExecutionTimeout, action, func(actionCtx context.Context) (*Snapshot, error) {
+		return e.executeWithInteractionMode(actionCtx, action, observe, sessionMode, mode)
+	})
+}
+
+func (e *actionEngine) executeWithInteractionMode(ctx context.Context, action string, observe bool, sessionMode bool, mode InteractionMode) (*Snapshot, error) {
 	normalizedMode, err := NormalizeInteractionMode(string(mode))
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrActFailed, err)
@@ -967,7 +1141,7 @@ func (e *actionEngine) ExecuteWithInteractionMode(ctx context.Context, action st
 			return nil, err
 		}
 	case "wheelat":
-		if err := e.executeWheelAt(ctx, resolvedRef, parsed.CoordX, parsed.CoordY, parsed.DeltaX, parsed.DeltaY); err != nil {
+		if err := e.executeWheelAt(ctx, resolvedRef, parsed.CoordX, parsed.CoordY, parsed.DeltaX, parsed.DeltaY, parsed.Steps); err != nil {
 			return nil, err
 		}
 	case "swipeat":
@@ -1151,6 +1325,9 @@ func (e *actionEngine) resolveSemanticSelectorForMode(selector string, sessionMo
 		if ok && (meta.BackendNodeID != 0 || e.seeToClick) {
 			return meta.Ref, nil
 		}
+		if e.seeToClick {
+			return "", fmt.Errorf("%w: #%s is not an actionable element from the most recent visible observation — scroll and observe again", ErrRefNotFound, sel.TestID)
+		}
 		// 回退到 CSS 选择器
 		return `[data-testid="` + sel.TestID + `"]`, nil
 
@@ -1181,7 +1358,12 @@ func (e *actionEngine) resolveSemanticSelectorForMode(selector string, sessionMo
 		return meta.Ref, nil
 
 	default:
-		// SelectorCSS: return as-is
+		// Raw CSS is an explicit element-mode capability. In visual scenarios it
+		// has no provenance in the visible ref set and therefore cannot be used
+		// for click, fill, focus, or any other selector action.
+		if e.seeToClick {
+			return "", fmt.Errorf("%w: CSS selector %q is not a capability from the most recent visible observation; use a semantic visible locator or mode: element", ErrRefNotFound, sel.Raw)
+		}
 		return sel.Raw, nil
 	}
 }
@@ -1313,6 +1495,9 @@ func (e *actionEngine) resolveCanonicalSelector(sel *ParsedSelector, sessionMode
 			meta, ok := e.snapEngine.LookupByTestID(f.Value)
 			if ok && (meta.BackendNodeID != 0 || e.seeToClick) {
 				return meta.Ref, nil
+			}
+			if e.seeToClick {
+				return "", fmt.Errorf("%w: testid=%q is not an actionable element from the most recent visible observation — scroll and observe again", ErrRefNotFound, f.Value)
 			}
 			return `[data-testid="` + f.Value + `"]`, nil
 		}
@@ -1513,27 +1698,26 @@ func (e *actionEngine) executeElementModeClick(ctx context.Context, ref string) 
 // chromedp.Click, so no implicit scrollIntoView/wait can click content that was
 // absent from the witness viewport.
 func (e *actionEngine) executeSeeToClick(ctx context.Context, ref string) error {
+	if isCSSSelector(ref) {
+		return fmt.Errorf("%w: selector %q was not granted by the most recent visible observation", ErrRefNotFound, ref)
+	}
 	var (
 		meta  *ElementRef
 		probe elementVisibilityProbe
 		err   error
 	)
-	requireObserved := !isCSSSelector(ref)
-	if requireObserved {
-		var ok bool
-		meta, ok = e.snapEngine.LookupRefMeta(ref)
-		if !ok {
-			return fmt.Errorf("%w: click ref %q is not from the most recent observe — run observe again", ErrRefNotFound, ref)
-		}
-		// Reject before touching the DOM when session persistence says this came
-		// from open/post-act rather than an explicit observe.
-		if !meta.Observed || !meta.VisibleInViewport {
-			return fmt.Errorf("%w: click target %q was not in the visible set from the most recent observe — scroll, then run observe again", ErrRefNotFound, ref)
-		}
-		probe, err = probeMetaVisibilityNow(ctx, meta)
-	} else {
-		probe, err = probeSelectorVisibilityNow(ctx, ref)
+	requireObserved := true
+	var ok bool
+	meta, ok = e.snapEngine.LookupRefMeta(ref)
+	if !ok {
+		return fmt.Errorf("%w: click ref %q is not from the most recent observe — run observe again", ErrRefNotFound, ref)
 	}
+	// Reject before touching the DOM when session persistence says this came
+	// from open/post-act rather than an explicit observe.
+	if !meta.Observed || !meta.VisibleInViewport {
+		return fmt.Errorf("%w: click target %q was not in the visible set from the most recent observe — scroll, then run observe again", ErrRefNotFound, ref)
+	}
+	probe, err = probeMetaVisibilityNow(ctx, meta)
 	if err != nil {
 		return fmt.Errorf("%w: resolve click target %q without scrolling: %v — run observe again", ErrRefNotFound, ref, err)
 	}
@@ -1687,6 +1871,28 @@ func (e *actionEngine) resolvePoint(ctx context.Context, ref string, relX, relY 
 	return box.Left + box.Width*relX, box.Top + box.Height*relY, nil
 }
 
+// resolveCoordinateActionPoint accepts both selector-relative coordinates and
+// screenshot-derived absolute viewport CSS pixels. Absolute forms deliberately
+// carry an empty ref, so hoverat/wheelat can target canvas/page coordinates
+// without inventing a selector solely as an origin.
+func (e *actionEngine) resolveCoordinateActionPoint(ctx context.Context, op, ref string, x, y float64) (float64, float64, error) {
+	if ref != "" {
+		return e.resolvePoint(ctx, ref, x, y)
+	}
+	w, h, err := e.viewportSize(ctx)
+	if err != nil {
+		return 0, 0, err
+	}
+	if x < 0 || y < 0 || x >= w || y >= h {
+		return 0, 0, fmt.Errorf("%w: %s point (%.1f,%.1f) is outside the %.1fx%.1f CSS-pixel viewport",
+			ErrActFailed, op, x, y, w, h)
+	}
+	if err := e.guardPoint(ctx, x, y); err != nil {
+		return 0, 0, err
+	}
+	return x, y, nil
+}
+
 // mouseButtonsMask 返回按键对应的 buttons 位掩码（左1/右2/中4），
 // 用于 press 及拖拽过程中 move 的"按键保持按下"状态。
 func mouseButtonsMask(button input.MouseButton) int64 {
@@ -1745,15 +1951,30 @@ func dispatchMouseClickAt(ctx context.Context, x, y float64) error {
 // echarts dataZoom:'inside'、Univer/地图缩放、canvas 内滚动均由 deltaX/deltaY 驱动；
 // deltaY<0 一般为向上滚/放大，deltaY>0 向下滚/缩小（最终方向由页面逻辑决定）。
 func dispatchMouseWheel(ctx context.Context, x, y, deltaX, deltaY float64) error {
+	return dispatchMouseWheelSteps(ctx, x, y, deltaX, deltaY, 1)
+}
+
+// dispatchMouseWheelSteps keeps one pointer move and all wheel pulses in a
+// single chromedp task. Besides matching a human wheel gesture more closely,
+// this avoids re-entering the remote target executor once per requested step.
+func dispatchMouseWheelSteps(ctx context.Context, x, y, deltaX, deltaY float64, steps int) error {
+	if steps <= 0 {
+		steps = 1
+	}
 	return chromedp.Run(ctx, chromedp.ActionFunc(func(ctx context.Context) error {
 		if err := input.DispatchMouseEvent(input.MouseMoved, x, y).Do(ctx); err != nil {
 			return err
 		}
 		time.Sleep(18 * time.Millisecond)
-		return input.DispatchMouseEvent(input.MouseWheel, x, y).
-			WithDeltaX(deltaX).
-			WithDeltaY(deltaY).
-			Do(ctx)
+		for i := 0; i < steps; i++ {
+			if err := input.DispatchMouseEvent(input.MouseWheel, x, y).
+				WithDeltaX(deltaX).
+				WithDeltaY(deltaY).
+				Do(ctx); err != nil {
+				return fmt.Errorf("step %d/%d: %w", i+1, steps, err)
+			}
+		}
+		return nil
 	}))
 }
 
@@ -2039,7 +2260,7 @@ func (e *actionEngine) executeTapAt(ctx context.Context, ref string, relX, relY 
 //   - echarts tooltip / axisPointer 十字线 / 图表联动 hover 由真实 mousemove 的
 //     clientX/Y 命中测试驱动；hover 选择器只能落到元素几何中心，无法定位具体数据点
 func (e *actionEngine) executeHoverAt(ctx context.Context, ref string, relX, relY float64) error {
-	x, y, err := e.resolvePoint(ctx, ref, relX, relY)
+	x, y, err := e.resolveCoordinateActionPoint(ctx, "hoverat", ref, relX, relY)
 	if err != nil {
 		return err
 	}
@@ -2047,12 +2268,19 @@ func (e *actionEngine) executeHoverAt(ctx context.Context, ref string, relX, rel
 }
 
 // executeWheelAt 对目标元素相对坐标执行真实滚轮（echarts dataZoom:'inside'、Univer/地图缩放）。
-func (e *actionEngine) executeWheelAt(ctx context.Context, ref string, relX, relY, deltaX, deltaY float64) error {
-	x, y, err := e.resolvePoint(ctx, ref, relX, relY)
+// ref 为空时，x/y 是视口 CSS 像素绝对坐标。
+func (e *actionEngine) executeWheelAt(ctx context.Context, ref string, relX, relY, deltaX, deltaY float64, steps int) error {
+	x, y, err := e.resolveCoordinateActionPoint(ctx, "wheelat", ref, relX, relY)
 	if err != nil {
 		return err
 	}
-	return dispatchMouseWheel(ctx, x, y, deltaX, deltaY)
+	if steps <= 0 {
+		steps = 1
+	}
+	if err := dispatchMouseWheelSteps(ctx, x, y, deltaX, deltaY, steps); err != nil {
+		return fmt.Errorf("%w: wheelat: %v", ErrActFailed, err)
+	}
+	return nil
 }
 
 // executeDragAt 在目标元素内从相对坐标起点拖拽到终点（真实 press→move→release）。
@@ -2438,28 +2666,140 @@ func waitForEditableProbe(ctx context.Context, js string, want string) error {
 	}
 }
 
-// executePress 执行按键操作，支持组合键（Ctrl+A, Shift+Enter 等）。
-func (e *actionEngine) executePress(ctx context.Context, ref string, key string) error {
-	// Focus element first if ref is specified
-	if ref != "" {
+// withResolvedActionElement resolves a CSS/ref target to one JS object and runs
+// fn inside a single chromedp action. In particular, fn must call cdproto
+// methods directly rather than re-entering chromedp.Run from ActionFunc; the
+// latter can strand a CDP response and was the common primitive behind native
+// select focus/press hangs.
+func (e *actionEngine) withResolvedActionElement(
+	ctx context.Context,
+	ref string,
+	fn func(context.Context, *runtime.RemoteObject) error,
+) error {
+	return chromedp.Run(ctx, chromedp.ActionFunc(func(execCtx context.Context) error {
+		var (
+			obj *runtime.RemoteObject
+			err error
+		)
 		if isCSSSelector(ref) {
-			if err := chromedp.Run(ctx, chromedp.Focus(ref, chromedp.ByQuery)); err != nil {
-				return fmt.Errorf("%w: focus %q for press: %v", ErrActFailed, ref, err)
+			expr := `document.querySelector(` + strconv.Quote(ref) + `)`
+			obj, err = resolveElementObjectByExpression(execCtx, expr)
+			if err != nil {
+				return fmt.Errorf("%w: element %q not found: %v", ErrRefNotFound, ref, err)
 			}
 		} else {
-			backendNodeID, err := e.resolveBackendNodeID(ref)
+			backendNodeID, resolveErr := e.resolveBackendNodeID(ref)
+			if resolveErr != nil {
+				return resolveErr
+			}
+			obj, err = resolveElementObjectByBackendID(execCtx, backendNodeID)
 			if err != nil {
-				return err
+				return fmt.Errorf("%w: node not found for ref %q: %v", ErrRefNotFound, ref, err)
 			}
-			if err := chromedp.Run(ctx, chromedp.ActionFunc(func(ctx context.Context) error {
-				nodeIDs, err := dom.PushNodesByBackendIDsToFrontend([]cdp.BackendNodeID{cdp.BackendNodeID(backendNodeID)}).Do(ctx)
-				if err != nil || len(nodeIDs) == 0 {
-					return fmt.Errorf("%w: node not found for ref %q", ErrRefNotFound, ref)
+		}
+		defer func() { _ = runtime.ReleaseObject(obj.ObjectID).Do(execCtx) }()
+		return fn(execCtx, obj)
+	}))
+}
+
+type nativeSelectKeyResult struct {
+	IsSelect  bool   `json:"is_select"`
+	Supported bool   `json:"supported"`
+	Reason    string `json:"reason"`
+	Changed   bool   `json:"changed"`
+	Value     string `json:"value"`
+}
+
+func callNativeSelectKey(ctx context.Context, obj *runtime.RemoteObject, key string, out *nativeSelectKeyResult) error {
+	fn := `function() {
+		const key = ` + strconv.Quote(key) + `;
+		if (!this || String(this.tagName || '').toUpperCase() !== 'SELECT') {
+			return {is_select:false, supported:false, reason:'', changed:false, value:''};
+		}
+		if (this.disabled) {
+			return {is_select:true, supported:false, reason:'disabled', changed:false, value:String(this.value || '')};
+		}
+		const supported = key === 'ArrowDown' || key === 'ArrowUp' || key === 'Home' || key === 'End';
+		if (!supported) {
+			return {is_select:true, supported:false, reason:'native-picker-key', changed:false, value:String(this.value || '')};
+		}
+		try { this.focus({preventScroll:true}); } catch (_) { this.focus(); }
+		if (document.activeElement !== this) {
+			return {is_select:true, supported:false, reason:'focus-failed', changed:false, value:String(this.value || '')};
+		}
+		const options = Array.from(this.options || []);
+		const enabled = options.map((option, index) => ({option, index})).filter(entry =>
+			!entry.option.disabled && !(entry.option.parentElement && entry.option.parentElement.disabled));
+		let next = this.selectedIndex;
+		if (enabled.length > 0) {
+			if (key === 'Home') next = enabled[0].index;
+			if (key === 'End') next = enabled[enabled.length - 1].index;
+			if (key === 'ArrowDown') {
+				const candidate = enabled.find(entry => entry.index > this.selectedIndex);
+				if (candidate) next = candidate.index;
+			}
+			if (key === 'ArrowUp') {
+				for (let i = enabled.length - 1; i >= 0; i--) {
+					if (enabled[i].index < this.selectedIndex || this.selectedIndex < 0) { next = enabled[i].index; break; }
 				}
-				return chromedp.Run(ctx, chromedp.Focus([]cdp.NodeID{nodeIDs[0]}, chromedp.ByNodeID))
-			})); err != nil {
-				return err
 			}
+		}
+		this.dispatchEvent(new KeyboardEvent('keydown', {key, bubbles:true}));
+		const changed = next >= 0 && next !== this.selectedIndex;
+		if (changed) {
+			this.selectedIndex = next;
+			this.dispatchEvent(new Event('input', {bubbles:true}));
+			this.dispatchEvent(new Event('change', {bubbles:true}));
+		}
+		this.dispatchEvent(new KeyboardEvent('keyup', {key, bubbles:true}));
+		return {is_select:true, supported:true, reason:'', changed, value:String(this.value || '')};
+	}`
+	res, exc, err := runtime.CallFunctionOn(fn).
+		WithObjectID(obj.ObjectID).
+		WithReturnByValue(true).
+		Do(ctx)
+	if err != nil {
+		return err
+	}
+	if exc != nil {
+		return fmt.Errorf("native select key handler failed: %s", exc.Text)
+	}
+	if res == nil || len(res.Value) == 0 {
+		return fmt.Errorf("native select key handler returned no value")
+	}
+	return json.Unmarshal([]byte(res.Value), out)
+}
+
+// executePress 执行按键操作，支持组合键（Ctrl+A, Shift+Enter 等）。
+func (e *actionEngine) executePress(ctx context.Context, ref string, key string) error {
+	// Focus element first if ref is specified. Native <select> is handled by a
+	// non-popup DOM path: directional keys update selectedIndex and dispatch
+	// input/change; keys that would summon the browser picker fail immediately.
+	if ref != "" {
+		var selectResult nativeSelectKeyResult
+		canonicalKey := canonicalKeyName(key)
+		if err := e.withResolvedActionElement(ctx, ref, func(execCtx context.Context, obj *runtime.RemoteObject) error {
+			if err := callNativeSelectKey(execCtx, obj, canonicalKey, &selectResult); err != nil {
+				return fmt.Errorf("%w: inspect native select %q for press: %v", ErrActFailed, ref, err)
+			}
+			if selectResult.IsSelect {
+				return nil
+			}
+			return dom.Focus().WithObjectID(obj.ObjectID).Do(execCtx)
+		}); err != nil {
+			return err
+		}
+		if selectResult.IsSelect {
+			switch selectResult.Reason {
+			case "disabled":
+				return fmt.Errorf("%w: cannot press %q on disabled native <select> %q", ErrActFailed, key, ref)
+			case "native-picker-key":
+				return fmt.Errorf("%w: press %q on native <select> %q is blocked to avoid opening the browser picker; use select %s '<label-or-value>'",
+					ErrActFailed, key, ref, ref)
+			case "focus-failed":
+				return fmt.Errorf("%w: native <select> %q could not be focused for press %q", ErrActFailed, ref, key)
+			}
+			return nil
 		}
 	}
 
@@ -2699,20 +3039,36 @@ func (e *actionEngine) executeForward(ctx context.Context) error {
 
 // executeFocusSelector 聚焦元素。
 func (e *actionEngine) executeFocusSelector(ctx context.Context, ref string) error {
-	if isCSSSelector(ref) {
-		return chromedp.Run(ctx, chromedp.Focus(ref, chromedp.ByQuery))
-	}
-	backendNodeID, err := e.resolveBackendNodeID(ref)
-	if err != nil {
-		return err
-	}
-	return chromedp.Run(ctx, chromedp.ActionFunc(func(ctx context.Context) error {
-		nodeIDs, err := dom.PushNodesByBackendIDsToFrontend([]cdp.BackendNodeID{cdp.BackendNodeID(backendNodeID)}).Do(ctx)
-		if err != nil || len(nodeIDs) == 0 {
-			return fmt.Errorf("%w: node not found for ref %q", ErrRefNotFound, ref)
+	return e.withResolvedActionElement(ctx, ref, func(execCtx context.Context, obj *runtime.RemoteObject) error {
+		// HTMLElement.focus() changes focus without asking Chrome to open native
+		// picker UI. It also avoids re-entering chromedp.Run from ActionFunc.
+		fn := `function() {
+			if (!this || typeof this.focus !== 'function') return {focusable:false, focused:false};
+			try { this.focus({preventScroll:true}); } catch (_) { this.focus(); }
+			return {focusable:true, focused:document.activeElement === this};
+		}`
+		res, exc, err := runtime.CallFunctionOn(fn).
+			WithObjectID(obj.ObjectID).
+			WithReturnByValue(true).
+			Do(execCtx)
+		if err != nil {
+			return fmt.Errorf("%w: focus %q: %v", ErrActFailed, ref, err)
 		}
-		return chromedp.Run(ctx, chromedp.Focus([]cdp.NodeID{nodeIDs[0]}, chromedp.ByNodeID))
-	}))
+		if exc != nil {
+			return fmt.Errorf("%w: focus %q: %s", ErrActFailed, ref, exc.Text)
+		}
+		var result struct {
+			Focusable bool `json:"focusable"`
+			Focused   bool `json:"focused"`
+		}
+		if res == nil || len(res.Value) == 0 || json.Unmarshal([]byte(res.Value), &result) != nil {
+			return fmt.Errorf("%w: focus %q returned no usable result", ErrActFailed, ref)
+		}
+		if !result.Focusable || !result.Focused {
+			return fmt.Errorf("%w: element %q could not be focused", ErrActFailed, ref)
+		}
+		return nil
+	})
 }
 
 // executeScrollIntoView 滚动元素到可见区域。
@@ -2974,79 +3330,185 @@ func (e *actionEngine) dispatchHumanMouseWheel(ctx context.Context, x, y, deltaY
 	return nil
 }
 
-// executeSelect 执行下拉选择操作。
-func (e *actionEngine) executeSelect(ctx context.Context, ref string, value string) error {
-	if isCSSSelector(ref) {
-		return e.executeSelectBySelector(ctx, ref, value)
-	}
-
-	if meta, ok := e.snapEngine.LookupRefMeta(ref); ok && meta.TestID != "" {
-		if err := e.executeSelectBySelector(ctx, `[data-testid="`+meta.TestID+`"]`, value); err == nil {
-			return nil
-		}
-	}
-
-	nodeID, ok := e.snapEngine.LookupRef(ref)
-	if !ok {
-		return fmt.Errorf("%w: ref %q not found", ErrRefNotFound, ref)
-	}
-
-	return chromedp.Run(ctx, chromedp.ActionFunc(func(ctx context.Context) error {
-		nodeIDs, err := dom.PushNodesByBackendIDsToFrontend([]cdp.BackendNodeID{cdp.BackendNodeID(nodeID)}).Do(ctx)
-		if err != nil || len(nodeIDs) == 0 {
-			return fmt.Errorf("%w: node not found for ref %q", ErrRefNotFound, ref)
-		}
-		if err := chromedp.Run(ctx,
-			chromedp.Focus([]cdp.NodeID{nodeIDs[0]}, chromedp.ByNodeID),
-			chromedp.SetValue([]cdp.NodeID{nodeIDs[0]}, value, chromedp.ByNodeID),
-		); err != nil {
-			return err
-		}
-		var selected string
-		if err := chromedp.Run(ctx, chromedp.Evaluate(`(() => {
-			const el = document.activeElement;
-			if (!el || el.tagName !== 'SELECT') return '';
-			el.dispatchEvent(new Event('input', { bubbles: true }));
-			el.dispatchEvent(new Event('change', { bubbles: true }));
-			return String(el.value || '');
-		})()`, &selected)); err != nil {
-			return err
-		}
-		if selected != "" && selected != value {
-			return fmt.Errorf("%w: select value mismatch for %q (want %q got %q)", ErrActFailed, ref, value, selected)
-		}
-		return nil
-	}))
+type nativeSelectOption struct {
+	Label    string `json:"label"`
+	Value    string `json:"value"`
+	Disabled bool   `json:"disabled"`
 }
 
-func (e *actionEngine) executeSelectBySelector(ctx context.Context, selector string, value string) error {
-	var result struct {
-		Found bool   `json:"found"`
-		Value string `json:"value"`
+type nativeSelectProbe struct {
+	IsSelect      bool                 `json:"is_select"`
+	Disabled      bool                 `json:"disabled"`
+	SelectedIndex int                  `json:"selected_index"`
+	Options       []nativeSelectOption `json:"options"`
+}
+
+type nativeSelectMatch struct {
+	Index int
+	Kind  string
+}
+
+func formatNativeSelectOptions(options []nativeSelectOption) string {
+	if len(options) == 0 {
+		return "<none>"
 	}
-	js := fmt.Sprintf(`(() => {
-		const el = document.querySelector(%q);
-		if (!el) return { found: false, value: '' };
-		if (el.tagName !== 'SELECT') return { found: true, value: String(el.value || '') };
-		el.focus();
-		el.value = %q;
-		el.dispatchEvent(new Event('input', { bubbles: true }));
-		el.dispatchEvent(new Event('change', { bubbles: true }));
-		return { found: true, value: String(el.value || '') };
-	})()`, selector, value)
-	if err := chromedp.Run(ctx,
-		chromedp.WaitVisible(selector, chromedp.ByQuery),
-		chromedp.Evaluate(js, &result),
-	); err != nil {
+	items := make([]string, 0, len(options))
+	for _, option := range options {
+		item := fmt.Sprintf("%q→%q", option.Label, option.Value)
+		if option.Disabled {
+			item += " (disabled)"
+		}
+		items = append(items, item)
+	}
+	return strings.Join(items, ", ")
+}
+
+// matchNativeSelectOption implements the CLI contract in strict priority:
+// exact value, exact visible label, then unique visible-label prefix.
+func matchNativeSelectOption(options []nativeSelectOption, query string) (nativeSelectMatch, error) {
+	for index, option := range options {
+		if option.Value == query {
+			if option.Disabled {
+				return nativeSelectMatch{}, fmt.Errorf("%w: option %q→%q is disabled; options: %s",
+					ErrActFailed, option.Label, option.Value, formatNativeSelectOptions(options))
+			}
+			return nativeSelectMatch{Index: index, Kind: "value"}, nil
+		}
+	}
+	for index, option := range options {
+		if option.Label == query {
+			if option.Disabled {
+				return nativeSelectMatch{}, fmt.Errorf("%w: option %q→%q is disabled; options: %s",
+					ErrActFailed, option.Label, option.Value, formatNativeSelectOptions(options))
+			}
+			return nativeSelectMatch{Index: index, Kind: "label"}, nil
+		}
+	}
+	prefixMatches := make([]int, 0, 2)
+	for index, option := range options {
+		if strings.HasPrefix(option.Label, query) {
+			prefixMatches = append(prefixMatches, index)
+		}
+	}
+	if len(prefixMatches) == 1 {
+		index := prefixMatches[0]
+		if options[index].Disabled {
+			return nativeSelectMatch{}, fmt.Errorf("%w: option %q→%q is disabled; options: %s",
+				ErrActFailed, options[index].Label, options[index].Value, formatNativeSelectOptions(options))
+		}
+		return nativeSelectMatch{Index: index, Kind: "label-prefix"}, nil
+	}
+	if len(prefixMatches) > 1 {
+		matched := make([]nativeSelectOption, 0, len(prefixMatches))
+		for _, index := range prefixMatches {
+			matched = append(matched, options[index])
+		}
+		return nativeSelectMatch{}, fmt.Errorf("%w: label prefix %q is ambiguous (%s); options: %s",
+			ErrActFailed, query, formatNativeSelectOptions(matched), formatNativeSelectOptions(options))
+	}
+	return nativeSelectMatch{}, fmt.Errorf("%w: no option matched %q by exact value, exact label, or unique label prefix; options: %s",
+		ErrActFailed, query, formatNativeSelectOptions(options))
+}
+
+func probeNativeSelect(ctx context.Context, obj *runtime.RemoteObject, out *nativeSelectProbe) error {
+	fn := `function() {
+		if (!this || String(this.tagName || '').toUpperCase() !== 'SELECT') {
+			return {is_select:false, disabled:false, selected_index:-1, options:[]};
+		}
+		const options = Array.from(this.options || []).map(option => ({
+			label:String(option.label || option.textContent || '').trim(),
+			value:String(option.value ?? ''),
+			disabled:!!option.disabled || !!(option.parentElement && option.parentElement.disabled)
+		}));
+		return {is_select:true, disabled:!!this.disabled, selected_index:this.selectedIndex, options};
+	}`
+	res, exc, err := runtime.CallFunctionOn(fn).
+		WithObjectID(obj.ObjectID).
+		WithReturnByValue(true).
+		Do(ctx)
+	if err != nil {
 		return err
 	}
-	if !result.Found {
-		return fmt.Errorf("%w: element %q not found", ErrRefNotFound, selector)
+	if exc != nil {
+		return fmt.Errorf("native select probe failed: %s", exc.Text)
 	}
-	if result.Value != value {
-		return fmt.Errorf("%w: select value mismatch for %q (want %q got %q)", ErrActFailed, selector, value, result.Value)
+	if res == nil || len(res.Value) == 0 {
+		return fmt.Errorf("native select probe returned no value")
 	}
-	return nil
+	return json.Unmarshal([]byte(res.Value), out)
+}
+
+type nativeSelectApplyResult struct {
+	Applied       bool   `json:"applied"`
+	SelectedIndex int    `json:"selected_index"`
+	Label         string `json:"label"`
+	Value         string `json:"value"`
+}
+
+func applyNativeSelectIndex(ctx context.Context, obj *runtime.RemoteObject, index int, out *nativeSelectApplyResult) error {
+	fn := `function() {
+		const index = ` + strconv.Itoa(index) + `;
+		if (!this || String(this.tagName || '').toUpperCase() !== 'SELECT' || index < 0 || index >= this.options.length) {
+			return {applied:false, selected_index:-1, label:'', value:''};
+		}
+		this.selectedIndex = index;
+		this.dispatchEvent(new Event('input', {bubbles:true}));
+		this.dispatchEvent(new Event('change', {bubbles:true}));
+		const selected = this.options[this.selectedIndex];
+		return {
+			applied:true,
+			selected_index:this.selectedIndex,
+			label:String(selected ? (selected.label || selected.textContent || '') : '').trim(),
+			value:String(this.value ?? '')
+		};
+	}`
+	res, exc, err := runtime.CallFunctionOn(fn).
+		WithObjectID(obj.ObjectID).
+		WithReturnByValue(true).
+		Do(ctx)
+	if err != nil {
+		return err
+	}
+	if exc != nil {
+		return fmt.Errorf("native select apply failed: %s", exc.Text)
+	}
+	if res == nil || len(res.Value) == 0 {
+		return fmt.Errorf("native select apply returned no value")
+	}
+	return json.Unmarshal([]byte(res.Value), out)
+}
+
+// executeSelect changes native <select> state entirely through DOM state and
+// bubbling input/change events. It never focuses or opens the browser picker.
+func (e *actionEngine) executeSelect(ctx context.Context, ref string, query string) error {
+	return e.withResolvedActionElement(ctx, ref, func(execCtx context.Context, obj *runtime.RemoteObject) error {
+		var probe nativeSelectProbe
+		if err := probeNativeSelect(execCtx, obj, &probe); err != nil {
+			return fmt.Errorf("%w: inspect select %q: %v", ErrActFailed, ref, err)
+		}
+		if !probe.IsSelect {
+			return fmt.Errorf("%w: target %q is not a native <select>", ErrActFailed, ref)
+		}
+		if probe.Disabled {
+			return fmt.Errorf("%w: native <select> %q is disabled; options: %s",
+				ErrActFailed, ref, formatNativeSelectOptions(probe.Options))
+		}
+		match, err := matchNativeSelectOption(probe.Options, query)
+		if err != nil {
+			return err
+		}
+		var applied nativeSelectApplyResult
+		if err := applyNativeSelectIndex(execCtx, obj, match.Index, &applied); err != nil {
+			return fmt.Errorf("%w: apply select %q (%s match): %v", ErrActFailed, ref, match.Kind, err)
+		}
+		want := probe.Options[match.Index]
+		if !applied.Applied || applied.SelectedIndex != match.Index || applied.Value != want.Value {
+			return fmt.Errorf("%w: select %q did not converge after %s match (want %q→%q, got %q→%q); options: %s",
+				ErrActFailed, ref, match.Kind, want.Label, want.Value, applied.Label, applied.Value,
+				formatNativeSelectOptions(probe.Options))
+		}
+		return nil
+	})
 }
 
 // checkPasswordField 通过 CDP 检查节点是否为密码字段 [TC-09-U-07, TC-09-U-08]。

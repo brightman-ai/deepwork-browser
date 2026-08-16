@@ -9,8 +9,10 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"os/exec"
@@ -25,12 +27,17 @@ import (
 	"github.com/brightman-ai/deepwork-browser/browser"
 	"github.com/brightman-ai/deepwork-browser/browser/audit"
 	"github.com/brightman-ai/deepwork-browser/browser/safari"
+	"github.com/brightman-ai/kit/obs"
 	cdpTarget "github.com/chromedp/cdproto/target"
 	"github.com/chromedp/chromedp"
 	"gopkg.in/yaml.v3"
 )
 
 const version = "0.11.0"
+
+// ActionEngine returns its own explicit error at 15s. The CLI watchdog is a
+// slightly wider process-level fence covering every BrowserCore implementation.
+const cliActTimeout = 17 * time.Second
 
 // exitCodes [IR-08]
 const (
@@ -71,6 +78,7 @@ type commonFlags struct {
 	persona           string // --persona: 组合测试保真人格名(身份轴主入口,见 browser.Personas)
 	userAgent         string
 	diag              bool // --diag 启用每步 observation log
+	verbose           bool // --verbose 显示内部 DEBUG/INFO/WARN 诊断日志
 	stealth           bool // --stealth 只在 headless 下生效：反检测 UA + 额外 flags
 	// Safari 引擎
 	engine       string // --engine: "chrome" (default) | "safari"
@@ -286,6 +294,9 @@ func parseCommonFlags(args []string, cmd string) (positional []string, flags com
 			i++
 		case arg == "--diag":
 			flags.diag = true
+			i++
+		case arg == "--verbose":
+			flags.verbose = true
 			i++
 		case arg == "--stealth":
 			flags.stealth = true
@@ -580,6 +591,7 @@ func cleanupEphemeral(profileID string) {
 }
 
 func main() {
+	configureCLIInternalLogging(os.Args[1:])
 	if len(os.Args) < 2 {
 		printUsage()
 		os.Exit(exitRunErr)
@@ -644,6 +656,28 @@ func main() {
 		printUsage()
 		os.Exit(exitRunErr)
 	}
+}
+
+func verboseRequested(args []string) bool {
+	for _, arg := range args {
+		if arg == "--verbose" {
+			return true
+		}
+	}
+	return false
+}
+
+// configureCLIInternalLogging keeps machine-readable command output clean by
+// default. Operational failures are still returned through the command's
+// explicit error path; --verbose restores the internal diagnostic stream.
+func configureCLIInternalLogging(args []string) {
+	if verboseRequested(args) {
+		obs.Init(obs.DEBUG, os.Stderr)
+		log.SetOutput(os.Stderr)
+		return
+	}
+	obs.Init(obs.ERROR, os.Stderr)
+	log.SetOutput(io.Discard)
 }
 
 // printPersonas 打印可用测试保真人格列表 (--persona)。
@@ -1190,6 +1224,7 @@ func printUsage() {
 	p("                       act 点遮挡区 fail-loud、observe 带 browser_chrome 机读块、audit browser-chrome-occlusion;")
 	p("                       act \"zoom <n>|reset\" 进/出缩放态 (chrome 恒定不动, 复刻真机)。off 关闭; on 强制(无数据报错)")
 	p("  --goal <text>        本次会话目标 (写入 contract)")
+	p("  --verbose            显示内部 DEBUG/INFO/WARN 诊断日志 (默认只输出命令结果/明确错误)")
 	p("")
 	printPersonas()
 	p("")
@@ -1206,7 +1241,7 @@ func printUsage() {
 	p("  fill <loc> '<text>'              清空后输入      type <loc> '<text>'   不清空输入")
 	p("  fillsecret <loc> '<text>'        password/敏感字段的显式安全填充(CDP insertText,穿透Vue/React受控输入;值不回显)")
 	p("  press <key> | press <loc> <key>  按键 (Ctrl+A, Enter)")
-	p("  select <loc> '<value>'           下拉选择        hover <loc>           悬停")
+	p("  select <loc> '<value|label>'     下拉选择(value→label→唯一label前缀)  hover <loc> 悬停")
 	p("  scroll down|up [N]               视口中心滚轮      scroll <loc> down|up [N]  对准元素滚轮")
 	p("  scrollto <loc>                   显式滚到可见(之后重新 observe); scrollinto <loc> 兼容别名")
 	p("  focus/check/uncheck <loc>        聚焦/勾选/取消   back | forward        导航历史")
@@ -1218,9 +1253,11 @@ func printUsage() {
 	p("    tapxy <xf> <yf>                视口比例坐标真实点击 (不进 a11y 树的控件最通用解)")
 	p("    typetext <text>                向当前焦点插文本 (配合 tapxy 聚焦自定义 input)")
 	p("    clickat/dblclickat/rclickat css=#chart <x%> <y%>   元素内相对坐标点击/双击/右键")
-	p("    hoverat css=#chart 50% 40%     悬停触发 tooltip/十字线")
+	p("    hoverat 414,314                视口 CSS px 直接悬停 (无需 selector)")
+	p("    hoverat css=#chart 50% 40%     元素内悬停触发 tooltip/十字线")
 	p("    dragat css=#chart 20% 50% 80% 50%   brush 框选 / dataZoom 拖拽")
-	p("    wheelat css=#chart 50% 50% -240     滚轮缩放 (dy<0 放大)")
+	p("    wheelat 1200,800 down 6        视口 CSS px 定点滚 6 格 (无需 selector)")
+	p("    wheelat css=#chart 50% 50% -240     元素内滚轮缩放 (dy<0 放大)")
 	p("    tapat/swipeat <loc> <coords>   移动端真实触控点击/滑动")
 	p("")
 	p("─── 高级 / 运维 (非核心循环) ───────────────────────────────")
@@ -1290,7 +1327,8 @@ func printCommandUsage(command string) {
 		fmt.Println("常用操作:")
 		fmt.Println("  click @rN | click x,y | fill/type/press/hover/select/back/forward/focus/check/uncheck")
 		fmt.Println("  scroll down|up [N] | scroll @rN down|up [N] | scrollto @rN (scroll 后重新 observe)")
-		fmt.Println("  坐标动作(canvas 图表): clickat/dblclickat/rclickat/hoverat/wheelat/dragat/tapat/swipeat")
+		fmt.Println("  hoverat x,y | wheelat x,y down|up [N]              # 视口 CSS px, 无需 selector")
+		fmt.Println("  元素内坐标动作(canvas): clickat/dblclickat/rclickat/hoverat/wheelat/dragat/tapat/swipeat")
 		fmt.Println("  @rN 取自上次 observe; 详细定位器/动作见 dw-browser --help")
 	case "check", "journey", "diff":
 		printTestingHelp()
@@ -1744,10 +1782,80 @@ func needsRefRefresh(err error) bool {
 		isTransientBrowserStepError(err)
 }
 
+type cliActTimeoutError struct {
+	Action  string
+	Timeout time.Duration
+}
+
+func (e *cliActTimeoutError) Error() string {
+	return fmt.Sprintf("action %q timed out after %s (CLI watchdog)", e.Action, e.Timeout)
+}
+
+func (e *cliActTimeoutError) Unwrap() error { return context.DeadlineExceeded }
+
+func isCLIActTimeout(err error) bool {
+	var timeoutErr *cliActTimeoutError
+	return errors.As(err, &timeoutErr)
+}
+
+type cliActionResult struct {
+	snap *browser.Snapshot
+	err  error
+}
+
+// runCLIActionWithTimeout is independent of the ActionEngine's 15s guard and
+// covers alternate BrowserCore implementations with the same bounded contract.
+func runCLIActionWithTimeout(
+	parent context.Context,
+	timeout time.Duration,
+	action string,
+	run func(context.Context) (*browser.Snapshot, error),
+) (*browser.Snapshot, error) {
+	if parent == nil {
+		parent = context.Background()
+	}
+	if timeout <= 0 {
+		timeout = cliActTimeout
+	}
+	if deadline, ok := parent.Deadline(); ok {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return nil, &cliActTimeoutError{Action: action, Timeout: 0}
+		}
+		if remaining < timeout {
+			timeout = remaining
+		}
+	}
+
+	actionCtx, cancelAction := context.WithCancel(parent)
+	done := make(chan cliActionResult, 1)
+	go func() {
+		snap, err := run(actionCtx)
+		done <- cliActionResult{snap: snap, err: err}
+	}()
+
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	defer cancelAction()
+	select {
+	case result := <-done:
+		return result.snap, result.err
+	case <-parent.Done():
+		if errors.Is(parent.Err(), context.DeadlineExceeded) {
+			return nil, &cliActTimeoutError{Action: action, Timeout: timeout}
+		}
+		return nil, parent.Err()
+	case <-timer.C:
+		return nil, &cliActTimeoutError{Action: action, Timeout: timeout}
+	}
+}
+
 func actWithRetry(ctx context.Context, bc browser.BrowserCore, action string, observe bool) (*browser.Snapshot, error) {
 	var lastErr error
 	for attempt := 0; attempt < 3; attempt++ {
-		snap, err := bc.Act(ctx, action, observe)
+		snap, err := runCLIActionWithTimeout(ctx, cliActTimeout, action, func(actionCtx context.Context) (*browser.Snapshot, error) {
+			return bc.Act(actionCtx, action, observe)
+		})
 		if err == nil {
 			return snap, nil
 		}
@@ -2234,14 +2342,45 @@ func runActSession(flags commonFlags, action string, awaitStable bool, snapAfter
 
 	// Restore ref table from session
 	impl.RestoreRefsFromSession(sessionInfo.Refs)
+	// Persist an uncertainty fence before dispatch. A process crash or watchdog
+	// timeout after the browser receives input must never leave pre-action refs
+	// looking current to the next CLI process. Keep the in-memory refs only for
+	// this already-authorized action.
+	actionFence := *sessionInfo
+	actionFence.LastActionOutcome = "in_progress"
+	actionFence.Refs = nil
+	if err := browser.SaveSession(&actionFence); err != nil {
+		fmt.Fprintf(os.Stderr, "dw-browser: persist action fence: %v\n", err)
+		exitSessionCore(impl, exitRunErr)
+	}
 
 	// snapAfterAct (--snap): 强制 observe=true，确保 action 成功后获取快照 [SC-19, TC-C5-11]
 	observe := needsPostActionSnapshot(action) || snapAfterAct
-	snap, err := impl.ActWithSessionMode(ctx, action, observe)
+	snap, err := runCLIActionWithTimeout(ctx, cliActTimeout, action, func(actionCtx context.Context) (*browser.Snapshot, error) {
+		return impl.ActWithSessionMode(actionCtx, action, observe)
+	})
 	if err != nil {
 		// [SC-19, TC-C5-12] act --snap: action 失败 → 不执行 snap，直接返回错误
 		fmt.Fprintf(os.Stderr, "dw-browser: act failed: %v\n", err)
+		sessionInfo.Refs = nil
+		sessionInfo.LastActionOutcome = "unknown"
+		if saveErr := browser.SaveSession(sessionInfo); saveErr != nil {
+			fmt.Fprintf(os.Stderr, "dw-browser: persist unknown action outcome: %v\n", saveErr)
+		}
 		exitSessionCore(impl, exitFail)
+	}
+	// The returned snapshot is the first terminal page boundary. Commit it with
+	// the action outcome before any optional stabilization sleep or auxiliary
+	// recording, so another CLI process cannot observe the in-progress fence as
+	// though the action never completed.
+	if snap != nil {
+		applyPostActionSnapshot(sessionInfo, snap)
+	}
+	committedSnap := snap
+	sessionInfo.LastActionOutcome = "confirmed"
+	if err := browser.SaveSession(sessionInfo); err != nil {
+		fmt.Fprintf(os.Stderr, "dw-browser: persist confirmed action outcome: %v\n", err)
+		exitSessionCore(impl, exitRunErr)
 	}
 
 	// [Record tap — BS-09 Phase 2] 若当前 session 有活跃录制，追加此 act 动作为一个 step。
@@ -2296,10 +2435,10 @@ func runActSession(flags commonFlags, action string, awaitStable bool, snapAfter
 	}
 
 	// A successful same-page act preserves the last explicit observation: typing
-	// does not make a button the human just saw become unseen. The click path
-	// re-probes visibility and hit-testing live before every pointer dispatch.
-	// Navigation is the only post-act event that revokes all old-page refs.
-	if snap != nil {
+	// does not make a button the human just saw become unseen. The initial
+	// post-action snapshot was committed with the terminal outcome above. If
+	// --await produced a newer snapshot, reconcile that additional boundary now.
+	if awaitStable && snap != nil && snap != committedSnap {
 		applyPostActionSnapshot(sessionInfo, snap)
 		_ = browser.SaveSession(sessionInfo)
 	}
@@ -2407,6 +2546,8 @@ func actionMovesWitnessViewport(action string) bool {
 	switch parsed.Op {
 	case "scroll", "scrollto", "scrollinto":
 		return true
+	case "wheelat":
+		return parsed.Ref == ""
 	default:
 		return false
 	}
