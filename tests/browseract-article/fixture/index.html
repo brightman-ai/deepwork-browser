@@ -175,7 +175,7 @@
 </head>
 <body>
   <header>
-    <h1 data-testid="article-title">BrowserAct: 面向 AI Agent 的浏览器自动化 CLI</h1>
+    <h1 data-testid="article-title" data-region="article-title">BrowserAct: 面向 AI Agent 的浏览器自动化 CLI</h1>
     <p class="lede" data-testid="article-lede">
       本页面把微信公众号正文改写成本地测试 fixture，用于比较 A11y、自然语言 step、plan/do 和 Vision LLM 四种 dw-browser 测试方案。
     </p>
@@ -209,23 +209,23 @@
           <button id="btn-layer-execution" data-testid="btn-layer-execution" aria-pressed="false">执行层</button>
           <button id="btn-layer-human" data-testid="btn-layer-human" aria-pressed="false">人机协作层</button>
         </div>
-        <p class="status" data-testid="filter-status">当前显示 6 个能力项</p>
+        <p class="status" data-testid="filter-status" data-region="filter-status">当前显示 6 个能力项</p>
       </section>
 
       <section data-region="capabilities" data-testid="section-capabilities">
         <h2>三层突破体系</h2>
         <div class="grid" id="capability-grid">
-          <div class="card" data-layer="env" data-testid="card-stealth">
+          <div class="card" data-layer="env" data-testid="card-stealth" data-region="card-stealth">
             <strong>stealth 反检测浏览器</strong>
             <span>指纹伪装、WebDriver 隐身、请求头一致性，适合有访问限制的网站。</span>
             <span class="tag">环境层</span>
           </div>
-          <div class="card" data-layer="env" data-testid="card-proxy">
+          <div class="card" data-layer="env" data-testid="card-proxy" data-region="card-proxy">
             <strong>动态代理</strong>
             <span>代理轮换配合反检测浏览器，用于 Product Hunt、YouTube 等高频采集。</span>
             <span class="tag">环境层</span>
           </div>
-          <div class="card" data-layer="execution" data-testid="card-stealth-extract">
+          <div class="card" data-layer="execution" data-testid="card-stealth-extract" data-region="card-stealth-extract">
             <strong>stealth-extract</strong>
             <span>像高级 WebFetch 一样启动反检测浏览器，等待 JavaScript 渲染后提取干净内容。</span>
             <span class="tag">执行层</span>
@@ -235,12 +235,12 @@
             <span>自动解决常见验证码，让 Agent 在无人值守场景里继续执行。</span>
             <span class="tag">执行层</span>
           </div>
-          <div class="card" data-layer="human" data-testid="card-remote-assist">
+          <div class="card" data-layer="human" data-testid="card-remote-assist" data-region="card-remote-assist">
             <strong>remote-assist</strong>
             <span>生成远程链接，让 Human 在手机或其他设备扫码登录、短信验证，然后 Agent 继续原会话。</span>
             <span class="tag">人机协作层</span>
           </div>
-          <div class="card" data-layer="human" data-testid="card-skill-forge">
+          <div class="card" data-layer="human" data-testid="card-skill-forge" data-region="card-skill-forge">
             <strong>Skill Forge</strong>
             <span>把跑通的网站操作流程生成可复用 Skill，例如知乎搜索、小红书提取、微信文章检索。</span>
             <span class="tag">人机协作层</span>
@@ -294,7 +294,7 @@
         <li data-testid="scenario-producthunt">Product Hunt 使用 stealth-extract + 动态代理穿透限制。</li>
       </ol>
       <button id="copy-summary" data-testid="copy-summary">生成测试摘要</button>
-      <p id="summary-output" data-testid="summary-output" aria-live="polite"></p>
+      <p id="summary-output" data-testid="summary-output" data-region="summary-output" aria-live="polite"></p>
     </aside>
   </main>
 

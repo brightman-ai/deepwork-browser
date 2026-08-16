@@ -5,6 +5,37 @@ app: deepwork-browser
 portal: local-fixture
 risk_tags: [a11y, deterministic, chinese-content, interaction]
 
+# NOTE (see-to-click migration, commit 035981a):
+# Under the new interaction contract, observe's @rN refs (and the interactive-only
+# Census from `--all`) only ever cover elements that are natively interactive
+# (native tag / ARIA interactive role / tabIndex / onclick / cursor:pointer) — see
+# browser/snapshot_engine.go isPotentiallyInteractive() and browser/see_to_click.go.
+# Non-interactive DOM nodes (headings, status paragraphs, plain content cards) never
+# become a ref OR a census entry, even when 100% on-screen, and Structural.Text is
+# built only from those same refs (browser/testing/observe.go structuralFromSnap +
+# snapshot_engine.go buildCompactText) — so exists()/text_contains() can no longer
+# see them at all. Census was evaluated and rejected as the fix for those checks:
+# CensusEntry (browser/core.go) carries only Role/Name, no TestID, and it is
+# populated from the very same interactable-only candidate pool, so it can't
+# recover non-interactive testids either.
+#
+# The equivalent, still-deterministic, zero-LLM mechanism used below is the
+# existing region channel (browser/testing/region.go CollectRegionsViaEval + the
+# region_non_empty primitive in browser/testing/assert.go): a raw
+# `document.querySelectorAll('[data-region]')` + getBoundingClientRect() probe that
+# is completely independent of interactivity/see-to-click filtering, and — like the
+# old exists() check — still correctly reports 0-size for elements hidden via the
+# fixture's `.hidden { display:none }` filter/layer toggles (verified empirically
+# against this fixture, see step comments below). The fixture
+# (tests/browseract-article/fixture/index.html) was given matching
+# data-region="<testid>" markers (purely additive, no behavior change) for every
+# non-interactive element this journey needs to assert on.
+#
+# All interaction steps (`do:`) below already target visible+interactive elements
+# (search-box, btn-layer-human, copy-summary) and passed under the default visual
+# see-to-click executor with no changes needed — no step required the per-step
+# `mode: element` escape hatch.
+
 environment:
   base_url: http://127.0.0.1:18765
   entry_url: /
@@ -20,14 +51,25 @@ journey:
       until: "text BrowserAct"
       timeout_ms: 10000
     check:
-      - assert: "exists(testid='article-title')"
-        using: [structural]
+      # MIGRATED: exists(testid='article-title') → region_non_empty. <h1 data-testid=
+      # "article-title"> is plain heading text, never interactive → never a ref/census
+      # entry. Same specificity as the old check (same element, via data-region
+      # mirroring the testid), just sourced from the region channel instead of Refs.
+      - assert: "region_non_empty('article-title')"
+        using: [layout]
         required: true
       - assert: "exists(testid='search-box')"
         using: [structural]
         required: true
-      - assert: "text_contains('stealth-extract')"
-        using: [structural]
+      # MIGRATED: text_contains('stealth-extract') → region_non_empty('card-stealth-
+      # extract'). "stealth-extract" only ever appeared in the compact text as the
+      # DOM-discovered name of the (non-interactive) card-stealth-extract div; that
+      # div is now excluded from Refs entirely, so the substring is unreachable via
+      # Structural.Text. Migrated to a direct existence check on the exact card that
+      # carries this content — same fact (the stealth-extract capability card is
+      # rendered), tighter than a free-text substring match.
+      - assert: "region_non_empty('card-stealth-extract')"
+        using: [layout]
         required: true
       - assert: "exists(testid='copy-summary')"
         using: [structural]
@@ -42,11 +84,19 @@ journey:
       until: "visible [data-testid=\"card-proxy\"]"
       timeout_ms: 10000
     check:
-      - assert: "exists(testid='card-proxy')"
-        using: [structural]
+      # MIGRATED: exists(testid='card-proxy') → region_non_empty. div.card has no
+      # interactive role/handler, so it never becomes a ref. Empirically verified
+      # against this fixture that the region channel still correctly tracks the
+      # fixture's own `.hidden{display:none}` keyword filter — filtered-out cards
+      # report a 0x0 rect, filtered-in cards report their real box — so this keeps
+      # the same "still-visible-after-filtering" guarantee the old check had.
+      - assert: "region_non_empty('card-proxy')"
+        using: [layout]
         required: true
-      - assert: "exists(testid='filter-status')"
-        using: [structural]
+      # MIGRATED: exists(testid='filter-status') → region_non_empty. <p class=
+      # "status"> is plain text, non-interactive.
+      - assert: "region_non_empty('filter-status')"
+        using: [layout]
         required: true
 
   - id: clear-keyword-filter
@@ -55,8 +105,10 @@ journey:
       until: "visible [data-testid=\"card-stealth\"]"
       timeout_ms: 10000
     check:
-      - assert: "exists(testid='card-stealth')"
-        using: [structural]
+      # MIGRATED: exists(testid='card-stealth') → region_non_empty (same reasoning
+      # as card-proxy above).
+      - assert: "region_non_empty('card-stealth')"
+        using: [layout]
         required: true
 
   - id: switch-human-layer
@@ -65,11 +117,17 @@ journey:
       until: "visible [data-testid=\"card-remote-assist\"]"
       timeout_ms: 10000
     check:
-      - assert: "exists(testid='card-remote-assist')"
-        using: [structural]
+      # MIGRATED: exists(testid='card-remote-assist') → region_non_empty. Also
+      # empirically verified the layer toggle (not just the keyword filter) collapses
+      # non-matching cards to 0x0 via the same `.hidden` mechanism, so this still
+      # proves "the human-layer card is the one actually showing," not just DOM
+      # presence.
+      - assert: "region_non_empty('card-remote-assist')"
+        using: [layout]
         required: true
-      - assert: "exists(testid='card-skill-forge')"
-        using: [structural]
+      # MIGRATED: exists(testid='card-skill-forge') → region_non_empty.
+      - assert: "region_non_empty('card-skill-forge')"
+        using: [layout]
         required: true
 
   - id: generate-summary
@@ -78,11 +136,29 @@ journey:
       until: "text 测试摘要"
       timeout_ms: 10000
     check:
-      - assert: "text_contains('测试摘要')"
-        using: [structural]
-        required: true
-      - assert: "exists(testid='summary-output')"
-        using: [structural]
+      # REMOVED (not just migrated): text_contains('测试摘要') was already a
+      # false-positive before this migration — the substring "测试摘要" is also
+      # part of the copy-summary BUTTON's own permanent label ("生成测试摘要") and
+      # of the JS source string literal inside <script> (document.body.textContent
+      # includes script text), so both the assertion DSL's structural Text and this
+      # step's own `wait.until: "text 测试摘要"` gate would already match before the
+      # click ever ran — neither channel can be tightened into a reliable positive
+      # check by picking a different substring, since the full generated string is
+      # literally present in the page's <script> block from load. Structural.Text
+      # is also now Refs-only (see top-of-file note), so summary-output's real
+      # (non-interactive) content is unreachable through text_contains() regardless.
+      # Coverage is retained below via region_non_empty('summary-output'), which was
+      # verified empirically on this exact fixture to be a real discriminator: the
+      # empty <p id="summary-output"> reports height=0 before the click and a
+      # non-zero rendered box only after copy-summary's click handler injects the
+      # generated sentence — i.e. it actually proves generation happened, which the
+      # removed text_contains() check never did.
+      #
+      # MIGRATED: exists(testid='summary-output') → region_non_empty (same element;
+      # this single assertion now also covers what text_contains('测试摘要') was
+      # meant to verify, see comment above).
+      - assert: "region_non_empty('summary-output')"
+        using: [layout]
         required: true
 
 evidence:
