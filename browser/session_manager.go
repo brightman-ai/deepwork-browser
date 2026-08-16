@@ -2,16 +2,12 @@ package browser
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
-	"io"
 	"log"
 	"net"
 	"net/http"
 	"os"
 	"path/filepath"
-	"strings"
-	"sync"
 	"time"
 )
 
@@ -21,18 +17,6 @@ import (
 
 // sessionsDir はセッションファイルを保存するディレクトリ。
 const sessionsDir = "/tmp/dw-browser-sessions"
-
-const (
-	SessionActionOutcomeInProgress = "in_progress"
-	SessionActionOutcomeUnknown    = "unknown"
-	SessionActionOutcomeConfirmed  = "confirmed"
-	SessionActionOutcomeReconciled = "reconciled"
-)
-
-var (
-	ErrSessionMutationBusy      = errors.New("browser session mutation is already in progress")
-	ErrSessionObservationNeeded = errors.New("browser session requires a fresh observation before another action")
-)
 
 // SessionInfo Chrome セッション情報（ファイルに永続化）。
 type SessionInfo struct {
@@ -55,10 +39,6 @@ type SessionInfo struct {
 	PersonaID        string             `json:"persona_id,omitempty"` // 测试保真人格 ID(与 PresetID 同源 rails)
 	ProfileDir       string             `json:"profile_dir"`
 	PageURL          string             `json:"page_url"`
-	// DocumentGeneration is the target/main-frame loader generation that
-	// produced Refs. URL and TargetID are intentionally insufficient: both can
-	// stay unchanged across a reload that replaces every DOM node.
-	DocumentGeneration string `json:"document_generation,omitempty"`
 	CreatedAt        string             `json:"created_at"`
 	ViewportW        int                `json:"viewport_w"`
 	ViewportH        int                `json:"viewport_h"`
@@ -67,11 +47,10 @@ type SessionInfo struct {
 	SnapEpoch        int                `json:"snap_epoch"` // Incremented on each snap
 	Refs             []SessionRef       `json:"refs"`       // Ref table from last snap
 	// LastActionOutcome is a crash/timeout fence for persisted ref authority.
-	// in_progress/unknown revoke refs; a successful observe atomically replaces
-	// them and advances the outcome to reconciled.
-	LastActionOutcome string `json:"last_action_outcome,omitempty"`
-	Ephemeral         bool   `json:"ephemeral"` // true if --ephemeral was used
-	XvfbPID           int    `json:"xvfb_pid"`  // Xvfb process PID (headed mode, Linux)
+	// "in_progress" and "unknown" mean no ref may be trusted until observe.
+	LastActionOutcome string             `json:"last_action_outcome,omitempty"`
+	Ephemeral        bool               `json:"ephemeral"`  // true if --ephemeral was used
+	XvfbPID          int                `json:"xvfb_pid"`   // Xvfb process PID (headed mode, Linux)
 
 	BrowserMuxHostID      string `json:"browser_mux_host_id,omitempty"`
 	BrowserMuxHostPID     int    `json:"browser_mux_host_pid,omitempty"`
@@ -106,160 +85,6 @@ type SessionInfo struct {
 	// Keyboard 软键盘态（act "keyboard show|hide"/焦点自动同步设置；REQ-BC-12）。
 	// 跨 CLI 调用的意图态 SSOT，attach 时经 ApplyViewportFacts 重放进页面。
 	Keyboard bool `json:"keyboard,omitempty"`
-}
-
-// SessionMutation is the exclusive cross-process capability for one session's
-// Load -> uncertainty fence -> browser dispatch -> terminal reconcile
-// transaction. Atomic rename protects file bytes; this lease protects action
-// ownership and prevents two CLI processes from dispatching from the same
-// stale ref generation.
-type SessionMutation struct {
-	sessionID string
-	lock      io.Closer
-	once      sync.Once
-}
-
-func BeginSessionMutation(sessionID string) (*SessionMutation, error) {
-	sessionID = strings.TrimSpace(sessionID)
-	if sessionID == "" {
-		return nil, fmt.Errorf("session mutation: empty session id")
-	}
-	if err := os.MkdirAll(sessionsDir, 0o755); err != nil {
-		return nil, fmt.Errorf("session mutation: mkdir %s: %w", sessionsDir, err)
-	}
-	lock, err := acquireProcessFileLease(sessionFilePath(sessionID) + ".mutation.lock")
-	if err != nil {
-		if errors.Is(err, ErrProcessFileLeaseBusy) {
-			return nil, fmt.Errorf("%w: %s", ErrSessionMutationBusy, sessionID)
-		}
-		return nil, fmt.Errorf("session mutation %s: %w", sessionID, err)
-	}
-	return &SessionMutation{sessionID: sessionID, lock: lock}, nil
-}
-
-func (m *SessionMutation) Release() {
-	if m == nil {
-		return
-	}
-	m.once.Do(func() {
-		if m.lock != nil {
-			_ = m.lock.Close()
-			m.lock = nil
-		}
-	})
-}
-
-func (m *SessionMutation) validate(info *SessionInfo) error {
-	if m == nil || m.lock == nil {
-		return fmt.Errorf("session mutation: ownership capability is not held")
-	}
-	if info == nil {
-		return fmt.Errorf("session mutation: nil session")
-	}
-	if strings.TrimSpace(info.SessionID) != m.sessionID {
-		return fmt.Errorf("session mutation: capability for %q cannot mutate %q", m.sessionID, info.SessionID)
-	}
-	return nil
-}
-
-// RequireActionReady is the persisted unknown-state gate. Only Observe may
-// transition unknown/in_progress to reconciled; selector syntax (#testid,
-// role, coordinates) cannot bypass that epistemic boundary.
-func (m *SessionMutation) RequireActionReady(info *SessionInfo) error {
-	if err := m.validate(info); err != nil {
-		return err
-	}
-	switch info.LastActionOutcome {
-	case SessionActionOutcomeInProgress, SessionActionOutcomeUnknown:
-		return fmt.Errorf("%w: session=%s outcome=%s (run observe --id <id> first)", ErrSessionObservationNeeded, info.SessionID, info.LastActionOutcome)
-	default:
-		return nil
-	}
-}
-
-// Observe is the only unknown→reconciled transition. Fresh refs, page
-// identity, and the authority outcome are one atomic replacement while the
-// caller retains the session mutation capability.
-func (m *SessionMutation) Observe(info *SessionInfo, snap *Snapshot, refs []SessionRef) error {
-	if err := m.validate(info); err != nil {
-		return err
-	}
-	if snap == nil {
-		return fmt.Errorf("session observation: nil snapshot")
-	}
-	if len(refs) > 0 && strings.TrimSpace(snap.DocumentGeneration) == "" && NormalizeEngine(info.Engine) == EngineChrome {
-		return fmt.Errorf("session observation: Chrome document generation is unavailable; refusing to mint refs")
-	}
-	info.Refs = append([]SessionRef(nil), refs...)
-	info.PageURL = snap.URL
-	if generation := strings.TrimSpace(snap.DocumentGeneration); generation != "" {
-		info.DocumentGeneration = generation
-	}
-	info.LastActionOutcome = SessionActionOutcomeReconciled
-	return saveSessionHeld(info)
-}
-
-// ReconcileDocumentGeneration compares persisted ref authority with the live
-// main-frame loader before RestoreRefsFromSession. On mismatch it atomically
-// revokes every ref representation (BackendNodeID and testid-only alike) and
-// leaves the observed generation untouched: only Observe may mint authority
-// for the live document.
-func (m *SessionMutation) ReconcileDocumentGeneration(info *SessionInfo, live string) error {
-	if err := m.validate(info); err != nil {
-		return err
-	}
-	observed := strings.TrimSpace(info.DocumentGeneration)
-	live = strings.TrimSpace(live)
-	if observed != "" && live != "" && observed == live {
-		return nil
-	}
-	info.LastActionOutcome = SessionActionOutcomeUnknown
-	info.Refs = nil
-	if err := saveSessionHeld(info); err != nil {
-		return err
-	}
-	reason := "live document generation unavailable"
-	if observed == "" {
-		reason = "session refs have no observed document generation"
-	} else if live != "" {
-		reason = fmt.Sprintf("document generation changed from %q to %q", observed, live)
-	}
-	return fmt.Errorf("%w: session=%s (%s; run observe --id <id> first)", ErrSessionObservationNeeded, info.SessionID, reason)
-}
-
-// Fence is the pre-dispatch half of the session action transaction. It writes
-// a copy: the executing process retains the already-authorized refs for this
-// one action, while every later reader sees in_progress with no capabilities.
-func (m *SessionMutation) Fence(info *SessionInfo) error {
-	if err := m.validate(info); err != nil {
-		return err
-	}
-	fence := *info
-	fence.LastActionOutcome = SessionActionOutcomeInProgress
-	fence.Refs = nil
-	return saveSessionHeld(&fence)
-}
-
-// Unknown is the only failed/timeout transition. Unknown
-// outcome and ref revocation are one atomic file replacement.
-func (m *SessionMutation) Unknown(info *SessionInfo) error {
-	if err := m.validate(info); err != nil {
-		return err
-	}
-	info.LastActionOutcome = SessionActionOutcomeUnknown
-	info.Refs = nil
-	return saveSessionHeld(info)
-}
-
-// Commit is called only after target, viewport, and ref
-// authority have all been reconciled in memory. The terminal outcome must
-// never be persisted in an earlier write than those capability changes.
-func (m *SessionMutation) Commit(info *SessionInfo) error {
-	if err := m.validate(info); err != nil {
-		return err
-	}
-	info.LastActionOutcome = SessionActionOutcomeConfirmed
-	return saveSessionHeld(info)
 }
 
 // SessionRef セッション内の要素 ref エントリ。
@@ -329,27 +154,6 @@ func sessionFilePath(sessionID string) string {
 
 // SaveSession セッション情報をファイルに書き込む。
 func SaveSession(info *SessionInfo) error {
-	if info == nil {
-		return fmt.Errorf("session_manager: save nil session")
-	}
-	mutation, err := BeginSessionMutation(info.SessionID)
-	if err != nil {
-		return err
-	}
-	defer mutation.Release()
-	return saveSessionHeld(info)
-}
-
-// Save persists non-action state while the caller holds the session mutation
-// capability. Prefer Fence/Unknown/Commit/Observe for action authority state.
-func (m *SessionMutation) Save(info *SessionInfo) error {
-	if err := m.validate(info); err != nil {
-		return err
-	}
-	return saveSessionHeld(info)
-}
-
-func saveSessionHeld(info *SessionInfo) error {
 	NormalizeSessionInfo(info)
 	if err := os.MkdirAll(sessionsDir, 0755); err != nil {
 		return fmt.Errorf("session_manager: mkdir %s: %w", sessionsDir, err)
@@ -366,14 +170,6 @@ func saveSessionHeld(info *SessionInfo) error {
 }
 
 func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
-	return writeFileAtomicWithHook(path, data, perm, nil)
-}
-
-// writeFileAtomicWithHook is the testable core of writeFileAtomic. Production
-// callers always pass a nil hook. Tests use the hook after a strict prefix has
-// reached the temporary file so they can kill the writer at a deterministic
-// mid-write boundary and prove that the canonical path was never truncated.
-func writeFileAtomicWithHook(path string, data []byte, perm os.FileMode, midWrite func(tmpPath string, written, total int) error) error {
 	dir := filepath.Dir(path)
 	tmp, err := os.CreateTemp(dir, filepath.Base(path)+".*.tmp")
 	if err != nil {
@@ -382,35 +178,7 @@ func writeFileAtomicWithHook(path string, data []byte, perm os.FileMode, midWrit
 	tmpPath := tmp.Name()
 	defer os.Remove(tmpPath)
 
-	writeChunk := func(chunk []byte) error {
-		for len(chunk) > 0 {
-			n, writeErr := tmp.Write(chunk)
-			if writeErr != nil {
-				return writeErr
-			}
-			if n == 0 {
-				return io.ErrShortWrite
-			}
-			chunk = chunk[n:]
-		}
-		return nil
-	}
-
-	if midWrite == nil {
-		err = writeChunk(data)
-	} else {
-		prefixLen := len(data) / 2
-		if prefixLen == 0 {
-			prefixLen = len(data)
-		}
-		if err = writeChunk(data[:prefixLen]); err == nil {
-			err = midWrite(tmpPath, prefixLen, len(data))
-		}
-		if err == nil {
-			err = writeChunk(data[prefixLen:])
-		}
-	}
-	if err != nil {
+	if _, err := tmp.Write(data); err != nil {
 		tmp.Close()
 		return err
 	}
@@ -594,6 +362,7 @@ func ResolveSessionTarget(session *SessionInfo) (string, error) {
 	if bestID == session.TargetID {
 		if bestURL != "" && session.PageURL != bestURL {
 			session.PageURL = bestURL
+			_ = SaveSession(session)
 		}
 		return session.TargetID, nil
 	}
@@ -605,6 +374,8 @@ func ResolveSessionTarget(session *SessionInfo) (string, error) {
 		session.PageURL = bestURL
 	}
 	session.Refs = nil // target 变了，旧 refs 失效
+	_ = SaveSession(session)
+
 	fmt.Fprintf(os.Stderr, "[session-recovery] target %s → %s (url: %s)\n", oldTarget[:min(len(oldTarget), 8)], bestID[:min(len(bestID), 8)], bestURL)
 	return bestID, nil
 }

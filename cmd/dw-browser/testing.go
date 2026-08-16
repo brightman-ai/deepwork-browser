@@ -181,34 +181,53 @@ func autoLoadLLMEnv() {
 	}
 }
 
-// specHasNLGoal reports whether any journey/recovery step carries a free-form
-// natural-language goal that needs the LLM planner. ParseJourneyAction is the
-// same typed boundary used by execution and planner validation, so malformed
-// deterministic commands fail preflight instead of being reclassified as NL.
-func specHasNLGoal(spec *btest.JourneySpec) (bool, error) {
-	if spec == nil {
-		return false, nil
+// isNLGoal returns true when action is a free-form natural-language goal
+// rather than a deterministic browser command. NL goals are routed through
+// the LLM Planner; structural commands go directly to ActWithSessionMode.
+//
+// Structural prefixes: click, fill, press, scroll, select, navigate, wait, type, hover, back, forward.
+// Anything else (e.g. "在浏览器中搜索 arxiv") is treated as an NL goal.
+func isNLGoal(action string) bool {
+	lower := strings.ToLower(strings.TrimSpace(action))
+	// These commands are valid without an argument and are handled directly by
+	// both journey executors. Classifying them as NL would make an otherwise
+	// deterministic spec fail its preflight before execution.
+	switch lower {
+	case "wait", "noop", "none", "back", "forward":
+		return false
 	}
-	needsPlanner := false
-	for _, section := range []struct {
-		name  string
-		steps []btest.StepSpec
-	}{{"journey", spec.Journey}, {"recovery", spec.Recovery}} {
-		for _, step := range section.steps {
-			parsed, err := btest.ParseJourneyAction(step.Do)
-			if err != nil {
-				return false, fmt.Errorf("%s step %q: %w", section.name, step.ID, err)
-			}
-			if parsed.Kind == btest.JourneyActionNaturalLanguage {
-				needsPlanner = true
+	for _, p := range []string{
+		"click ", "fill ", "press ", "scroll ", "scrollto ", "scrollinto ", "select ",
+		"navigate ", "wait ", "type ", "hover ",
+	} {
+		if strings.HasPrefix(lower, p) {
+			return false
+		}
+	}
+	return len(lower) > 0
+}
+
+// specHasNLGoal reports whether any journey/recovery step carries a free-form
+// natural-language goal that needs the LLM planner. It reuses isNLGoal — the
+// same step-type judgement used at execution time — so the classification is
+// single-sourced. Activation is spec-driven (ROOT-C: env is CONFIG, not a
+// trigger), so a purely structural spec never spins up the planner.
+func specHasNLGoal(spec *btest.JourneySpec) bool {
+	if spec == nil {
+		return false
+	}
+	for _, steps := range [][]btest.StepSpec{spec.Journey, spec.Recovery} {
+		for _, s := range steps {
+			if isNLGoal(s.Do) {
+				return true
 			}
 		}
 	}
-	return needsPlanner, nil
+	return false
 }
 
-// specHasVisualUsing reports whether any assertion requires the screenshot
-// oracle, either intrinsically (visible) or via explicit using:[visual].
+// specHasVisualUsing reports whether any assertion in the spec opts into the
+// visual oracle via using:[visual]. Only explicit per-assertion opt-in counts.
 func specHasVisualUsing(spec *btest.JourneySpec) bool {
 	if spec == nil {
 		return false
@@ -216,7 +235,7 @@ func specHasVisualUsing(spec *btest.JourneySpec) bool {
 	stepsHaveVisual := func(steps []btest.StepSpec) bool {
 		for _, s := range steps {
 			for _, a := range s.Check {
-				if btest.AssertionRequiresVisual(a.Assert, a.Using) {
+				if cliUsingContainsVisual(a.Using) {
 					return true
 				}
 			}
@@ -228,7 +247,7 @@ func specHasVisualUsing(spec *btest.JourneySpec) bool {
 	}
 	if spec.Baseline != nil {
 		for _, a := range spec.Baseline.Invariants {
-			if btest.AssertionRequiresVisual(a.Assert, a.Using) {
+			if cliUsingContainsVisual(a.Using) {
 				return true
 			}
 		}
@@ -486,12 +505,6 @@ func runObserve(args []string) {
 		fmt.Fprintln(os.Stderr, "dw-browser observe: requires --id <session-id>")
 		os.Exit(exitRunErr)
 	}
-	mutation, err := browser.BeginSessionMutation(flags.sessionID)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "dw-browser observe: %v\n", err)
-		os.Exit(exitRunErr)
-	}
-	defer mutation.Release()
 
 	sessionInfo, err := browser.LoadSession(flags.sessionID)
 	if err != nil {
@@ -502,11 +515,7 @@ func runObserve(args []string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	if err := mutation.Fence(sessionInfo); err != nil {
-		fmt.Fprintf(os.Stderr, "dw-browser observe: persist observation fence: %v\n", err)
-		os.Exit(exitRunErr)
-	}
-	impl := connectSession(ctx, sessionInfo, mutation, "observe", flags)
+	impl := connectSession(ctx, sessionInfo, "observe", flags)
 	defer closeSessionCore(impl)
 	if capable, ok := impl.(browser.ScenarioInteractionCapable); ok {
 		capable.SetObserveAll(wantAll)
@@ -528,9 +537,10 @@ func runObserve(args []string) {
 	// SSOT: persist THIS observation's @rN refs so a subsequent `act "click @rN"`
 	// resolves the SAME refs the caller just saw (observe shares act's ref-space).
 	if snap != nil {
-		if err := mutation.Observe(sessionInfo, snap, sessionRefsForObservation(snap, wantAll)); err != nil {
+		sessionInfo.Refs = sessionRefsForObservation(snap, wantAll)
+		sessionInfo.PageURL = snap.URL
+		if err := browser.SaveSession(sessionInfo); err != nil {
 			fmt.Fprintf(os.Stderr, "dw-browser observe: save refs: %v\n", err)
-			os.Exit(exitRunErr)
 		}
 	}
 	if snap == nil {
@@ -873,22 +883,6 @@ func runCheck(args []string) {
 			usingSlice = append(usingSlice, strings.TrimSpace(p))
 		}
 	}
-	var assertionSpecs []btest.AssertionSpec
-	if specFile != "" {
-		var err error
-		assertionSpecs, err = loadAssertionSpecs(specFile)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "dw-browser check: load spec: %v\n", err)
-			os.Exit(exitRunErr)
-		}
-	}
-	requiresVisual := btest.AssertionRequiresVisual(assertExpr, usingSlice)
-	for _, spec := range assertionSpecs {
-		if btest.AssertionRequiresVisual(spec.Assert, spec.Using) {
-			requiresVisual = true
-			break
-		}
-	}
 
 	// Deterministic hard-lock honors BOTH the CLI flag and the attached session's
 	// persisted Policy.Deterministic (a baseline session locks determinism once at
@@ -903,8 +897,8 @@ func runCheck(args []string) {
 			deterministic = true
 		}
 	}
-	if deterministic && requiresVisual {
-		fmt.Fprintln(os.Stderr, "dw-browser check: deterministic mode: internal LLM disabled — visual assertion rejected (open the session with --scenario app-test-explore/webvisit to enable the vision oracle)")
+	if deterministic && cliUsingContainsVisual(usingSlice) {
+		fmt.Fprintln(os.Stderr, "dw-browser check: deterministic mode: internal LLM disabled — --using visual rejected (open the session with --scenario app-test-explore/webvisit to enable the vision oracle)")
 		os.Exit(exitRunErr)
 	}
 
@@ -930,16 +924,22 @@ func runCheck(args []string) {
 	// Vision activates only on explicit per-call opt-in (--using visual), never from ambient
 	// env, so a deterministic `check` can never silently invoke the LLM oracle. The
 	// !deterministic guard is belt-and-suspenders — deterministic + visual already exited above.
-	if !deterministic && requiresVisual {
+	if !deterministic && cliUsingContainsVisual(usingSlice) {
 		engine.Vision = btest.NewVisionOracle()
 	}
 	hasFail := false
 
 	// 2. 执行断言
 	if specFile != "" {
-		results := engine.EvaluateAll(obs, assertionSpecs)
+		// 批量断言：从 baseline YAML 文件加载
+		specs, err := loadAssertionSpecs(specFile)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "dw-browser check: load spec: %v\n", err)
+			os.Exit(exitRunErr)
+		}
+		results := engine.EvaluateAll(obs, specs)
 		for _, r := range results {
-			if r.Status != btest.StatusPass {
+			if r.Status == btest.StatusFail {
 				hasFail = true
 				break
 			}
@@ -956,7 +956,7 @@ func runCheck(args []string) {
 			cliUsingContainsVisual(usingSlice) {
 			result = engine.EvaluateVisualOnly(obs, assertExpr, usingSlice)
 		}
-		if result.Status != btest.StatusPass {
+		if result.Status == btest.StatusFail {
 			hasFail = true
 		}
 		writeJSONOrStdout(result, outFile, "check")
@@ -973,18 +973,19 @@ func runCheck(args []string) {
 
 // observeSession 复用 observe 逻辑，从已有 session 采集 Observation。
 func observeSession(flags commonFlags, cmdName string) *btest.Observation {
-	mutation, sessionInfo := beginSessionCommand(flags, cmdName)
-	defer mutation.Release()
-	fenceSessionCommand(mutation, sessionInfo, cmdName)
+	sessionInfo, err := browser.LoadSession(flags.sessionID)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "dw-browser %s: %v\n", cmdName, err)
+		os.Exit(exitRunErr)
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	impl := connectSession(ctx, sessionInfo, mutation, cmdName, flags)
+	impl := connectSession(ctx, sessionInfo, cmdName, flags)
 	defer closeSessionCore(impl)
 	impl.RestoreRefsFromSession(sessionInfo.Refs)
 
-	sessionInfo.SnapEpoch++
 	snap, err := impl.SnapWithSessionMode(ctx, sessionInfo.SnapEpoch)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "dw-browser %s: snap failed: %v\n", cmdName, err)
@@ -997,13 +998,6 @@ func observeSession(flags commonFlags, cmdName string) *btest.Observation {
 		ConsoleErrors:   []btest.ConsoleEntry{},
 		NetworkFailures: []btest.NetworkEntry{},
 	}
-	// `check` consumes this snapshot internally; it must reconcile the fenced
-	// session without minting action capability the human never observed.
-	if err := mutation.Observe(sessionInfo, snap, nil); err != nil {
-		fmt.Fprintf(os.Stderr, "dw-browser %s: persist terminal observation: %v\n", cmdName, err)
-		os.Exit(exitRunErr)
-	}
-	mutation.Release()
 
 	return btest.BuildObservation(flags.sessionID, snap, screenshotData, "", behavior, telemetry)
 }
@@ -1092,13 +1086,7 @@ func runJourney(args []string) {
 	// exits, not just errors — actually cleans it up: os.Exit skips defers,
 	// so a bare os.Exit here would silently undo the "TASK C: Chrome-leak
 	// fix" comment further down (that defer only ever catches panics).
-	var sessionMutation *browser.SessionMutation
-	exit := func(code int) {
-		if sessionMutation != nil {
-			sessionMutation.Release()
-		}
-		os.Exit(code)
-	}
+	exit := func(code int) { os.Exit(code) }
 
 	if specFile == "" {
 		fmt.Fprintln(os.Stderr, "dw-browser journey: requires --file <spec.yaml>")
@@ -1151,11 +1139,7 @@ func runJourney(args []string) {
 		_, oneShotPolicy, oneShotMode = scenarioPolicyOrExit(&flags, "journey")
 		deterministic = oneShotPolicy.Deterministic
 	}
-	specNeedsPlanner, actionSyntaxErr := specHasNLGoal(spec)
-	if actionSyntaxErr != nil {
-		fmt.Fprintf(os.Stderr, "dw-browser journey: invalid action syntax: %v\n", actionSyntaxErr)
-		exit(exitRunErr)
-	}
+	specNeedsPlanner := specHasNLGoal(spec)
 	specNeedsVision := specHasVisualUsing(spec)
 	if deterministic && (specNeedsPlanner || specNeedsVision) {
 		fmt.Fprintln(os.Stderr, "dw-browser journey: deterministic mode: internal LLM disabled but spec requires NL planner / visual oracle")
@@ -1171,41 +1155,21 @@ func runJourney(args []string) {
 
 	var executor btest.ActionExecutor
 	if flags.sessionID != "" {
-		var mutationErr error
-		sessionMutation, mutationErr = browser.BeginSessionMutation(flags.sessionID)
-		if mutationErr != nil {
-			fmt.Fprintf(os.Stderr, "dw-browser journey: %v\n", mutationErr)
-			exit(exitRunErr)
-		}
-		defer sessionMutation.Release()
 		// 连接已有 session
 		sessionInfo, loadErr := browser.LoadSession(flags.sessionID)
 		if loadErr != nil {
 			fmt.Fprintf(os.Stderr, "dw-browser journey: %v\n", loadErr)
 			exit(exitRunErr)
 		}
-		if readyErr := sessionMutation.RequireActionReady(sessionInfo); readyErr != nil {
-			fmt.Fprintf(os.Stderr, "dw-browser journey: %v\n", readyErr)
-			exit(exitRunErr)
-		}
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 		defer cancel()
 
-		if fenceErr := sessionMutation.Fence(sessionInfo); fenceErr != nil {
-			fmt.Fprintf(os.Stderr, "dw-browser journey: persist connect fence: %v\n", fenceErr)
-			exit(exitRunErr)
-		}
-		impl := connectSession(ctx, sessionInfo, sessionMutation, "journey", flags)
-		if commitErr := sessionMutation.Commit(sessionInfo); commitErr != nil {
-			fmt.Fprintf(os.Stderr, "dw-browser journey: persist connected session: %v\n", commitErr)
-			exit(exitRunErr)
-		}
+		impl := connectSession(ctx, sessionInfo, "journey", flags)
 		impl.RestoreRefsFromSession(sessionInfo.Refs)
 
 		executor = &cliActionExecutor{
 			sessionID:   flags.sessionID,
 			sessionInfo: sessionInfo,
-			mutation:    sessionMutation,
 			impl:        impl,
 			ctx:         ctx,
 			planner:     journeyPlanner,
@@ -1242,7 +1206,7 @@ func runJourney(args []string) {
 			if r := recover(); r != nil {
 				fmt.Fprintf(os.Stderr, "dw-browser journey: recovered panic, cleaning up Chrome: %v\n", r)
 			}
-			_ = closeBrowserCore(bc)
+			bc.Close(ctx)
 			cleanupEphemeral(profileID)
 		}()
 		// The panic-recover defer above only fires on an actual panic — os.Exit
@@ -1250,7 +1214,7 @@ func runJourney(args []string) {
 		// entirely, so it never ran on the common paths. Route all exits
 		// through this closure instead so cleanup is guaranteed either way.
 		exit = func(code int) {
-			_ = closeBrowserCore(bc)
+			bc.Close(ctx)
 			cleanupEphemeral(profileID)
 			os.Exit(code)
 		}
@@ -1332,7 +1296,6 @@ func runJourney(args []string) {
 type cliActionExecutor struct {
 	sessionID   string
 	sessionInfo *browser.SessionInfo
-	mutation    *browser.SessionMutation
 	impl        browser.SessionCore
 	ctx         context.Context
 	planner     *btest.Planner // nil when LLM not configured; NL goals fail gracefully
@@ -1347,77 +1310,47 @@ func (e *cliActionExecutor) ExecuteWithMode(ctx context.Context, action string, 
 }
 
 func (e *cliActionExecutor) executeWithMode(ctx context.Context, action string, mode browser.InteractionMode) error {
-	parsed, err := btest.ParseJourneyAction(action)
-	if err != nil {
-		return err
-	}
-	switch parsed.Kind {
-	case btest.JourneyActionNavigate:
-		return e.executePersistedMutation(func() error {
-			snap, err := e.impl.Navigate(ctx, parsed.NavigateTo)
-			if err != nil {
-				return fmt.Errorf("navigate %s: %w", parsed.NavigateTo, err)
-			}
-			if snap != nil {
-				e.sessionInfo.SnapEpoch++
-				e.sessionInfo.PageURL = snap.URL
+	trimmed := strings.TrimSpace(action)
+
+	// Direct URL navigation — deterministic fast path.
+	if rest, ok := strings.CutPrefix(strings.ToLower(trimmed), "navigate "); ok {
+		target := strings.TrimSpace(trimmed[len(trimmed)-len(rest):]) // preserve original case
+		if strings.HasPrefix(target, "http://") || strings.HasPrefix(target, "https://") || strings.HasPrefix(target, "/") {
+			if _, err := e.impl.Navigate(ctx, target); err != nil {
+				return fmt.Errorf("navigate %s: %w", target, err)
 			}
 			return nil
-		})
-	case btest.JourneyActionControl:
-		return nil
-	case btest.JourneyActionNaturalLanguage:
-		if e.planner == nil {
-			return fmt.Errorf("deterministic/llm-off: NL goal %q rejected, use structural action", parsed.Goal)
 		}
-		return e.executeNLGoal(ctx, parsed.Goal, mode)
-	case btest.JourneyActionCore:
-		return e.executeStructuredAction(ctx, strings.TrimSpace(action), mode)
-	default:
-		return fmt.Errorf("unsupported journey action kind %q", parsed.Kind)
 	}
+	switch strings.ToLower(trimmed) {
+	case "wait", "noop", "none":
+		return nil
+	}
+
+	// NL goal — route through LLM planner when configured. In deterministic /
+	// llm-off mode the planner is nil; reject explicitly rather than silently
+	// feeding a natural-language goal to the structural action engine.
+	if isNLGoal(trimmed) {
+		if e.planner == nil {
+			return fmt.Errorf("deterministic/llm-off: NL goal %q rejected, use structural action", trimmed)
+		}
+		return e.executeNLGoal(ctx, trimmed, mode)
+	}
+
+	return e.executeStructuredAction(ctx, action, mode)
 }
 
 func (e *cliActionExecutor) executeStructuredAction(ctx context.Context, action string, mode browser.InteractionMode) error {
-	return e.executePersistedMutation(func() error {
-		var err error
-		if mode == browser.InteractionModeElement {
-			capable, ok := e.impl.(browser.SessionInteractionModeActCapable)
-			if !ok {
-				return fmt.Errorf("mode: element is unavailable for this browser engine")
-			}
-			_, err = runCLIActionWithTimeout(ctx, cliActTimeout, action, func(actionCtx context.Context) (*browser.Snapshot, error) {
-				return capable.ActWithSessionInteractionMode(actionCtx, action, false, mode)
-			})
-		} else {
-			_, err = runCLIActionWithTimeout(ctx, cliActTimeout, action, func(actionCtx context.Context) (*browser.Snapshot, error) {
-				return e.impl.ActWithSessionMode(actionCtx, action, false)
-			})
+	if mode == browser.InteractionModeElement {
+		capable, ok := e.impl.(browser.SessionInteractionModeActCapable)
+		if !ok {
+			return fmt.Errorf("mode: element is unavailable for this browser engine")
 		}
-		return err
-	})
-}
-
-func (e *cliActionExecutor) executePersistedMutation(run func() error) error {
-	if e == nil || e.sessionInfo == nil || e.mutation == nil {
-		return fmt.Errorf("session journey action: missing session state")
-	}
-	if err := e.mutation.Fence(e.sessionInfo); err != nil {
-		return fmt.Errorf("persist session action fence: %w", err)
-	}
-	if err := run(); err != nil {
-		if saveErr := e.mutation.Unknown(e.sessionInfo); saveErr != nil {
-			return fmt.Errorf("%v; persist unknown session action: %w", err, saveErr)
-		}
+		_, err := capable.ActWithSessionInteractionMode(ctx, action, false, mode)
 		return err
 	}
-	// Journey actions do not expose a fresh observe capability set. Revoke all
-	// old refs in the same atomic replacement that records terminal success.
-	e.sessionInfo.Refs = nil
-	if err := e.mutation.Commit(e.sessionInfo); err != nil {
-		return fmt.Errorf("persist confirmed session action: %w", err)
-	}
-	return nil
+	_, err := e.impl.ActWithSessionMode(ctx, action, false)
+	return err
 }
 
 // executeNLGoal decomposes a natural-language goal into browser steps via the
@@ -1443,14 +1376,15 @@ func (e *cliActionExecutor) executeNLGoal(ctx context.Context, goal string, mode
 			return fmt.Errorf("nl-plan %q: %w", goal, err)
 		}
 	}
-	btest.NormalizePlan(plan)
-	if err := btest.ValidatePlan(plan); err != nil {
-		return fmt.Errorf("nl-plan %q: %w", goal, err)
-	}
 
 	for _, step := range plan.Steps {
-		if err := e.executeWithMode(ctx, step.Action, mode); err != nil {
-			return fmt.Errorf("nl-exec %q → step %q: %w", goal, step.Description, err)
+		switch strings.ToLower(strings.TrimSpace(step.Action)) {
+		case "wait", "noop", "none":
+			// The real synchronization is represented by step.Wait.
+		default:
+			if err := e.executeStructuredAction(ctx, step.Action, mode); err != nil {
+				return fmt.Errorf("nl-exec %q → step %q: %w", goal, step.Description, err)
+			}
 		}
 		if step.Wait != "" {
 			if err := e.Wait(ctx, step.Wait, 10000); err != nil {
@@ -1519,45 +1453,46 @@ func (e *oneshotActionExecutor) ExecuteWithMode(ctx context.Context, action stri
 }
 
 func (e *oneshotActionExecutor) executeWithMode(ctx context.Context, action string, mode browser.InteractionMode) error {
-	parsed, err := btest.ParseJourneyAction(action)
-	if err != nil {
-		return err
-	}
-	switch parsed.Kind {
-	case btest.JourneyActionNavigate:
-		if _, err := e.impl.Navigate(ctx, parsed.NavigateTo); err != nil {
-			return fmt.Errorf("navigate %s: %w", parsed.NavigateTo, err)
+	trimmed := strings.TrimSpace(action)
+
+	// Direct URL navigation — deterministic fast path.
+	if rest, ok := strings.CutPrefix(strings.ToLower(trimmed), "navigate "); ok {
+		target := strings.TrimSpace(trimmed[len(trimmed)-len(rest):]) // preserve original case
+		if strings.HasPrefix(target, "http://") || strings.HasPrefix(target, "https://") || strings.HasPrefix(target, "/") {
+			if _, err := e.impl.Navigate(ctx, target); err != nil {
+				return fmt.Errorf("navigate %s: %w", target, err)
+			}
+			return nil
 		}
+	}
+	switch strings.ToLower(trimmed) {
+	case "wait", "noop", "none":
 		return nil
-	case btest.JourneyActionControl:
-		return nil
-	case btest.JourneyActionNaturalLanguage:
+	}
+
+	// NL goal — route through LLM planner when configured. In deterministic /
+	// llm-off mode the planner is nil; reject explicitly rather than silently
+	// feeding a natural-language goal to the structural action engine.
+	if isNLGoal(trimmed) {
 		if e.planner == nil {
-			return fmt.Errorf("deterministic/llm-off: NL goal %q rejected, use structural action", parsed.Goal)
+			return fmt.Errorf("deterministic/llm-off: NL goal %q rejected, use structural action", trimmed)
 		}
-		return e.executeNLGoal(ctx, parsed.Goal, mode)
-	case btest.JourneyActionCore:
-		return e.executeStructuredAction(ctx, strings.TrimSpace(action), mode)
-	default:
-		return fmt.Errorf("unsupported journey action kind %q", parsed.Kind)
+		return e.executeNLGoal(ctx, trimmed, mode)
 	}
+
+	return e.executeStructuredAction(ctx, action, mode)
 }
 
 func (e *oneshotActionExecutor) executeStructuredAction(ctx context.Context, action string, mode browser.InteractionMode) error {
-	var err error
 	if mode == browser.InteractionModeElement {
 		capable, ok := e.impl.(browser.InteractionModeActCapable)
 		if !ok {
 			return fmt.Errorf("mode: element is unavailable for this browser engine")
 		}
-		_, err = runCLIActionWithTimeout(ctx, cliActTimeout, action, func(actionCtx context.Context) (*browser.Snapshot, error) {
-			return capable.ActWithInteractionMode(actionCtx, action, false, mode)
-		})
-	} else {
-		_, err = runCLIActionWithTimeout(ctx, cliActTimeout, action, func(actionCtx context.Context) (*browser.Snapshot, error) {
-			return e.impl.Act(actionCtx, action, false)
-		})
+		_, err := capable.ActWithInteractionMode(ctx, action, false, mode)
+		return err
 	}
+	_, err := e.impl.Act(ctx, action, false)
 	return err
 }
 
@@ -1573,14 +1508,15 @@ func (e *oneshotActionExecutor) executeNLGoal(ctx context.Context, goal string, 
 	if err != nil {
 		return fmt.Errorf("nl-plan %q: %w", goal, err)
 	}
-	btest.NormalizePlan(plan)
-	if err := btest.ValidatePlan(plan); err != nil {
-		return fmt.Errorf("nl-plan %q: %w", goal, err)
-	}
 
 	for _, step := range plan.Steps {
-		if err := e.executeWithMode(ctx, step.Action, mode); err != nil {
-			return fmt.Errorf("nl-exec %q → step %q: %w", goal, step.Description, err)
+		switch strings.ToLower(strings.TrimSpace(step.Action)) {
+		case "wait", "noop", "none":
+			// The real synchronization is represented by step.Wait.
+		default:
+			if err := e.executeStructuredAction(ctx, step.Action, mode); err != nil {
+				return fmt.Errorf("nl-exec %q → step %q: %w", goal, step.Description, err)
+			}
 		}
 		if step.Wait != "" {
 			if err := e.Wait(ctx, step.Wait, 10000); err != nil {
