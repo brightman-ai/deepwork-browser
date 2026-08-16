@@ -536,11 +536,12 @@ func runObserve(args []string) {
 	}
 	// SSOT: persist THIS observation's @rN refs so a subsequent `act "click @rN"`
 	// resolves the SAME refs the caller just saw (observe shares act's ref-space).
+	// URL + refs + reconciled outcome are one atomic session-file replacement;
+	// never print an observation whose authority failed to persist.
 	if snap != nil {
-		sessionInfo.Refs = sessionRefsForObservation(snap, wantAll)
-		sessionInfo.PageURL = snap.URL
-		if err := browser.SaveSession(sessionInfo); err != nil {
+		if err := browser.SaveObservedSession(sessionInfo, snap, sessionRefsForObservation(snap, wantAll)); err != nil {
 			fmt.Fprintf(os.Stderr, "dw-browser observe: save refs: %v\n", err)
+			os.Exit(exitRunErr)
 		}
 	}
 	if snap == nil {

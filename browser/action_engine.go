@@ -1309,7 +1309,7 @@ func (e *actionEngine) resolveSemanticSelectorForMode(selector string, sessionMo
 		// @rN → look up in refTable using @rN key
 		refKey := fmt.Sprintf("@r%d", sel.SessionRef)
 		if _, ok := e.snapEngine.LookupRef(refKey); !ok {
-			return "", fmt.Errorf("%w: %s not found in current snapshot (run snap first)", ErrRefNotFound, refKey)
+			return "", fmt.Errorf("%w: %s not found in current observation (run observe --id <id> first)", ErrRefNotFound, refKey)
 		}
 		// Return as internal ref string so executeClick etc. can use it
 		return refKey, nil

@@ -3,6 +3,7 @@ package browser
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -17,6 +18,13 @@ import (
 
 // sessionsDir はセッションファイルを保存するディレクトリ。
 const sessionsDir = "/tmp/dw-browser-sessions"
+
+const (
+	SessionActionOutcomeInProgress = "in_progress"
+	SessionActionOutcomeUnknown    = "unknown"
+	SessionActionOutcomeConfirmed  = "confirmed"
+	SessionActionOutcomeReconciled = "reconciled"
+)
 
 // SessionInfo Chrome セッション情報（ファイルに永続化）。
 type SessionInfo struct {
@@ -48,9 +56,9 @@ type SessionInfo struct {
 	Refs             []SessionRef       `json:"refs"`       // Ref table from last snap
 	// LastActionOutcome is a crash/timeout fence for persisted ref authority.
 	// "in_progress" and "unknown" mean no ref may be trusted until observe.
-	LastActionOutcome string             `json:"last_action_outcome,omitempty"`
-	Ephemeral        bool               `json:"ephemeral"`  // true if --ephemeral was used
-	XvfbPID          int                `json:"xvfb_pid"`   // Xvfb process PID (headed mode, Linux)
+	LastActionOutcome string `json:"last_action_outcome,omitempty"`
+	Ephemeral         bool   `json:"ephemeral"` // true if --ephemeral was used
+	XvfbPID           int    `json:"xvfb_pid"`  // Xvfb process PID (headed mode, Linux)
 
 	BrowserMuxHostID      string `json:"browser_mux_host_id,omitempty"`
 	BrowserMuxHostPID     int    `json:"browser_mux_host_pid,omitempty"`
@@ -169,7 +177,34 @@ func SaveSession(info *SessionInfo) error {
 	return nil
 }
 
+// SaveObservedSession is the only persistence boundary that grants fresh
+// session refs. Page identity, ref authority, the caller-advanced snapshot
+// epoch, and reconciliation outcome reach the canonical file in one atomic
+// replacement. In particular, set reconciled before SaveSession normalizes an
+// unknown/in-progress session, otherwise normalization correctly revokes the
+// newly observed refs along with the stale generation.
+func SaveObservedSession(info *SessionInfo, snap *Snapshot, refs []SessionRef) error {
+	if info == nil {
+		return fmt.Errorf("session observation: nil session")
+	}
+	if snap == nil {
+		return fmt.Errorf("session observation: nil snapshot")
+	}
+	info.Refs = append([]SessionRef(nil), refs...)
+	info.PageURL = snap.URL
+	info.LastActionOutcome = SessionActionOutcomeReconciled
+	return SaveSession(info)
+}
+
 func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
+	return writeFileAtomicWithHook(path, data, perm, nil)
+}
+
+// writeFileAtomicWithHook is the testable core of writeFileAtomic. Production
+// callers use a nil hook. Process-death tests pause after a strict prefix has
+// reached the temporary file to prove SIGKILL/SIGPIPE cannot truncate the
+// canonical generation.
+func writeFileAtomicWithHook(path string, data []byte, perm os.FileMode, midWrite func(tmpPath string, written, total int) error) error {
 	dir := filepath.Dir(path)
 	tmp, err := os.CreateTemp(dir, filepath.Base(path)+".*.tmp")
 	if err != nil {
@@ -178,7 +213,35 @@ func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
 	tmpPath := tmp.Name()
 	defer os.Remove(tmpPath)
 
-	if _, err := tmp.Write(data); err != nil {
+	writeAll := func(chunk []byte) error {
+		for len(chunk) > 0 {
+			n, writeErr := tmp.Write(chunk)
+			if writeErr != nil {
+				return writeErr
+			}
+			if n == 0 {
+				return io.ErrShortWrite
+			}
+			chunk = chunk[n:]
+		}
+		return nil
+	}
+
+	if midWrite == nil {
+		err = writeAll(data)
+	} else {
+		prefixLen := len(data) / 2
+		if prefixLen == 0 {
+			prefixLen = len(data)
+		}
+		if err = writeAll(data[:prefixLen]); err == nil {
+			err = midWrite(tmpPath, prefixLen, len(data))
+		}
+		if err == nil {
+			err = writeAll(data[prefixLen:])
+		}
+	}
+	if err != nil {
 		tmp.Close()
 		return err
 	}

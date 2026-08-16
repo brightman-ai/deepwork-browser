@@ -149,7 +149,7 @@ func TestNormalizeSessionInfoBackfillsBrowserSessionContract(t *testing.T) {
 }
 
 func TestNormalizeSessionInfoRevokesRefsAcrossUnknownActionBoundary(t *testing.T) {
-	for _, outcome := range []string{"in_progress", "unknown"} {
+	for _, outcome := range []string{SessionActionOutcomeInProgress, SessionActionOutcomeUnknown} {
 		info := &SessionInfo{
 			SessionID:         "action-fence-" + outcome,
 			LastActionOutcome: outcome,
@@ -167,11 +167,47 @@ func TestNormalizeSessionInfoRevokesRefsAcrossUnknownActionBoundary(t *testing.T
 
 	confirmed := &SessionInfo{
 		SessionID:         "action-fence-confirmed",
-		LastActionOutcome: "confirmed",
+		LastActionOutcome: SessionActionOutcomeConfirmed,
 		Refs:              []SessionRef{{Ref: "@r1", Visible: true, Observed: true}},
 	}
 	NormalizeSessionInfo(confirmed)
 	if len(confirmed.Refs) != 1 {
 		t.Fatalf("confirmed outcome revoked valid refs: %+v", confirmed.Refs)
+	}
+}
+
+func TestSaveObservedSessionAtomicallyReconcilesFreshRefs(t *testing.T) {
+	sessionID := "observe-reconcile-" + t.Name()
+	t.Cleanup(func() { _ = DeleteSession(sessionID) })
+
+	info := &SessionInfo{
+		SessionID:         sessionID,
+		PageURL:           "https://before.example/",
+		SnapEpoch:         6,
+		LastActionOutcome: SessionActionOutcomeUnknown,
+		Refs:              []SessionRef{{Ref: "@r-old", Observed: true}},
+	}
+	NormalizeSessionInfo(info)
+	if len(info.Refs) != 0 {
+		t.Fatalf("unknown generation retained stale refs: %+v", info.Refs)
+	}
+
+	info.SnapEpoch++
+	fresh := []SessionRef{{Ref: "@r1", BackendNodeID: 42, Visible: true, Observed: true}}
+	if err := SaveObservedSession(info, &Snapshot{URL: "https://after.example/"}, fresh); err != nil {
+		t.Fatal(err)
+	}
+
+	loaded, err := LoadSession(sessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.SnapEpoch != 7 || loaded.PageURL != "https://after.example/" ||
+		loaded.LastActionOutcome != SessionActionOutcomeReconciled ||
+		len(loaded.Refs) != 1 || loaded.Refs[0].Ref != "@r1" {
+		t.Fatalf("observation fields did not commit as one generation: %+v", loaded)
+	}
+	if fresh[0].Ref = "@mutated"; info.Refs[0].Ref == fresh[0].Ref {
+		t.Fatal("SaveObservedSession retained caller-owned refs backing storage")
 	}
 }
