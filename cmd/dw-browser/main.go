@@ -30,7 +30,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-const version = "0.9.0"
+const version = "0.11.0"
 
 // exitCodes [IR-08]
 const (
@@ -85,12 +85,12 @@ type commonFlags struct {
 	// act 遮挡拒绝 + observe/audit 机读遮挡区)。spec: docs/product/browser-chrome/。
 	browserChrome string
 	// 解析后
-	viewportW         int
-	viewportH         int
-	hasViewport       bool
-	hasUA             bool
-	hasPersona        bool
-	personaTouch      bool   // 解析后:所选 persona 的 Fingerprint facet 是否触摸设备
+	viewportW          int
+	viewportH          int
+	hasViewport        bool
+	hasUA              bool
+	hasPersona         bool
+	personaTouch       bool   // 解析后:所选 persona 的 Fingerprint facet 是否触摸设备
 	personaFingerprint string // 解析后:所选 persona 的身份指纹 ID(流入 PresetID 管道)
 }
 
@@ -1002,6 +1002,7 @@ func runOnce(args []string) {
 
 	profileID := resolveProfileID(flags, defaultProfileID(flags))
 	bc := newBrowserCore(profileID, browserOptionsFromFlags(flags)...)
+	applyInteractionScenario(bc, flags.scenario)
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	// exit closes bc + cleans up an ephemeral profile before terminating.
@@ -1134,25 +1135,27 @@ func runOnce(args []string) {
 // printUsage 打印使用说明。
 func printUsage() {
 	p := func(s string) { fmt.Println(s) }
-	p("dw-browser — AI agent 浏览器运行时。两个场景:")
+	p("dw-browser — AI agent 浏览器运行时。三种业务场景:")
 	p("")
 	p("  A 探索发现 (Claude agent 调): 瘦感知 + act 循环, 撞体验问题。")
 	p("  B 基线回归 (测试脚本/CI 调): 确定性 pass/fail + 证据, 无 LLM。")
 	p("")
 	p("─── --scenario <必选> · 业务主入口 (open/once/session start 必带) ──")
 	p("  Policy(公网写门控)+render(默认视图)+kind 全由场景自动导出, 不再有裸技术开关:")
-	p("  app-test-explore    Claude 探索本地 App: 本地写放行/公网写拦, 允许内部 LLM, headless")
-	p("  app-test-baseline   本地 App 确定性回归: 同上写门控 + 硬锁内部 LLM(复现), headless")
-	p("  webvisit            访问真实公网站: 全站写默认拦, 仅 --allow-host 放行, headed")
+	p("  app-test-explore    Claude 探索本地 App: 所见即可点+真鼠标; 本地写放行/公网写拦, 允许内部 LLM")
+	p("  app-test-baseline   本地 App 确定性回归: 默认同样所见即可点; 硬锁内部 LLM")
+	p("  webvisit            访问真实公网站: 默认同样所见即可点; 全站写拦, 仅 --allow-host 放行")
 	p("")
 	p("─── A 探索循环 ─────────────────────────────────────────────")
 	p("  open <url> --id X --scenario <场景>  打开/导航 (--scenario 必选; render 由场景定, --mode 可覆盖)")
-	p("  observe --id X                      ★感知: 瘦默认 {elements@rN, user_state, run_id, step} ~3K")
+	p("  observe --id X                      ★感知: 三场景仅列当前截图可见 elements@rN + bbox(CSS px)")
 	p("      --out shot.png                  + 存截图, 返回 {screenshot:\"<path>\"} (Read 图判 UX)")
+	p("      --all                           调试: 全文档 ref-less census(role/name), 不返回/持久化 @ref")
 	p("      --health                        + {telemetry:{console_errors,network_failures,visible_errors}}")
 	p("      --tree                          + {tree:\"<全 a11y 文本>\"} (罕用)")
 	p("                                      flag 自由组合 (加法, 非互斥)")
-	p("  act --id X \"click @rN\"              操作; @rN 取自上次 observe; 默认瘦 {success,user_state}")
+	p("  act --id X \"click @rN\"              三场景: ref 须来自上次可见集且当前仍可见; 真鼠标命中")
+	p("  act --id X \"click 320,240\"           按截图所见的视口 CSS px 坐标真鼠标点击")
 	p("      act --id X \"fill @r3 'hi'\" --snap   --snap 才附 a11y 全树")
 	p("  close --id X                        关闭会话")
 	p("")
@@ -1160,7 +1163,8 @@ func printUsage() {
 	p("  每条输出带 run_id (会话稳定) + step (单调) — 把截图 ↔ a11y ↔ finding 对齐。")
 	p("")
 	p("─── B 基线回归 ─────────────────────────────────────────────")
-	p("  journey --file b.yaml --evidence d/   跑 open/act/check 步; 确定性 pass/fail + 证据; CLI 零 LLM")
+	p("  journey --file b.yaml --scenario app-test-baseline --evidence d/  默认视觉/真鼠标回归")
+	p("      步骤可显式写 mode: element       仅该步用旧元素寻址+允许自动滚动(保真等级由剧本持有)")
 	p("  check --id X --assert \"<expr>\"        单条硬断言; exit 0=PASS 1=FAIL 2=ERR")
 	p("      console_errors_count==0 · exists(role='button') · text_contains('hi') · url_matches('/topic')")
 	p("      count(role='link')>=1 · tab_count==2 · network_failures_count==0 · visible(testid='x')")
@@ -1203,12 +1207,14 @@ func printUsage() {
 	p("  fillsecret <loc> '<text>'        password/敏感字段的显式安全填充(CDP insertText,穿透Vue/React受控输入;值不回显)")
 	p("  press <key> | press <loc> <key>  按键 (Ctrl+A, Enter)")
 	p("  select <loc> '<value>'           下拉选择        hover <loc>           悬停")
-	p("  scroll down|up                   滚动            scrollinto <loc>      滚动到可见")
+	p("  scroll down|up [N]               视口中心滚轮      scroll <loc> down|up [N]  对准元素滚轮")
+	p("  scrollto <loc>                   显式滚到可见(之后重新 observe); scrollinto <loc> 兼容别名")
 	p("  focus/check/uncheck <loc>        聚焦/勾选/取消   back | forward        导航历史")
 	p("  zoom <1..5> | zoom reset         页面缩放态 (模拟捏合/聚焦放大; browser chrome 遮挡带恒定不动)")
 	p("  keyboard show | keyboard hide    软键盘态 (visualViewport 收窄+resize 事件, 自适应页真实 reflow;")
 	p("                                   click/fill 输入框后自动弹起=真机语义, 键盘区点击拒绝)")
 	p("  坐标动作 (canvas 图表无子 DOM, 用坐标命中图元):")
+	p("    click <x>,<y>                  视口 CSS px 绝对坐标点击(截图像素需先除以 dpr)")
 	p("    tapxy <xf> <yf>                视口比例坐标真实点击 (不进 a11y 树的控件最通用解)")
 	p("    typetext <text>                向当前焦点插文本 (配合 tapxy 聚焦自定义 input)")
 	p("    clickat/dblclickat/rclickat css=#chart <x%> <y%>   元素内相对坐标点击/双击/右键")
@@ -1234,7 +1240,7 @@ func printUsage() {
 	p("  dw-browser act --id ws1 \"fill #ws-name 'my workspace'\"")
 	p("  dw-browser check --id ws1 --assert \"exists(role='button', name='创建')\"")
 	p("  dw-browser close --id ws1")
-	p("  dw-browser journey --file tests/bdd/portal.yaml --evidence evidence/run-001")
+	p("  dw-browser journey --file tests/bdd/portal.yaml --scenario app-test-baseline --evidence evidence/run-001")
 }
 
 func printCommandUsage(command string) {
@@ -1282,7 +1288,8 @@ func printCommandUsage(command string) {
 		fmt.Println("  dw-browser act --id <id> \"press Enter\" --await --snap   # --await 等页面稳定后再快照")
 		fmt.Println()
 		fmt.Println("常用操作:")
-		fmt.Println("  click/fill/type/press/scroll/hover/select/back/forward/focus/scrollinto/check/uncheck")
+		fmt.Println("  click @rN | click x,y | fill/type/press/hover/select/back/forward/focus/check/uncheck")
+		fmt.Println("  scroll down|up [N] | scroll @rN down|up [N] | scrollto @rN (scroll 后重新 observe)")
 		fmt.Println("  坐标动作(canvas 图表): clickat/dblclickat/rclickat/hoverat/wheelat/dragat/tapat/swipeat")
 		fmt.Println("  @rN 取自上次 observe; 详细定位器/动作见 dw-browser --help")
 	case "check", "journey", "diff":
@@ -1392,6 +1399,7 @@ func connectSession(ctx context.Context, sessionInfo *browser.SessionInfo, cmdNa
 		fmt.Fprintf(os.Stderr, "dw-browser %s: connect to session failed: %v\n", cmdName, err)
 		os.Exit(exitRunErr)
 	}
+	applyInteractionScenario(impl, sessionInfo.Scenario)
 
 	width := sessionInfo.ViewportW
 	height := sessionInfo.ViewportH
@@ -1425,6 +1433,23 @@ func connectSession(ctx context.Context, sessionInfo *browser.SessionInfo, cmdNa
 		}
 	}
 	return impl
+}
+
+// applyInteractionScenario wires the scenario-derived interaction posture into
+// CDP cores. Non-CDP engines intentionally keep their existing behavior.
+func applyInteractionScenario(core browser.BrowserCore, raw string) {
+	scenario, err := browser.NormalizeScenario(raw)
+	if err != nil {
+		return
+	}
+	if capable, ok := core.(browser.ScenarioInteractionCapable); ok {
+		capable.SetInteractionScenario(scenario)
+	}
+}
+
+func scenarioUsesSeeToClick(raw string) bool {
+	scenario, err := browser.NormalizeScenario(raw)
+	return err == nil && browser.ScenarioInteractionPolicy(scenario).SeeToClick
 }
 
 // connectSafariSession 重建 Safari SessionCore（通过 UDID 重连已启动的 Simulator）。
@@ -1518,20 +1543,10 @@ func ensureSessionBrowserMuxHostReady(ctx context.Context, sessionInfo *browser.
 		sessionInfo.TargetID = targetID
 		if strings.TrimSpace(sessionInfo.PageURL) != "" {
 			if impl, cerr := browser.NewBrowserCoreFromSession(hostCtx, state.WSURL, targetID, sessionInfo.PresetID, sessionInfo.PersonaID, sessionInfo.Mode); cerr == nil {
+				applyInteractionScenario(impl, sessionInfo.Scenario)
 				if snap, nerr := impl.Navigate(hostCtx, sessionInfo.PageURL); nerr == nil && snap != nil {
 					sessionInfo.PageURL = snap.URL
-					sessionRefs := make([]browser.SessionRef, 0, len(snap.Refs))
-					for _, ref := range snap.Refs {
-						sessionRefs = append(sessionRefs, browser.SessionRef{
-							Ref:           ref.Ref,
-							BackendNodeID: ref.BackendNodeID,
-							Role:          ref.Role,
-							Name:          ref.NameFull,
-							TestID:        ref.TestID,
-							Placeholder:   ref.Placeholder,
-						})
-					}
-					sessionInfo.Refs = sessionRefs
+					sessionInfo.Refs = browser.SessionRefsFromSnapshot(snap, false)
 				}
 				impl.Close(hostCtx)
 			}
@@ -1856,6 +1871,15 @@ func leanElement(ref browser.ElementRef) map[string]interface{} {
 	if ref.BlockedByModal {
 		el["blocked"] = true
 	}
+	if ref.VisibilityKnown {
+		el["bbox"] = map[string]float64{
+			"x": ref.BBox.X,
+			"y": ref.BBox.Y,
+			"w": ref.BBox.Width,
+			"h": ref.BBox.Height,
+		}
+		el["visible"] = ref.VisibleInViewport
+	}
 	return el
 }
 
@@ -2003,6 +2027,9 @@ func buildUserState(snap *browser.Snapshot, activeTabURL string) map[string]inte
 	userState["interactable_count"] = len(snap.Refs)
 	userState["input_ready"] = inputReady
 	userState["page_interactive"] = len(snap.Refs) >= 3
+	if snap.SeeToClick {
+		userState["page_interactive"] = len(snap.Refs) > 0
+	}
 	if snap.Progressive {
 		userState["page_interactive"] = false
 		userState["input_ready"] = false
@@ -2076,6 +2103,7 @@ func runAct(args []string) {
 	browserOpts := browserOptionsFromFlags(flags)
 
 	bc := newBrowserCore(profileID, browserOpts...)
+	applyInteractionScenario(bc, flags.scenario)
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	// exit closes bc + cleans up an ephemeral profile before terminating.
@@ -2138,7 +2166,7 @@ func needsPostActionSnapshot(action string) bool {
 	switch op {
 	// 纯 canvas/视觉坐标动作的完成证据来自截图，A11y 快照对 canvas 无信息量；
 	// 而 rclickat（右键上下文菜单）会产生真实 DOM 弹层，仍需后置快照。
-	case "scroll", "hover", "hoverat", "focus", "scrollinto", "clickat", "dblclickat", "wheelat", "tapat", "swipeat":
+	case "scroll", "hover", "hoverat", "focus", "scrollinto", "scrollto", "clickat", "dblclickat", "wheelat", "tapat", "swipeat":
 		return false
 	default:
 		return true
@@ -2157,6 +2185,22 @@ func isPointerAction(action string) bool {
 	default:
 		return false
 	}
+}
+
+// applyPostActionSnapshot persists page identity without replacing the
+// capability set granted by the most recent explicit observe. A URL change is
+// a navigation boundary, so refs from the previous document are revoked.
+func applyPostActionSnapshot(sessionInfo *browser.SessionInfo, snap *browser.Snapshot) bool {
+	if sessionInfo == nil || snap == nil {
+		return false
+	}
+	sessionInfo.SnapEpoch++
+	navigated := snap.URL != sessionInfo.PageURL
+	if navigated {
+		sessionInfo.Refs = nil
+	}
+	sessionInfo.PageURL = snap.URL
+	return navigated
 }
 
 // runActSession 执行 session 模式 act（连接已有 Chrome，支持 @rN ref）。
@@ -2251,25 +2295,21 @@ func runActSession(flags commonFlags, action string, awaitStable bool, snapAfter
 		}
 	}
 
-	// [ACT-SESSION-PERSIST] 每次 act 后把最新 A11y refs 写回 session 文件。
-	// 原因: 下一次 act 从 session 文件恢复 refs (RestoreRefsFromSession)，
-	// 若 act/await 后页面导航但 session 未更新，下一次 act 会用旧 refs 导致 "元素未找到"。
-	// (等同于 runSnapSession 中的 sessionInfo.Refs = sessionRefs; SaveSession 逻辑)
-	if snap != nil && len(snap.Refs) > 0 {
-		sessionInfo.SnapEpoch++
-		sessionRefs := make([]browser.SessionRef, 0, len(snap.Refs))
-		for _, ref := range snap.Refs {
-			sessionRefs = append(sessionRefs, browser.SessionRef{
-				Ref:           ref.Ref,
-				BackendNodeID: ref.BackendNodeID,
-				Role:          ref.Role,
-				Name:          ref.NameFull,
-				TestID:        ref.TestID,
-				Placeholder:   ref.Placeholder,
-			})
+	// A successful same-page act preserves the last explicit observation: typing
+	// does not make a button the human just saw become unseen. The click path
+	// re-probes visibility and hit-testing live before every pointer dispatch.
+	// Navigation is the only post-act event that revokes all old-page refs.
+	if snap != nil {
+		applyPostActionSnapshot(sessionInfo, snap)
+		_ = browser.SaveSession(sessionInfo)
+	}
+	// Scrolling changes the witness viewport without returning a fresh elements
+	// list. In every human-interaction scenario, invalidate observed authority so
+	// the agent must look again before clicking a ref in the new viewport.
+	if scenarioUsesSeeToClick(sessionInfo.Scenario) && actionMovesWitnessViewport(action) {
+		for i := range sessionInfo.Refs {
+			sessionInfo.Refs[i].Observed = false
 		}
-		sessionInfo.Refs = sessionRefs
-		sessionInfo.PageURL = snap.URL
 		_ = browser.SaveSession(sessionInfo)
 	}
 
@@ -2357,6 +2397,19 @@ func runActSession(flags commonFlags, action string, awaitStable bool, snapAfter
 	enc, _ := json.MarshalIndent(output, "", "  ")
 	fmt.Println(string(enc))
 	exitSessionCore(impl, exitOK)
+}
+
+func actionMovesWitnessViewport(action string) bool {
+	parsed, err := browser.ParseAction(action)
+	if err != nil {
+		return false
+	}
+	switch parsed.Op {
+	case "scroll", "scrollto", "scrollinto":
+		return true
+	default:
+		return false
+	}
 }
 
 // ============================================================
@@ -2520,21 +2573,7 @@ func runOpenSafari(url string, flags commonFlags, scenarioPolicy browser.Session
 		currentURL = openSnap.URL
 	}
 
-	var openRefs []browser.SessionRef
-	if openSnap != nil {
-		for _, ref := range openSnap.Refs {
-			openRefs = append(openRefs, browser.SessionRef{
-				Ref:         ref.Ref,
-				Role:        ref.Role,
-				Name:        ref.NameFull,
-				TestID:      ref.TestID,
-				Placeholder: ref.Placeholder,
-				Locator:     ref.Locator,
-				AXPath:      ref.AXPath,
-				StableKey:   ref.Locator.StableKey,
-			})
-		}
-	}
+	openRefs := browser.SessionRefsFromSnapshot(openSnap, false)
 
 	sessionInfo := &browser.SessionInfo{
 		SessionID:   flags.sessionID,
@@ -2916,6 +2955,7 @@ func runOpen(args []string) {
 		fmt.Fprintf(os.Stderr, "dw-browser open: connect: %v\n", err)
 		exit(exitRunErr)
 	}
+	applyInteractionScenario(impl, flags.scenario)
 	defer impl.Close(ctx)
 	replayViewportProfile(impl, sessionPresetID, width, height, flags.personaTouch, "open")
 	if browserChromeOn {
@@ -2970,21 +3010,10 @@ func runOpen(args []string) {
 		browserChromeState = "on"
 	}
 
-	// B2 修复: open 命令保存初始快照的 refs，使后续 act "click button:'xxx'" 无需先执行 snap。
-	// 与 snap 命令保持一致：将 openSnap.Refs 序列化为 SessionRef 存入 session 文件。
-	var openRefs []browser.SessionRef
-	if openSnap != nil {
-		for _, ref := range openSnap.Refs {
-			openRefs = append(openRefs, browser.SessionRef{
-				Ref:           ref.Ref,
-				BackendNodeID: ref.BackendNodeID,
-				Role:          ref.Role,
-				Name:          ref.NameFull,
-				TestID:        ref.TestID,
-				Placeholder:   ref.Placeholder,
-			})
-		}
-	}
+	// 保存 open 的可见定位事实用于诊断/element-mode；Observed 保持 false。
+	// 三个 agent 场景的默认 click 仍必须先显式 observe，不能把 open 的内部
+	// snapshot 当成 agent 已经看见的证据。
+	openRefs := browser.SessionRefsFromSnapshot(openSnap, false)
 
 	sessionInfo := &browser.SessionInfo{
 		SessionID:             flags.sessionID,
@@ -3370,6 +3399,7 @@ func runLayout(args []string) {
 	browserOpts := browserOptionsFromFlags(flags)
 
 	bc := newBrowserCore(profileID, browserOpts...)
+	applyInteractionScenario(bc, flags.scenario)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	// exit closes bc + cleans up an ephemeral profile before terminating.
@@ -3638,6 +3668,7 @@ func runTest(args []string) {
 	browserOpts := browserOptionsFromFlags(flags)
 
 	bc := newBrowserCore(profileID, browserOpts...)
+	applyInteractionScenario(bc, flags.scenario)
 	// scenario 导出的 policy 贯穿本次 test 会话（per-act origin 现场分类，故初始 origin 留空）。
 	bc.SetPolicy(scenarioPolicy, "")
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)

@@ -189,17 +189,20 @@ func autoLoadLLMEnv() {
 // Anything else (e.g. "在浏览器中搜索 arxiv") is treated as an NL goal.
 func isNLGoal(action string) bool {
 	lower := strings.ToLower(strings.TrimSpace(action))
+	// These commands are valid without an argument and are handled directly by
+	// both journey executors. Classifying them as NL would make an otherwise
+	// deterministic spec fail its preflight before execution.
+	switch lower {
+	case "wait", "noop", "none", "back", "forward":
+		return false
+	}
 	for _, p := range []string{
-		"click ", "fill ", "press ", "scroll ", "select ",
+		"click ", "fill ", "press ", "scroll ", "scrollto ", "scrollinto ", "select ",
 		"navigate ", "wait ", "type ", "hover ",
 	} {
 		if strings.HasPrefix(lower, p) {
 			return false
 		}
-	}
-	// Bare "back" and "forward" are valid structural commands.
-	if lower == "back" || lower == "forward" {
-		return false
 	}
 	return len(lower) > 0
 }
@@ -273,8 +276,11 @@ func printTestingHelp() {
 用法:
 
   # BDD 旅程 + 证据 (CI 主入口)
-  dw-browser journey --file tests/bdd/portal.yaml --evidence evidence/run-001
-  dw-browser journey --file spec.yaml --base-url http://localhost:8080 --fail-fast
+  dw-browser journey --file tests/bdd/portal.yaml --scenario app-test-baseline --evidence evidence/run-001
+  dw-browser journey --file spec.yaml --scenario app-test-baseline --base-url http://localhost:8080 --fail-fast
+
+  journey 步骤默认 mode: visual（所见即可点 + 真鼠标）。仅需旧元素寻址/自动滚动的
+  单步显式写 mode: element；该选择留在剧本中，作为保真等级 SSOT。
 
   # 单条断言 (当前会话)
   dw-browser check --id s1 --assert "console_errors_count == 0"
@@ -329,12 +335,14 @@ Exit codes: 0=PASS  1=FAIL  2=RUN_ERROR
 // Returns [{kind,text,selector}]. Signals are for the agent to INSPECT, not a hard verdict.
 //
 // 精度约束 [BUG-VISERR-NOISE] — 安全类产品实测 14 命中 9 个是误报(64% 噪声):
-//   a) 业务图形文字: SVG 图册里的「可疑异常访问」「连接失败告警规则」是**数据**不是报错
-//      → 跳过 <svg>/<canvas> 子树（应用报错 chrome 是 HTML，不画在图里）。
-//   b) danger 风格的**动作**按钮(🗑/删除规则/移入回收站)是操作入口不是错误
-//      → styled/color 类跳过 button/a/[role=button] 等可点元素。
-//   c) 裸关键词(异常/无效/未找到)在安全产品的正常文案里恒常出现 → keyword 类要求佐证:
-//      必须处于报错语境(role=alert/status 或 error/danger/toast/banner 类容器)或本身是红字。
+//
+//	a) 业务图形文字: SVG 图册里的「可疑异常访问」「连接失败告警规则」是**数据**不是报错
+//	   → 跳过 <svg>/<canvas> 子树（应用报错 chrome 是 HTML，不画在图里）。
+//	b) danger 风格的**动作**按钮(🗑/删除规则/移入回收站)是操作入口不是错误
+//	   → styled/color 类跳过 button/a/[role=button] 等可点元素。
+//	c) 裸关键词(异常/无效/未找到)在安全产品的正常文案里恒常出现 → keyword 类要求佐证:
+//	   必须处于报错语境(role=alert/status 或 error/danger/toast/banner 类容器)或本身是红字。
+//
 // 取舍(明说): 这会漏掉"纯黑、无 class、无容器"的报错文案。但 64% 噪声会让 agent 直接
 // 无视整个字段 → 告警疲劳的召回损失更大。宁可少而可信。
 const visibleErrorScanJS = `(() => {
@@ -387,6 +395,39 @@ const visibleErrorScanJS = `(() => {
   return out.slice(0, 20);
 })()`
 
+func sessionRefsForObservation(snap *browser.Snapshot, censusOnly bool) []browser.SessionRef {
+	if snap == nil || censusOnly {
+		return nil
+	}
+	return browser.SessionRefsFromSnapshot(snap, true)
+}
+
+func observeListing(snap *browser.Snapshot, censusOnly bool, topN, budget int) (map[string]interface{}, bool) {
+	if censusOnly {
+		census := snap.Census
+		if census == nil {
+			census = []browser.CensusEntry{}
+		}
+		return map[string]interface{}{
+			"census":     census,
+			"shown":      len(census),
+			"total":      snap.DocumentInteractableCount,
+			"all":        true,
+			"actionable": false,
+		}, false
+	}
+	elements, selectedTotal, truncated := briefElements(snap.Refs, topN, budget)
+	total := selectedTotal
+	if snap.SeeToClick {
+		total = snap.DocumentInteractableCount
+	}
+	return map[string]interface{}{
+		"elements": elements,
+		"shown":    len(elements),
+		"total":    total,
+	}, truncated
+}
+
 // runObserve 采集当前 session 的多通道 Observation 快照。
 // dw-browser observe --id <session-id> [--layers structural,behavior,telemetry] [--out file.json]
 // runObserve — SSOT 感知动词。瘦默认 + 加法 flag。
@@ -406,7 +447,7 @@ func runObserve(args []string) {
 		os.Exit(exitOK)
 	}
 	var jsonOut, outFile string
-	wantHealth, wantTree, wantAnnotate := false, false, false
+	wantHealth, wantTree, wantAnnotate, wantAll := false, false, false, false
 	topN, budget := defaultBriefTopN, defaultBriefBudget
 	topExplicit, budgetExplicit := false, false
 	clean := make([]string, 0, len(args))
@@ -430,6 +471,8 @@ func runObserve(args []string) {
 			wantTree = true
 		case arg == "--annotate":
 			wantAnnotate = true
+		case arg == "--all":
+			wantAll = true
 		case arg == "--top" && i+1 < len(args):
 			if n, err := strconv.Atoi(args[i+1]); err == nil {
 				topN = n
@@ -474,6 +517,9 @@ func runObserve(args []string) {
 
 	impl := connectSession(ctx, sessionInfo, "observe", flags)
 	defer closeSessionCore(impl)
+	if capable, ok := impl.(browser.ScenarioInteractionCapable); ok {
+		capable.SetObserveAll(wantAll)
+	}
 	impl.RestoreRefsFromSession(sessionInfo.Refs)
 
 	// — 感知 a11y (始终) —
@@ -484,25 +530,14 @@ func runObserve(args []string) {
 		os.Exit(exitRunErr)
 	}
 	// settle-wait — retry until SPA a11y tree is populated (up to ~6s).
-	for i := 0; i < 6 && (snap == nil || len(snap.Refs) == 0); i++ {
+	for i := 0; i < 6 && (snap == nil || (len(snap.Refs) == 0 && !(snap.SeeToClick && snap.DocumentInteractableCount > 0))); i++ {
 		time.Sleep(1 * time.Second)
 		snap, _ = impl.SnapWithSessionMode(ctx, sessionInfo.SnapEpoch)
 	}
 	// SSOT: persist THIS observation's @rN refs so a subsequent `act "click @rN"`
 	// resolves the SAME refs the caller just saw (observe shares act's ref-space).
 	if snap != nil {
-		sessionRefs := make([]browser.SessionRef, 0, len(snap.Refs))
-		for _, ref := range snap.Refs {
-			sessionRefs = append(sessionRefs, browser.SessionRef{
-				Ref:           ref.Ref,
-				BackendNodeID: ref.BackendNodeID,
-				Role:          ref.Role,
-				Name:          ref.NameFull,
-				TestID:        ref.TestID,
-				Placeholder:   ref.Placeholder,
-			})
-		}
-		sessionInfo.Refs = sessionRefs
+		sessionInfo.Refs = sessionRefsForObservation(snap, wantAll)
 		sessionInfo.PageURL = snap.URL
 		if err := browser.SaveSession(sessionInfo); err != nil {
 			fmt.Fprintf(os.Stderr, "dw-browser observe: save refs: %v\n", err)
@@ -521,15 +556,27 @@ func runObserve(args []string) {
 		}
 	}
 
-	// — 瘦默认输出 {elements@rN, user_state, run_id, step} —
-	elements, total, truncated := briefElements(snap.Refs, topN, budget)
+	// — 瘦默认输出可见 elements；--all 改为完全无 ref 的 census —
+	listing, truncated := observeListing(snap, wantAll, topN, budget)
 	output := map[string]interface{}{
 		"url":        snap.URL,
 		"title":      snap.PageTitle,
 		"user_state": buildUserState(snap, sessionInfo.PageURL),
-		"elements":   elements,
-		"shown":      len(elements),
-		"total":      total,
+	}
+	for key, value := range listing {
+		output[key] = value
+	}
+	if snap.SeeToClick {
+		output["offscreen"] = snap.OffscreenInteractableCount
+		output["viewport"] = map[string]interface{}{
+			"width":             snap.Viewport.Width,
+			"height":            snap.Viewport.Height,
+			"dpr":               snap.Viewport.DevicePixelRatio,
+			"scroll_x":          snap.Viewport.ScrollX,
+			"scroll_y":          snap.Viewport.ScrollY,
+			"coordinate_space":  "css-px",
+			"screenshot_pixels": "CSS px × dpr",
+		}
 	}
 	// [BUG-MODAL-FIRST] 有活跃模态 → 明说"只有这层能点"，并说明背后多少元素被挡
 	if activeN, blockedN, hasModal := modalNotice(snap.Refs); hasModal {
@@ -542,7 +589,10 @@ func runObserve(args []string) {
 	}
 	if truncated {
 		output["truncated"] = true
-		output["hint"] = "更多元素被省略; --top N / --budget BYTES 放宽, 或 --tree 看全树"
+		output["hint"] = "当前选择集仍有元素被省略; --top N / --budget BYTES 放宽"
+	}
+	if snap.SeeToClick && snap.OffscreenInteractableCount > 0 {
+		output["scroll_hint"] = "还有元素不在当前截图可见集；滚动后重新 observe"
 	}
 	injectEvidenceID(output, sessionInfo)
 	injectSnapshotState(output, snap)
@@ -571,16 +621,16 @@ func runObserve(args []string) {
 				"device_pixel_ratio": dpr,
 				"page_scale":         scale,
 				"keyboard": map[string]interface{}{
-					"visible":     kb,
-					"inset_css":   spec.KeyboardInsetH(),
-					"top_y":       spec.KeyboardTopY(),
-					"how_to":      "act \"keyboard show|hide\"; click/tap/fill 输入框后自动弹起(真机语义)",
+					"visible":   kb,
+					"inset_css": spec.KeyboardInsetH(),
+					"top_y":     spec.KeyboardTopY(),
+					"how_to":    "act \"keyboard show|hide\"; click/tap/fill 输入框后自动弹起(真机语义)",
 				},
 				// 视口单位事实（REQ-BC-11）：svh 经 CDP override=小视口; dvh/vh 锁死
 				// layout viewport=大视口(Chrome 引擎约束, 真机 bars-expanded 下 dvh=小视口
 				// → dvh 页在截图里可能显示为被遮而真机正常 = 残留假阳, 判定层已豁免)。
-				"viewport_units":  map[string]interface{}{"svh": spec.SmallViewportH(), "lvh": spec.LargeViewportH(), "vh": spec.LargeViewportH(), "dvh_residual": spec.LargeViewportH()},
-				"occlusion_zones": spec.OcclusionZones(sessionInfo.ViewportW, kb),
+				"viewport_units":   map[string]interface{}{"svh": spec.SmallViewportH(), "lvh": spec.LargeViewportH(), "vh": spec.LargeViewportH(), "dvh_residual": spec.LargeViewportH()},
+				"occlusion_zones":  spec.OcclusionZones(sessionInfo.ViewportW, kb),
 				"page_protections": bcc.ProbePageProtections(ctx),
 				"hint":             hint,
 			}
@@ -597,7 +647,7 @@ func runObserve(args []string) {
 	}
 
 	// — 加法: --tree (全 a11y 文本) —
-	if wantTree {
+	if wantTree && !wantAll {
 		output["tree"] = snap.Text
 	}
 
@@ -638,7 +688,7 @@ func printObserveHelp() {
 	fmt.Fprintln(os.Stderr, "dw-browser observe — 感知当前会话 (SSOT 感知动词, 瘦默认 + 加法 flag)")
 	fmt.Fprintln(os.Stderr, "")
 	fmt.Fprintln(os.Stderr, "用法:")
-	fmt.Fprintln(os.Stderr, "  dw-browser observe --id X            瘦默认 {elements@rN, user_state, run_id, step} ~3K")
+	fmt.Fprintln(os.Stderr, "  dw-browser observe --id X            三场景: 当前截图可见 elements@rN + bbox(CSS px)")
 	fmt.Fprintln(os.Stderr, "  dw-browser observe --id X --out m.png + 存截图 → {screenshot:\"<path>\"} (AI Read 图判 UX)")
 	fmt.Fprintln(os.Stderr, "  dw-browser observe --id X --health   + {telemetry:{console_errors,network_failures,visible_errors}}")
 	fmt.Fprintln(os.Stderr, "  dw-browser observe --id X --tree     + {tree:\"<全 a11y 文本>\"} (罕用)")
@@ -648,12 +698,14 @@ func printObserveHelp() {
 	fmt.Fprintln(os.Stderr, "  --annotate      配 --out: 证据标注截图 (chrome 仿真遮挡区红描边; 默认截图无标注)")
 	fmt.Fprintln(os.Stderr, "  --health        附健康通道 (诊断/grader lens)")
 	fmt.Fprintln(os.Stderr, "  --tree          附全 a11y 树文本")
+	fmt.Fprintln(os.Stderr, "  --all           调试: 全文档 census，仅 role/name；无 @rN、不持久化 refs、不可 act")
 	fmt.Fprintln(os.Stderr, "  --top <N>       elements 上限 (默认 20)")
 	fmt.Fprintln(os.Stderr, "  --budget <B>    elements 输出字节硬上限 (默认 4096)")
 	fmt.Fprintln(os.Stderr, "  --json <path>   整个 JSON 落盘 (默认 stdout)")
 	fmt.Fprintln(os.Stderr, "")
 	fmt.Fprintln(os.Stderr, "证据关联: 每次输出带 run_id (会话稳定) + step (单调), 把截图↔a11y↔finding 对齐。")
-	fmt.Fprintln(os.Stderr, "observe 后 act \"click @rN\" 解析 observe 刚看到的同一批 refs。")
+	fmt.Fprintln(os.Stderr, "三场景输出 viewport={width,height,dpr,scroll_x,scroll_y}; 截图像素 = CSS px × dpr。")
+	fmt.Fprintln(os.Stderr, "observe 后 act \"click @rN\" 仅接受刚看到且当前仍可见的 ref；看不见先 scroll，再 observe。")
 }
 
 // behaviorFromSessionInfo 从 SessionInfo 构建 BehaviorState（无需连接浏览器）。
@@ -1015,8 +1067,9 @@ func runJourney(args []string) {
 		case arg == "--fail-fast":
 			failFast = true
 		case arg == "--help" || arg == "-h":
-			fmt.Fprintln(os.Stderr, "usage: dw-browser journey --file <spec.yaml> [--evidence <dir>] [--base-url <url>] [--fail-fast]")
+			fmt.Fprintln(os.Stderr, "usage: dw-browser journey --file <spec.yaml> [--id <session> | --scenario app-test-baseline] [--evidence <dir>] [--base-url <url>] [--fail-fast]")
 			fmt.Fprintln(os.Stderr, "  --file       BDD YAML spec file")
+			fmt.Fprintln(os.Stderr, "               steps default to visual see-to-click; set step `mode: element` for legacy locator+auto-scroll")
 			fmt.Fprintln(os.Stderr, "  --evidence   directory to write evidence (default: evidence/<spec-id>)")
 			fmt.Fprintln(os.Stderr, "  --base-url   override spec environment.base_url (e.g. http://localhost:8080)")
 			fmt.Fprintln(os.Stderr, "  --fail-fast  stop on first step failure")
@@ -1025,8 +1078,6 @@ func runJourney(args []string) {
 			clean = append(clean, arg)
 		}
 	}
-
-	_ = failFast // reserved for future implementation
 
 	_, flags := parseCommonFlags(clean, "journey")
 
@@ -1073,10 +1124,20 @@ func runJourney(args []string) {
 	// determinism 由 *附着 session 的持久 Policy.Deterministic* 决定（不再有 CLI flag）：
 	// 一次 app-test-baseline session 在 open 时锁定确定性，journey 复用它时硬锁必须仍然生效。
 	deterministic := false
+	var (
+		oneShotPolicy browser.SessionPolicy
+		oneShotMode   browser.BrowserMode
+	)
 	if flags.sessionID != "" {
 		if si, err := browser.LoadSession(flags.sessionID); err == nil && si.Policy.Deterministic {
 			deterministic = true
 		}
+	} else if spec.Environment.BaseURL != "" || spec.Environment.EntryURL != "" {
+		// Resolve the creating scenario before LLM preflight. Otherwise a new
+		// app-test-baseline journey could accidentally initialize a planner before
+		// its deterministic policy was derived.
+		_, oneShotPolicy, oneShotMode = scenarioPolicyOrExit(&flags, "journey")
+		deterministic = oneShotPolicy.Deterministic
 	}
 	specNeedsPlanner := specHasNLGoal(spec)
 	specNeedsVision := specHasVisualUsing(spec)
@@ -1118,10 +1179,9 @@ func runJourney(args []string) {
 		// 新建 one-shot session（从 spec 的 entry URL）→ 无 --id 继承, 故 --scenario 必选。
 		// 用不改 mode 的 scenarioPolicyOrExit: journey 的 render 仍走 spec.Environment.Mode
 		// / --mode 优先级；仅当二者都未给时, 才落到场景默认 render。
-		_, scenarioPolicy, scenMode := scenarioPolicyOrExit(&flags, "journey")
 		if !flags.modeExplicit && spec.Environment.Mode == "" {
-			flags.mode = scenMode
-			flags.headless = scenMode == browser.ModeHeadless
+			flags.mode = oneShotMode
+			flags.headless = oneShotMode == browser.ModeHeadless
 		}
 		entryURL := joinURL(spec.Environment.BaseURL, spec.Environment.EntryURL)
 		// resolveProfileID (not a bare Sprintf): --ephemeral must produce an
@@ -1133,6 +1193,7 @@ func runJourney(args []string) {
 		profileID := resolveProfileID(flags, fmt.Sprintf("journey-%s-%d", spec.ID, time.Now().UnixMilli()))
 		browserOpts := browserOptionsFromFlags(flags)
 		bc := newBrowserCore(profileID, browserOpts...)
+		applyInteractionScenario(bc, flags.scenario)
 
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 		defer cancel()
@@ -1181,7 +1242,7 @@ func runJourney(args []string) {
 		if navSnap != nil && navSnap.URL != "" {
 			navURL = navSnap.URL
 		}
-		bc.SetPolicy(scenarioPolicy, navURL)
+		bc.SetPolicy(oneShotPolicy, navURL)
 
 		executor = &oneshotActionExecutor{impl: bc, ctx: ctx, telemetry: journeyTelemetry, planner: journeyPlanner}
 	} else {
@@ -1194,6 +1255,7 @@ func runJourney(args []string) {
 		fmt.Fprintf(os.Stderr, "dw-browser journey: create runner: %v\n", err)
 		exit(exitRunErr)
 	}
+	runner.SetFailFast(failFast)
 	// Vision oracle activates only when the spec explicitly opts in (using:[visual])
 	// and determinism is off (CLI flag OR persisted session policy). Deterministic +
 	// visual specs already errored above.
@@ -1240,6 +1302,14 @@ type cliActionExecutor struct {
 }
 
 func (e *cliActionExecutor) Execute(ctx context.Context, action string) error {
+	return e.executeWithMode(ctx, action, browser.InteractionModeVisual)
+}
+
+func (e *cliActionExecutor) ExecuteWithMode(ctx context.Context, action string, mode browser.InteractionMode) error {
+	return e.executeWithMode(ctx, action, mode)
+}
+
+func (e *cliActionExecutor) executeWithMode(ctx context.Context, action string, mode browser.InteractionMode) error {
 	trimmed := strings.TrimSpace(action)
 
 	// Direct URL navigation — deterministic fast path.
@@ -1264,16 +1334,28 @@ func (e *cliActionExecutor) Execute(ctx context.Context, action string) error {
 		if e.planner == nil {
 			return fmt.Errorf("deterministic/llm-off: NL goal %q rejected, use structural action", trimmed)
 		}
-		return e.executeNLGoal(ctx, trimmed)
+		return e.executeNLGoal(ctx, trimmed, mode)
 	}
 
+	return e.executeStructuredAction(ctx, action, mode)
+}
+
+func (e *cliActionExecutor) executeStructuredAction(ctx context.Context, action string, mode browser.InteractionMode) error {
+	if mode == browser.InteractionModeElement {
+		capable, ok := e.impl.(browser.SessionInteractionModeActCapable)
+		if !ok {
+			return fmt.Errorf("mode: element is unavailable for this browser engine")
+		}
+		_, err := capable.ActWithSessionInteractionMode(ctx, action, false, mode)
+		return err
+	}
 	_, err := e.impl.ActWithSessionMode(ctx, action, false)
 	return err
 }
 
 // executeNLGoal decomposes a natural-language goal into browser steps via the
 // LLM Planner (skill-first, planner fallback — same strategy as `dw-browser do`).
-func (e *cliActionExecutor) executeNLGoal(ctx context.Context, goal string) error {
+func (e *cliActionExecutor) executeNLGoal(ctx context.Context, goal string, mode browser.InteractionMode) error {
 	snap, _ := e.impl.SnapWithSessionMode(ctx, e.sessionInfo.SnapEpoch)
 	var structural *btest.StructuralState
 	pageURL := e.sessionInfo.PageURL
@@ -1300,7 +1382,7 @@ func (e *cliActionExecutor) executeNLGoal(ctx context.Context, goal string) erro
 		case "wait", "noop", "none":
 			// The real synchronization is represented by step.Wait.
 		default:
-			if _, err := e.impl.ActWithSessionMode(ctx, step.Action, false); err != nil {
+			if err := e.executeStructuredAction(ctx, step.Action, mode); err != nil {
 				return fmt.Errorf("nl-exec %q → step %q: %w", goal, step.Description, err)
 			}
 		}
@@ -1363,6 +1445,14 @@ type oneshotActionExecutor struct {
 }
 
 func (e *oneshotActionExecutor) Execute(ctx context.Context, action string) error {
+	return e.executeWithMode(ctx, action, browser.InteractionModeVisual)
+}
+
+func (e *oneshotActionExecutor) ExecuteWithMode(ctx context.Context, action string, mode browser.InteractionMode) error {
+	return e.executeWithMode(ctx, action, mode)
+}
+
+func (e *oneshotActionExecutor) executeWithMode(ctx context.Context, action string, mode browser.InteractionMode) error {
 	trimmed := strings.TrimSpace(action)
 
 	// Direct URL navigation — deterministic fast path.
@@ -1387,15 +1477,27 @@ func (e *oneshotActionExecutor) Execute(ctx context.Context, action string) erro
 		if e.planner == nil {
 			return fmt.Errorf("deterministic/llm-off: NL goal %q rejected, use structural action", trimmed)
 		}
-		return e.executeNLGoal(ctx, trimmed)
+		return e.executeNLGoal(ctx, trimmed, mode)
 	}
 
+	return e.executeStructuredAction(ctx, action, mode)
+}
+
+func (e *oneshotActionExecutor) executeStructuredAction(ctx context.Context, action string, mode browser.InteractionMode) error {
+	if mode == browser.InteractionModeElement {
+		capable, ok := e.impl.(browser.InteractionModeActCapable)
+		if !ok {
+			return fmt.Errorf("mode: element is unavailable for this browser engine")
+		}
+		_, err := capable.ActWithInteractionMode(ctx, action, false, mode)
+		return err
+	}
 	_, err := e.impl.Act(ctx, action, false)
 	return err
 }
 
 // executeNLGoal decomposes a natural-language goal into browser steps via the Planner.
-func (e *oneshotActionExecutor) executeNLGoal(ctx context.Context, goal string) error {
+func (e *oneshotActionExecutor) executeNLGoal(ctx context.Context, goal string, mode browser.InteractionMode) error {
 	snap, _ := e.impl.Snap(ctx)
 	var structural *btest.StructuralState
 	if snap != nil {
@@ -1412,7 +1514,7 @@ func (e *oneshotActionExecutor) executeNLGoal(ctx context.Context, goal string) 
 		case "wait", "noop", "none":
 			// The real synchronization is represented by step.Wait.
 		default:
-			if _, err := e.impl.Act(ctx, step.Action, false); err != nil {
+			if err := e.executeStructuredAction(ctx, step.Action, mode); err != nil {
 				return fmt.Errorf("nl-exec %q → step %q: %w", goal, step.Description, err)
 			}
 		}

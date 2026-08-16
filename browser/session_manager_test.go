@@ -2,6 +2,50 @@ package browser
 
 import "testing"
 
+func TestSessionRefsFromSnapshotIsTheCompletePersistenceBoundary(t *testing.T) {
+	snap := &Snapshot{
+		SeeToClick: true,
+		Refs: []ElementRef{
+			{
+				Ref:           "@r1",
+				BackendNodeID: 91,
+				Locator: NodeLocator{
+					Engine:    EngineSafari,
+					AXPath:    "0.2.1",
+					StableKey: "button:save",
+				},
+				AXPath:            "0.2.1",
+				Role:              "button",
+				NameFull:          "Save",
+				TestID:            "save",
+				Placeholder:       "unused",
+				BBox:              Rect{X: 1, Y: 2, Width: 30, Height: 40},
+				VisibilityKnown:   true,
+				VisibleInViewport: true,
+			},
+			{Ref: "@r2", BackendNodeID: 92, VisibilityKnown: true, VisibleInViewport: false},
+			{Ref: "@r3", BackendNodeID: 93, VisibilityKnown: false, VisibleInViewport: true},
+		},
+	}
+
+	refs := SessionRefsFromSnapshot(snap, true)
+	if len(refs) != 1 {
+		t.Fatalf("refs=%+v, want only the visible ref", refs)
+	}
+	got := refs[0]
+	if got.Ref != "@r1" || got.BackendNodeID != 91 || got.Role != "button" || got.Name != "Save" ||
+		got.TestID != "save" || got.Placeholder != "unused" || got.Locator.AXPath != "0.2.1" ||
+		got.AXPath != "0.2.1" || got.StableKey != "button:save" || got.BBox == nil ||
+		!got.Visible || !got.Observed {
+		t.Fatalf("incomplete SessionRef mapping: %+v", got)
+	}
+
+	unobserved := SessionRefsFromSnapshot(snap, false)
+	if len(unobserved) != 1 || unobserved[0].Observed {
+		t.Fatalf("observed parameter was not honored: %+v", unobserved)
+	}
+}
+
 func TestSelectAttachablePageTargetPrefersUserPageOriginMatch(t *testing.T) {
 	targets := []map[string]interface{}{
 		{

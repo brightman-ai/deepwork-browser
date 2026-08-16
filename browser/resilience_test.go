@@ -246,12 +246,13 @@ func TestL4_Navigate_ContextTimeout(t *testing.T) {
 	// TC-ID: TC-09-L4-06
 	core := launchTestBrowser(t)
 
-	// 创建一个永远不返回的 server
+	// 创建一个在客户端取消前不返回的 server。request context 是请求
+	// 生命周期 SSOT；无条件 select{} 会让 httptest.Close 自身永久卡住。
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// 故意不响应，模拟慢响应
-		select {}
+		<-r.Context().Done()
 	}))
 	defer ts.Close()
+	defer ts.CloseClientConnections()
 
 	// 设置很短的超时（1s）
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)

@@ -15,8 +15,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/chromedp/chromedp"
 )
 
 // ============================================================
@@ -120,6 +118,9 @@ func TestChromeLauncher_Launch_NoBrowser(t *testing.T) {
 	linuxChromePaths = []string{"/nonexistent/no-chrome-i02"}
 	macOSChromePaths = []string{"/nonexistent/no-chrome-i02"}
 	windowsChromePaths = []string{"/nonexistent/no-chrome-i02"}
+	// FindChrome has two deliberate sources: platform candidates and PATH.
+	// Isolate both so the fixture actually represents "Chrome absent".
+	t.Setenv("PATH", t.TempDir())
 
 	ctx := context.Background()
 	launcher := NewChromeLauncher()

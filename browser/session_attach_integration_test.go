@@ -67,6 +67,18 @@ func TestSessionAttachClose_DoesNotCloseExistingPageTarget(t *testing.T) {
 	if snap == nil || snap.URL == "" {
 		t.Fatalf("Navigate() returned empty snapshot: %#v", snap)
 	}
+	// Exercise the isolated direct-target screenshot connection before Close.
+	// The evidence client must disconnect without taking ownership of (or
+	// closing) the page that the outer session is reusing.
+	for i := 0; i < 2; i++ {
+		image, err := impl.Screenshot(ctx, false)
+		if err != nil {
+			t.Fatalf("Screenshot(%d) failed: %v", i+1, err)
+		}
+		if len(image) == 0 {
+			t.Fatalf("Screenshot(%d) returned an empty image", i+1)
+		}
+	}
 
 	targetsBeforeClose, err := FetchChromeTargets(debugPort)
 	if err != nil {

@@ -41,6 +41,47 @@ var ScenarioValues = []Scenario{
 	ScenarioWebVisit,
 }
 
+// InteractionPolicy is the scenario-derived human interaction posture. It is
+// deliberately not a CLI flag: every agent-driven scenario uses
+// screenshot-aligned refs and forbids locator-driven auto scrolling by
+// default.
+type InteractionPolicy struct {
+	SeeToClick bool
+}
+
+// ScenarioInteractionPolicy is the SSOT for scenario interaction semantics.
+func ScenarioInteractionPolicy(s Scenario) InteractionPolicy {
+	switch s {
+	case ScenarioAppTestExplore, ScenarioAppTestBaseline, ScenarioWebVisit:
+		return InteractionPolicy{SeeToClick: true}
+	default:
+		return InteractionPolicy{}
+	}
+}
+
+// InteractionMode is the fidelity selected by one journey step. Visual is the
+// default human model; element is an explicit per-step escape hatch that may
+// use locator-driven auto scrolling. It is not a session/global policy knob.
+type InteractionMode string
+
+const (
+	InteractionModeVisual  InteractionMode = "visual"
+	InteractionModeElement InteractionMode = "element"
+)
+
+// NormalizeInteractionMode validates a journey step mode. An omitted value is
+// the visual default so existing specs automatically gain human fidelity.
+func NormalizeInteractionMode(raw string) (InteractionMode, error) {
+	switch InteractionMode(strings.ToLower(strings.TrimSpace(raw))) {
+	case "", InteractionModeVisual:
+		return InteractionModeVisual, nil
+	case InteractionModeElement:
+		return InteractionModeElement, nil
+	default:
+		return "", fmt.Errorf("unknown interaction mode %q (must be visual or element)", strings.TrimSpace(raw))
+	}
+}
+
 // ScenarioValuesString renders the legal scenarios for error/help messages.
 func ScenarioValuesString() string {
 	parts := make([]string, len(ScenarioValues))

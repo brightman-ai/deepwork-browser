@@ -3,8 +3,10 @@ package browser
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -14,7 +16,9 @@ import (
 
 	"github.com/brightman-ai/kit/obs"
 
+	"github.com/chromedp/cdproto"
 	cdpbrowser "github.com/chromedp/cdproto/browser"
+	"github.com/chromedp/cdproto/cdp"
 	"github.com/chromedp/cdproto/emulation"
 	"github.com/chromedp/cdproto/page"
 	cdpruntime "github.com/chromedp/cdproto/runtime"
@@ -23,11 +27,14 @@ import (
 )
 
 const (
-	navigateReadyPollInterval  = 200 * time.Millisecond
-	navigateReadyTimeout       = 5 * time.Second
-	navigateDOMIdleMs          = 500
-	navigateDOMSettleTimeoutMs = 5000
+	navigateReadyPollInterval       = 200 * time.Millisecond
+	navigateReadyTimeout            = 5 * time.Second
+	navigateDOMIdleMs               = 500
+	navigateDOMSettleTimeoutMs      = 5000
+	browserScreenshotAttemptTimeout = 5 * time.Second
 )
+
+var errScreenshotTimeout = errors.New("browser: screenshot timed out")
 
 // ============================================================
 // § BrowserOption — 可选参数模式（扩展 NewBrowserCore）
@@ -332,6 +339,7 @@ type browserCoreImpl struct {
 	launcher           *chromeLauncherImpl
 	supervisor         *chromeSupervisorImpl
 	chromePID          int
+	wsURL              string
 	liveViewActive     bool
 	liveViewportW      int
 	liveViewportH      int
@@ -569,6 +577,7 @@ func NewBrowserCore(ctx context.Context, profileID string, optFns ...BrowserOpti
 		launcher:          launcher,
 		supervisor:        supervisor,
 		chromePID:         launch.chromePID,
+		wsURL:             launch.wsURL,
 		liveViewportW:     width,
 		liveViewportH:     height,
 		liveViewportDPR:   1,
@@ -1032,6 +1041,16 @@ func (impl *browserCoreImpl) Snap(ctx context.Context) (*Snapshot, error) {
 
 // Act 执行操作，observe=false 时不返回 Snapshot。
 func (impl *browserCoreImpl) Act(ctx context.Context, action string, observe bool) (*Snapshot, error) {
+	return impl.actWithInteractionMode(ctx, action, observe, InteractionModeVisual)
+}
+
+// ActWithInteractionMode applies a journey step's explicit fidelity without
+// mutating the scenario-level default.
+func (impl *browserCoreImpl) ActWithInteractionMode(ctx context.Context, action string, observe bool, mode InteractionMode) (*Snapshot, error) {
+	return impl.actWithInteractionMode(ctx, action, observe, mode)
+}
+
+func (impl *browserCoreImpl) actWithInteractionMode(ctx context.Context, action string, observe bool, mode InteractionMode) (*Snapshot, error) {
 	// 接管模式下，AI 操作被拒绝 [TC-09-U-11]
 	if impl.takeoverCtrl.IsTakeover() {
 		return nil, ErrTakeoverActive
@@ -1055,7 +1074,7 @@ func (impl *browserCoreImpl) Act(ctx context.Context, action string, observe boo
 	done := make(chan actionResult, 1)
 	go func() {
 		defer impl.mu.RUnlock()
-		snap, err := impl.actEngine.Execute(runCtx, action, observe)
+		snap, err := impl.actEngine.ExecuteWithInteractionMode(runCtx, action, observe, false, mode)
 		done <- actionResult{snap: snap, err: err}
 	}()
 	defer cancelRun()
@@ -1090,22 +1109,263 @@ func (impl *browserCoreImpl) Text(ctx context.Context, focus *string) (string, e
 	return impl.snapEngine.GetText(runCtx, focus)
 }
 
+type screenshotResult struct {
+	data []byte
+	err  error
+}
+
+// runScreenshotWithTimeout bounds a CDP screenshot without holding BrowserCore
+// locks. Cancellation is wired to the target executor; even a broken executor
+// cannot keep the caller or impl.mu blocked forever.
+func runScreenshotWithTimeout(
+	parent context.Context,
+	targetCtx context.Context,
+	timeout time.Duration,
+	capture func(context.Context) ([]byte, error),
+) ([]byte, error) {
+	if parent == nil {
+		parent = context.Background()
+	}
+	if parent.Done() == nil {
+		var cancelParent context.CancelFunc
+		parent, cancelParent = context.WithCancel(parent)
+		defer cancelParent()
+	}
+	if targetCtx == nil {
+		return nil, fmt.Errorf("browser: screenshot target context unavailable")
+	}
+	if timeout <= 0 {
+		timeout = browserScreenshotAttemptTimeout
+	}
+
+	runCtx, cancelRun := deriveTargetContext(parent, targetCtx)
+	done := make(chan screenshotResult, 1)
+	go func() {
+		data, err := capture(runCtx)
+		done <- screenshotResult{data: data, err: err}
+	}()
+
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	defer cancelRun()
+	cancelAndDrain := func() {
+		cancelRun()
+		drainTimer := time.NewTimer(250 * time.Millisecond)
+		defer drainTimer.Stop()
+		select {
+		case <-done:
+		case <-drainTimer.C:
+		}
+	}
+	select {
+	case result := <-done:
+		return result.data, result.err
+	case <-parent.Done():
+		cancelAndDrain()
+		return nil, parent.Err()
+	case <-timer.C:
+		cancelAndDrain()
+		return nil, fmt.Errorf("%w after %s", errScreenshotTimeout, timeout)
+	}
+}
+
+func targetIDForContext(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	c := chromedp.FromContext(ctx)
+	if c == nil || c.Target == nil {
+		return ""
+	}
+	return string(c.Target.TargetID)
+}
+
+// targetWebSocketURL maps Chrome's browser debugger endpoint to the direct
+// endpoint for one existing page target. The target ID remains the sole page
+// identity; the screenshot client never creates or owns a page lifecycle.
+func targetWebSocketURL(browserWSURL, targetID string) (string, error) {
+	if browserWSURL == "" || targetID == "" {
+		return "", fmt.Errorf("browser: screenshot endpoint requires browser websocket URL and target ID")
+	}
+	if strings.ContainsAny(targetID, "/?#") {
+		return "", fmt.Errorf("browser: invalid screenshot target ID %q", targetID)
+	}
+	u, err := url.Parse(browserWSURL)
+	if err != nil {
+		return "", fmt.Errorf("browser: parse debugger websocket URL: %w", err)
+	}
+	if (u.Scheme != "ws" && u.Scheme != "wss") || u.Host == "" {
+		return "", fmt.Errorf("browser: invalid debugger websocket URL %q", browserWSURL)
+	}
+	u.Path = "/devtools/page/" + targetID
+	u.RawPath = ""
+	u.RawQuery = ""
+	u.Fragment = ""
+	return u.String(), nil
+}
+
+// directTargetExecutor owns one direct page WebSocket and one command at a
+// time. It exists only for evidence capture, so it cannot poison or mutate the
+// long-lived action session.
+type directTargetExecutor struct {
+	transport chromedp.Transport
+	nextID    int64
+}
+
+func (e *directTargetExecutor) Execute(ctx context.Context, method string, params, result any) error {
+	e.nextID++
+	id := e.nextID
+	var rawParams []byte
+	if params != nil {
+		var err error
+		rawParams, err = json.Marshal(params)
+		if err != nil {
+			return err
+		}
+	}
+	request := &cdproto.Message{
+		ID:     id,
+		Method: cdproto.MethodType(method),
+		Params: rawParams,
+	}
+	if err := e.transport.Write(ctx, request); err != nil {
+		return err
+	}
+	for {
+		response := new(cdproto.Message)
+		if err := e.transport.Read(ctx, response); err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			return err
+		}
+		if response.ID != id {
+			continue
+		}
+		if response.Error != nil {
+			return response.Error
+		}
+		if result == nil {
+			return nil
+		}
+		return json.Unmarshal(response.Result, result)
+	}
+}
+
+// captureScreenshotOnFreshConnection is an isolated evidence transaction:
+// dial the existing page target directly, capture once, then disconnect. Conn
+// reads do not observe context cancellation, so the timeout watcher closes the
+// socket to make the bound real.
+func captureScreenshotOnFreshConnection(
+	parent context.Context,
+	browserWSURL string,
+	targetID string,
+	timeout time.Duration,
+) ([]byte, error) {
+	if parent == nil {
+		parent = context.Background()
+	}
+	if timeout <= 0 {
+		timeout = browserScreenshotAttemptTimeout
+	}
+	targetURL, err := targetWebSocketURL(browserWSURL, targetID)
+	if err != nil {
+		return nil, err
+	}
+	attemptCtx, attemptCancel := context.WithTimeout(parent, timeout)
+	defer attemptCancel()
+	conn, err := chromedp.DialContext(attemptCtx, targetURL)
+	if err != nil {
+		if attemptCtx.Err() != nil {
+			return nil, fmt.Errorf("%w after %s", errScreenshotTimeout, timeout)
+		}
+		return nil, fmt.Errorf("browser: connect screenshot target: %w", err)
+	}
+	stopCloser := make(chan struct{})
+	go func() {
+		select {
+		case <-attemptCtx.Done():
+			_ = conn.Close()
+		case <-stopCloser:
+		}
+	}()
+	defer close(stopCloser)
+	defer conn.Close()
+
+	executor := &directTargetExecutor{transport: conn}
+	captureCtx := cdp.WithExecutor(attemptCtx, executor)
+	data, err := page.CaptureScreenshot().
+		WithFormat(page.CaptureScreenshotFormatJpeg).
+		WithQuality(80).
+		Do(captureCtx)
+	if err != nil {
+		if attemptCtx.Err() != nil {
+			if errors.Is(attemptCtx.Err(), context.DeadlineExceeded) {
+				return nil, fmt.Errorf("%w after %s", errScreenshotTimeout, timeout)
+			}
+			return nil, attemptCtx.Err()
+		}
+		return nil, fmt.Errorf("browser: screenshot failed: %w", err)
+	}
+	return data, nil
+}
+
+func (impl *browserCoreImpl) captureScreenshotForTarget(
+	ctx context.Context,
+	browserWSURL string,
+	targetCtx context.Context,
+	targetID string,
+	annotate bool,
+) ([]byte, error) {
+	if browserWSURL != "" && targetID != "" {
+		data, firstErr := captureScreenshotOnFreshConnection(ctx, browserWSURL, targetID, browserScreenshotAttemptTimeout)
+		if firstErr == nil {
+			return data, nil
+		}
+		if ctx != nil && ctx.Err() != nil {
+			return nil, firstErr
+		}
+		data, retryErr := captureScreenshotOnFreshConnection(ctx, browserWSURL, targetID, browserScreenshotAttemptTimeout)
+		if retryErr != nil {
+			return nil, fmt.Errorf("browser: screenshot recovery failed (first attempt: %v): %w", firstErr, retryErr)
+		}
+		log.Printf("[BROWSER] screenshot connection recovered target_id=%s first_error=%v", targetID, firstErr)
+		return data, nil
+	}
+
+	// Pool-owned legacy cores do not always expose Chrome's browser WebSocket.
+	// Preserve their existing target executor path, but keep the call bounded.
+	capture := func(captureCtx context.Context) ([]byte, error) {
+		return impl.snapEngine.Screenshot(captureCtx, annotate)
+	}
+	return runScreenshotWithTimeout(ctx, targetCtx, browserScreenshotAttemptTimeout, capture)
+}
+
 // Screenshot 截图。chrome 仿真会话在此合成 Safari chrome 层（页面外绘制，
 // 所有截图消费者——observe/screenshot/evidence——统一经过这个唯一出口）。
 func (impl *browserCoreImpl) Screenshot(ctx context.Context, annotate bool) ([]byte, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	impl.mu.RLock()
-	defer impl.mu.RUnlock()
-	targetCtx := impl.currentCtx()
-	runCtx, cancel := deriveTargetContext(ctx, targetCtx)
-	defer cancel()
-	data, err := impl.snapEngine.Screenshot(runCtx, annotate)
-	if err != nil || impl.chromeSim == nil {
+	targetID, targetCtx := impl.currentTargetRef()
+	if targetID == "" {
+		targetID = targetIDForContext(targetCtx)
+	}
+	browserWSURL := impl.wsURL
+	chromeSim := impl.chromeSim
+	impl.mu.RUnlock()
+
+	data, err := impl.captureScreenshotForTarget(ctx, browserWSURL, targetCtx, targetID, annotate)
+	if err != nil || chromeSim == nil {
 		return data, err
 	}
 	// 主题取色（真机行为：底栏随页面 theme-color/背景）；探测失败用浅色缺省。
 	var theme string
-	_ = chromedp.Run(runCtx, chromedp.Evaluate(browserChromeThemeProbeJS, &theme))
-	composed, cErr := CompositeBrowserChrome(data, impl.chromeSim, theme, annotate, impl.actEngine.KeyboardVisible())
+	themeRunCtx, themeCancel := deriveTargetContext(ctx, targetCtx)
+	_ = evalJSInContext(ctx, themeRunCtx, browserChromeThemeProbeJS, &theme)
+	themeCancel()
+	composed, cErr := CompositeBrowserChrome(data, chromeSim, theme, annotate, impl.actEngine.KeyboardVisible())
 	if cErr != nil {
 		log.Printf("[BROWSER] browser-chrome composite failed (returning raw screenshot): %v", cErr)
 		return data, nil
@@ -1114,18 +1374,27 @@ func (impl *browserCoreImpl) Screenshot(ctx context.Context, annotate bool) ([]b
 }
 
 func (impl *browserCoreImpl) ScreenshotTarget(ctx context.Context, targetID string, annotate bool) ([]byte, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	impl.mu.RLock()
-	defer impl.mu.RUnlock()
 	var targetCtx context.Context
 	if impl.targetTracker != nil && targetID != "" {
 		targetCtx = impl.targetTracker.TargetCDPContext(targetID)
 	}
 	if targetCtx == nil {
-		targetCtx = impl.currentCtx()
+		currentID, currentCtx := impl.currentTargetRef()
+		targetCtx = currentCtx
+		if targetID == "" {
+			targetID = currentID
+		}
 	}
-	runCtx, cancel := deriveTargetContext(ctx, targetCtx)
-	defer cancel()
-	return impl.snapEngine.Screenshot(runCtx, annotate)
+	if targetID == "" {
+		targetID = targetIDForContext(targetCtx)
+	}
+	browserWSURL := impl.wsURL
+	impl.mu.RUnlock()
+	return impl.captureScreenshotForTarget(ctx, browserWSURL, targetCtx, targetID, annotate)
 }
 
 // StartLiveView 启动 Screencast 帧推送，返回 hub（多 WS 连接共享同一 Screencast 流）。
@@ -1466,6 +1735,12 @@ func (impl *browserCoreImpl) SnapWithOptions(ctx context.Context, opts SnapOptio
 
 // ActWithSessionMode 执行操作（session 模式，允许 @rN ref）。
 func (impl *browserCoreImpl) ActWithSessionMode(ctx context.Context, action string, observe bool) (*Snapshot, error) {
+	return impl.ActWithSessionInteractionMode(ctx, action, observe, InteractionModeVisual)
+}
+
+// ActWithSessionInteractionMode is the session-ref variant of the per-step
+// journey fidelity escape hatch.
+func (impl *browserCoreImpl) ActWithSessionInteractionMode(ctx context.Context, action string, observe bool, mode InteractionMode) (*Snapshot, error) {
 	if impl.takeoverCtrl.IsTakeover() {
 		return nil, ErrTakeoverActive
 	}
@@ -1477,7 +1752,7 @@ func (impl *browserCoreImpl) ActWithSessionMode(ctx context.Context, action stri
 	targetCtx := impl.currentCtx()
 	runCtx, cancel := deriveTargetContext(ctx, targetCtx)
 	defer cancel()
-	return impl.actEngine.ExecuteWithSessionMode(runCtx, action, observe, true)
+	return impl.actEngine.ExecuteWithInteractionMode(runCtx, action, observe, true, mode)
 }
 
 // RestoreRefsFromSession 从 session 文件恢复 ref 表（供 act 命令使用）。
@@ -1486,18 +1761,28 @@ func (impl *browserCoreImpl) RestoreRefsFromSession(refs []SessionRef) {
 	defer impl.mu.Unlock()
 	impl.snapEngine.refTable = make(map[string]int64, len(refs))
 	impl.snapEngine.refMeta = make(map[string]*ElementRef, len(refs)*2)
+	impl.snapEngine.elementCandidates = nil
 	for i := range refs {
 		r := refs[i]
+		if impl.snapEngine.seeToClick && !r.Visible {
+			continue
+		}
 		elem := &ElementRef{
-			Ref:           r.Ref,
-			BackendNodeID: r.BackendNodeID,
-			Role:          r.Role,
-			Name:          r.Name,
-			NameFull:      r.Name,
-			NameShort:     r.Name,
-			TestID:        r.TestID,
-			Placeholder:   r.Placeholder,
-			Interactable:  true,
+			Ref:               r.Ref,
+			BackendNodeID:     r.BackendNodeID,
+			Role:              r.Role,
+			Name:              r.Name,
+			NameFull:          r.Name,
+			NameShort:         r.Name,
+			TestID:            r.TestID,
+			Placeholder:       r.Placeholder,
+			Interactable:      true,
+			VisibilityKnown:   r.BBox != nil || r.Observed || r.Visible,
+			VisibleInViewport: r.Visible,
+			Observed:          r.Observed,
+		}
+		if r.BBox != nil {
+			elem.BBox = *r.BBox
 		}
 		impl.snapEngine.refTable[r.Ref] = r.BackendNodeID
 		impl.snapEngine.refMeta[r.Ref] = elem
@@ -1596,6 +1881,7 @@ func NewBrowserCoreFromSession(ctx context.Context, wsURL string, targetID strin
 		launcher:          NewChromeLauncher(),
 		supervisor:        NewChromeSupervisor(),
 		chromePID:         0,
+		wsURL:             wsURL,
 		liveViewportW:     DefaultViewportWidth,
 		liveViewportH:     DefaultViewportHeight,
 		liveViewportDPR:   1,

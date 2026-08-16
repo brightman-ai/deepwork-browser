@@ -37,14 +37,25 @@ type ActionExecutor interface {
 	CollectRegions(ctx context.Context) ([]RegionSnap, error)
 }
 
+// InteractionModeActionExecutor is the optional journey extension for the
+// explicit per-step mode: element escape hatch. The default visual path keeps
+// using ActionExecutor.Execute.
+type InteractionModeActionExecutor interface {
+	ExecuteWithMode(ctx context.Context, action string, mode browser.InteractionMode) error
+}
+
 // Runner executes BDD journeys defined by JourneySpec.
 type Runner struct {
-	executor   ActionExecutor
-	engine     AssertionEngine
-	evidence   *EvidenceStore
-	transcript *TranscriptBinding // resolved at journey start; nil when not configured
-	startTS    time.Time          // captured before the first step
+	executor          ActionExecutor
+	engine            AssertionEngine
+	evidence          *EvidenceStore
+	transcript        *TranscriptBinding // resolved at journey start; nil when not configured
+	startTS           time.Time          // captured before the first step
+	failFast          bool
+	screenshotTimeout time.Duration
 }
+
+const journeyScreenshotTimeout = 12 * time.Second
 
 // NewRunner creates a journey runner writing evidence to evidenceDir.
 func NewRunner(executor ActionExecutor, evidenceDir string) (*Runner, error) {
@@ -53,9 +64,16 @@ func NewRunner(executor ActionExecutor, evidenceDir string) (*Runner, error) {
 		return nil, fmt.Errorf("journey runner: %w", err)
 	}
 	return &Runner{
-		executor: executor,
-		evidence: store,
+		executor:          executor,
+		evidence:          store,
+		screenshotTimeout: journeyScreenshotTimeout,
 	}, nil
+}
+
+// SetFailFast stops scheduling later journey/mutation steps after the first
+// failure. Recovery steps still run so a failed journey can restore its SUT.
+func (r *Runner) SetFailFast(enabled bool) {
+	r.failFast = enabled
 }
 
 // SetVision configures the VisionOracle on the runner's AssertionEngine.
@@ -88,6 +106,13 @@ func LoadSpec(path string) (*JourneySpec, error) {
 	var spec JourneySpec
 	if err := yaml.Unmarshal(data, &spec); err != nil {
 		return nil, fmt.Errorf("parse spec %s: %w", path, err)
+	}
+	for section, steps := range map[string][]StepSpec{"journey": spec.Journey, "recovery": spec.Recovery} {
+		for i := range steps {
+			if _, err := browser.NormalizeInteractionMode(string(steps[i].Mode)); err != nil {
+				return nil, fmt.Errorf("parse spec %s: %s step %q: %w", path, section, steps[i].ID, err)
+			}
+		}
 	}
 	return &spec, nil
 }
@@ -125,6 +150,9 @@ func (r *Runner) Run(ctx context.Context, spec *JourneySpec) (*JourneyResult, er
 		result.Steps = append(result.Steps, sr)
 		if sr.Status != StatusPass {
 			allPassed = false
+			if r.failFast {
+				break
+			}
 		}
 	}
 
@@ -132,10 +160,16 @@ func (r *Runner) Run(ctx context.Context, spec *JourneySpec) (*JourneyResult, er
 	for _, step := range spec.Recovery {
 		sr := r.runStep(ctx, step, nil, workspaceDir)
 		result.Recovery = append(result.Recovery, sr)
+		if sr.Status != StatusPass {
+			allPassed = false
+			if r.failFast {
+				break
+			}
+		}
 	}
 
 	// TASK C: execute mutations (was parsed but never run).
-	if len(spec.Mutations) > 0 {
+	if len(spec.Mutations) > 0 && !(r.failFast && !allPassed) {
 		mutResults, mutErr := r.executeMutations(ctx, spec.Mutations, baselineChecks, workspaceDir)
 		if mutErr != nil {
 			allPassed = false
@@ -177,12 +211,37 @@ func (r *Runner) runStep(ctx context.Context, step StepSpec, baselineChecks []As
 	start := time.Now()
 
 	// 1. Before observation.
-	before := r.observeWithExt(ctx, step.ID, "before", workspaceDir)
-
-	// 2. Execute action — failure is terminal for this step.
-	if err := r.executor.Execute(ctx, step.Do); err != nil {
+	before, beforeErr := r.observeWithExt(ctx, step.ID, "before", workspaceDir)
+	if beforeErr != nil {
 		sr.Status = StatusFail
-		sr.Error = err.Error()
+		sr.Error = "before observation: " + beforeErr.Error()
+		sr.LatencyMs = time.Since(start).Milliseconds()
+		_ = r.evidence.SaveStepEvidence(step.ID, before, nil, nil, nil)
+		return sr
+	}
+
+	// 2. Execute action — visual is the default. element is an explicit
+	// per-step escape hatch and must be supported rather than silently ignored.
+	mode, modeErr := browser.NormalizeInteractionMode(string(step.Mode))
+	if modeErr != nil {
+		sr.Status = StatusFail
+		sr.Error = modeErr.Error()
+		sr.LatencyMs = time.Since(start).Milliseconds()
+		return sr
+	}
+	var actionErr error
+	if mode == browser.InteractionModeElement {
+		if executor, ok := r.executor.(InteractionModeActionExecutor); ok {
+			actionErr = executor.ExecuteWithMode(ctx, step.Do, mode)
+		} else {
+			actionErr = fmt.Errorf("journey step %q requests mode: element but the action executor does not support step interaction modes", step.ID)
+		}
+	} else {
+		actionErr = r.executor.Execute(ctx, step.Do)
+	}
+	if actionErr != nil {
+		sr.Status = StatusFail
+		sr.Error = actionErr.Error()
 		sr.LatencyMs = time.Since(start).Milliseconds()
 		return sr
 	}
@@ -206,7 +265,14 @@ func (r *Runner) runStep(ctx context.Context, step StepSpec, baselineChecks []As
 	}
 
 	// 4. After observation.
-	after := r.observeWithExt(ctx, step.ID, "after", workspaceDir)
+	after, afterErr := r.observeWithExt(ctx, step.ID, "after", workspaceDir)
+	if afterErr != nil {
+		sr.Status = StatusFail
+		sr.Error = "after observation: " + afterErr.Error()
+		sr.LatencyMs = time.Since(start).Milliseconds()
+		_ = r.evidence.SaveStepEvidence(step.ID, before, after, nil, nil)
+		return sr
+	}
 
 	// 5. Diff.
 	diff := ComputeDiff(before, after)
@@ -268,21 +334,23 @@ func (r *Runner) runStep(ctx context.Context, step StepSpec, baselineChecks []As
 }
 
 // observe gathers a multi-channel Observation for the current page state.
-// All sub-calls are best-effort; failures produce a partial Observation.
-func (r *Runner) observe(ctx context.Context, stepID, phase string) *Observation {
+// Structural/behavior/telemetry extensions are best-effort. Screenshot is the
+// primary user-perception evidence and is bounded + required: losing it fails
+// the step instead of hanging forever or producing a fake-green journey.
+func (r *Runner) observe(ctx context.Context, stepID, phase string) (*Observation, error) {
 	return r.observeWithExt(ctx, stepID, phase, "")
 }
 
 // observeWithExt gathers an Observation and attaches SUT-side extensions
 // (transcript state, workspace dir) for use by transcript_* and file_glob primitives.
-func (r *Runner) observeWithExt(ctx context.Context, stepID, phase string, workspaceDir string) *Observation {
+func (r *Runner) observeWithExt(ctx context.Context, stepID, phase string, workspaceDir string) (*Observation, error) {
 	snap, _ := r.executor.Snapshot(ctx)
 	// FIX-J4: wait until the SPA a11y tree is populated (settle-wait, up to ~6s).
 	for i := 0; i < 6 && (snap == nil || len(snap.Refs) == 0); i++ {
 		time.Sleep(1 * time.Second)
 		snap, _ = r.executor.Snapshot(ctx)
 	}
-	screenshotData, _ := r.executor.Screenshot(ctx)
+	screenshotData, screenshotErr := r.captureScreenshot(ctx)
 	behavior, _ := r.executor.GetSessionState(ctx)
 	telemetry, _ := r.executor.GetTelemetry(ctx)
 
@@ -316,7 +384,45 @@ func (r *Runner) observeWithExt(ctx context.Context, stepID, phase string, works
 		obs.SetWorkspaceDir(workspaceDir)
 	}
 
-	return obs
+	if screenshotErr != nil {
+		return obs, fmt.Errorf("screenshot %s/%s: %w", stepID, phase, screenshotErr)
+	}
+	if len(screenshotData) == 0 {
+		return obs, fmt.Errorf("screenshot %s/%s: empty image", stepID, phase)
+	}
+	return obs, nil
+}
+
+func (r *Runner) captureScreenshot(ctx context.Context) ([]byte, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	timeout := r.screenshotTimeout
+	if timeout <= 0 {
+		timeout = journeyScreenshotTimeout
+	}
+	shotCtx, shotCancel := context.WithCancel(ctx)
+	defer shotCancel()
+	type result struct {
+		data []byte
+		err  error
+	}
+	done := make(chan result, 1)
+	go func() {
+		data, err := r.executor.Screenshot(shotCtx)
+		done <- result{data: data, err: err}
+	}()
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case captured := <-done:
+		return captured.data, captured.err
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-timer.C:
+		shotCancel()
+		return nil, fmt.Errorf("journey screenshot timed out after %s", timeout)
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -418,7 +524,14 @@ func (r *Runner) executeMutations(ctx context.Context, mutations []MutationStep,
 
 		// Re-run layout/structural checks declared in the baseline after each mutation.
 		if len(layoutChecks) > 0 {
-			obs := r.observeWithExt(ctx, sr.StepID, "after-mutation", workspaceDir)
+			obs, observeErr := r.observeWithExt(ctx, sr.StepID, "after-mutation", workspaceDir)
+			if observeErr != nil {
+				sr.Status = StatusFail
+				sr.Error = "after mutation observation: " + observeErr.Error()
+				sr.LatencyMs = time.Since(start).Milliseconds()
+				results = append(results, sr)
+				continue
+			}
 			for _, inv := range layoutChecks {
 				using := inv.Using
 				// Only re-run layout and structural checks.

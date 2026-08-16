@@ -92,6 +92,7 @@ func (p SessionPolicy) effectiveRemoteWrites() RemoteWritePolicy {
 var readOnlyOps = map[string]bool{
 	"scroll":     true,
 	"scrollinto": true,
+	"scrollto":   true,
 	"hover":      true,
 	"hoverat":    true,
 	"wheelat":    true,

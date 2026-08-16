@@ -26,6 +26,25 @@ type snapshotEngine struct {
 	refTable map[string]int64
 	// refMeta Ref → ElementRef 完整信息（DOM 发现的 clickable 用 name 做 CSS 选择器回退）
 	refMeta map[string]*ElementRef
+	// elementCandidates is the private, ref-less document index used only by an
+	// explicit journey step mode: element. It must never be projected as Refs.
+	elementCandidates []elementCandidate
+	// seeToClick is scenario-derived for every agent-driven scenario. observeAll
+	// requests a separate ref-less census; it never changes ref selection or
+	// click-time visibility guards.
+	seeToClick bool
+	observeAll bool
+}
+
+// elementCandidate deliberately has no Ref field. It retains just enough live
+// locator metadata for the explicit per-step element-mode escape hatch without
+// granting unseen elements an agent-visible capability handle.
+type elementCandidate struct {
+	BackendNodeID int64
+	Role          string
+	Name          string
+	Placeholder   string
+	TestID        string
 }
 
 const (
@@ -58,15 +77,18 @@ const (
 )
 
 type pageLoadProbe struct {
-	URL             string `json:"url"`
-	Title           string `json:"title"`
-	ReadyState      string `json:"readyState"`
-	VisibilityState string `json:"visibilityState"`
-	HasBody         bool   `json:"hasBody"`
-	BodyTextLength  int    `json:"bodyTextLength"`
-	BodyChildCount  int    `json:"bodyChildCount"`
-	ViewportWidth   int    `json:"viewportWidth"`
-	ViewportHeight  int    `json:"viewportHeight"`
+	URL              string  `json:"url"`
+	Title            string  `json:"title"`
+	ReadyState       string  `json:"readyState"`
+	VisibilityState  string  `json:"visibilityState"`
+	HasBody          bool    `json:"hasBody"`
+	BodyTextLength   int     `json:"bodyTextLength"`
+	BodyChildCount   int     `json:"bodyChildCount"`
+	ViewportWidth    int     `json:"viewportWidth"`
+	ViewportHeight   int     `json:"viewportHeight"`
+	DevicePixelRatio float64 `json:"devicePixelRatio"`
+	ScrollX          float64 `json:"scrollX"`
+	ScrollY          float64 `json:"scrollY"`
 }
 
 // newSnapshotEngine 创建 SnapshotEngine 实例。
@@ -80,6 +102,39 @@ func newSnapshotEngine() *snapshotEngine {
 func (e *snapshotEngine) clearRefs() {
 	e.refTable = make(map[string]int64)
 	e.refMeta = make(map[string]*ElementRef)
+	e.elementCandidates = nil
+}
+
+func elementCandidatesFromRefs(refs []ElementRef) []elementCandidate {
+	candidates := make([]elementCandidate, 0, len(refs))
+	for i := range refs {
+		name := strings.TrimSpace(refs[i].NameFull)
+		if name == "" {
+			name = strings.TrimSpace(refs[i].Name)
+		}
+		if name == "" {
+			name = strings.TrimSpace(refs[i].NameShort)
+		}
+		candidates = append(candidates, elementCandidate{
+			BackendNodeID: refs[i].BackendNodeID,
+			Role:          refs[i].Role,
+			Name:          name,
+			Placeholder:   refs[i].Placeholder,
+			TestID:        refs[i].TestID,
+		})
+	}
+	return candidates
+}
+
+func censusFromCandidates(candidates []elementCandidate) []CensusEntry {
+	census := make([]CensusEntry, 0, len(candidates))
+	for i := range candidates {
+		census = append(census, CensusEntry{
+			Role: candidates[i].Role,
+			Name: candidates[i].Name,
+		})
+	}
+	return census
 }
 
 // LookupRefMeta 获取 ref 的完整元数据（用于 clickable 类型的 CSS 选择器回退）。
@@ -128,8 +183,10 @@ func (e *snapshotEngine) GetSnapshot(ctx context.Context) (*Snapshot, error) {
 	// 步骤 3: 过滤 + DFS Refs 分配
 	refs := extractInteractableRefs(axNodes)
 
-	// 步骤 4: 检查 Refs 数量，< 3 时走 fallback [IR-07, TC-09-U-03]
-	if len(refs) < 3 {
+	// 步骤 4: 检查 Refs 数量，< 3 时走 fallback [IR-07, TC-09-U-03]。
+	// explore 的可见集允许只有 1-2 个控件（空状态/确认页很常见），且还需先
+	// 给 DOM-only 控件一次 enrichment 机会，因此仅旧交互模型在这里 fallback。
+	if len(refs) < 3 && !e.seeToClick {
 		return e.domFallback(ctx, currentURL, title, "a11y_insufficient_refs", nil)
 	}
 
@@ -138,9 +195,32 @@ func (e *snapshotEngine) GetSnapshot(ctx context.Context) (*Snapshot, error) {
 	// 唯一安全路径: Accessibility.getFullAXTree + Runtime.evaluate（JS 执行）。
 	// 文本匹配是该约束下的最优解，非降级（业界 Playwright 也用 JS 计算 role/name）。
 	enrichTestIDsViaJS(ctx, refs)
-	domRefs := discoverClickableDOMViaJS(ctx, refs)
+	domRefs := discoverClickableDOMViaJS(ctx, refs, !e.seeToClick)
 	if len(domRefs) > 0 {
 		refs = append(refs, domRefs...)
+	}
+	if len(refs) == 0 {
+		return e.domFallback(ctx, currentURL, title, "no_interactable_refs", nil)
+	}
+
+	// Screenshot viewport is the interaction SSOT in every recognized scenario.
+	// Capture a private ref-less locator/census projection before filtering, then
+	// mint public refs only for visible hit-testable elements. observe --all never
+	// changes this selection.
+	documentInteractableCount := len(refs)
+	visibleInteractableCount := len(refs)
+	e.elementCandidates = elementCandidatesFromRefs(refs)
+	var census []CensusEntry
+	if e.observeAll {
+		census = censusFromCandidates(e.elementCandidates)
+	}
+	var viewport ViewportFacts
+	if e.seeToClick {
+		var visibilityErr error
+		refs, viewport, visibleInteractableCount, visibilityErr = enrichSeeToClickRefs(ctx, refs)
+		if visibilityErr != nil {
+			return nil, visibilityErr
+		}
 	}
 
 	// 步骤 5: 构建 compact 文本 + TokenEst
@@ -177,13 +257,19 @@ func (e *snapshotEngine) GetSnapshot(ctx context.Context) (*Snapshot, error) {
 	}
 
 	return &Snapshot{
-		PageTitle:    title,
-		URL:          currentURL,
-		Text:         text,
-		Refs:         refs,
-		SnapshotType: snapshotTypeA11y,
-		TokenEst:     tokenEst,
-		LoadState:    loadStateActionable,
+		PageTitle:                  title,
+		URL:                        currentURL,
+		Text:                       text,
+		Refs:                       refs,
+		SnapshotType:               snapshotTypeA11y,
+		TokenEst:                   tokenEst,
+		LoadState:                  loadStateActionable,
+		SeeToClick:                 e.seeToClick,
+		Viewport:                   viewport,
+		DocumentInteractableCount:  documentInteractableCount,
+		VisibleInteractableCount:   visibleInteractableCount,
+		OffscreenInteractableCount: documentInteractableCount - visibleInteractableCount,
+		Census:                     census,
 	}, nil
 }
 
@@ -212,6 +298,7 @@ func (e *snapshotEngine) domFallback(ctx context.Context, url, title, reason str
 	}
 
 	tokenEst := estimateTokens(text)
+	viewport := e.fallbackViewportFacts(ctx)
 	e.clearRefs()
 
 	return &Snapshot{
@@ -222,6 +309,8 @@ func (e *snapshotEngine) domFallback(ctx context.Context, url, title, reason str
 		SnapshotType: snapshotTypeDOMFallback,
 		TokenEst:     tokenEst,
 		LoadState:    loadStateReadable,
+		SeeToClick:   e.seeToClick,
+		Viewport:     viewport,
 	}, nil
 }
 
@@ -242,6 +331,7 @@ func (e *snapshotEngine) screenshotFallback(ctx context.Context, url, title, rea
 		return e.progressiveFallback(ctx, url, title, reason+":screenshot_unavailable", err), nil
 	}
 
+	viewport := e.fallbackViewportFacts(ctx)
 	e.clearRefs()
 	return &Snapshot{
 		PageTitle:    title,
@@ -251,6 +341,8 @@ func (e *snapshotEngine) screenshotFallback(ctx context.Context, url, title, rea
 		SnapshotType: snapshotTypeScreenshotFallback,
 		TokenEst:     estimateTokens("[screenshot]"),
 		LoadState:    loadStateVisual,
+		SeeToClick:   e.seeToClick,
+		Viewport:     viewport,
 	}, nil
 }
 
@@ -286,6 +378,7 @@ func (e *snapshotEngine) progressiveFallback(ctx context.Context, url, title, re
 		progressiveRetryDefault,
 		reason,
 	)
+	viewport := viewportFactsFromPageLoadProbe(probe)
 	e.clearRefs()
 	return &Snapshot{
 		PageTitle:        title,
@@ -300,6 +393,38 @@ func (e *snapshotEngine) progressiveFallback(ctx context.Context, url, title, re
 		RetryAfterMillis: progressiveRetryDefault,
 		ProgressReason:   reason,
 		Diagnostics:      diagnostics,
+		SeeToClick:       e.seeToClick,
+		Viewport:         viewport,
+	}
+}
+
+func (e *snapshotEngine) fallbackViewportFacts(ctx context.Context) ViewportFacts {
+	if !e.seeToClick {
+		return ViewportFacts{}
+	}
+	var viewport ViewportFacts
+	probeCtx, cancel := context.WithTimeout(ctx, pageStateProbeTimeout)
+	defer cancel()
+	if err := chromedp.Run(probeCtx, chromedp.Evaluate(viewportFactsJS, &viewport)); err != nil {
+		return ViewportFacts{DevicePixelRatio: 1}
+	}
+	if viewport.DevicePixelRatio <= 0 {
+		viewport.DevicePixelRatio = 1
+	}
+	return viewport
+}
+
+func viewportFactsFromPageLoadProbe(probe pageLoadProbe) ViewportFacts {
+	dpr := probe.DevicePixelRatio
+	if dpr <= 0 {
+		dpr = 1
+	}
+	return ViewportFacts{
+		Width:            float64(probe.ViewportWidth),
+		Height:           float64(probe.ViewportHeight),
+		DevicePixelRatio: dpr,
+		ScrollX:          probe.ScrollX,
+		ScrollY:          probe.ScrollY,
 	}
 }
 
@@ -319,7 +444,10 @@ func probePageLoadState(ctx context.Context) (pageLoadProbe, error) {
 			bodyTextLength: text.length,
 			bodyChildCount: body ? body.children.length : 0,
 			viewportWidth: window.innerWidth || 0,
-			viewportHeight: window.innerHeight || 0
+			viewportHeight: window.innerHeight || 0,
+			devicePixelRatio: window.devicePixelRatio || 1,
+			scrollX: window.scrollX || 0,
+			scrollY: window.scrollY || 0
 		};
 	})()`
 	err := chromedp.Run(probeCtx, chromedp.Evaluate(js, &probe))
@@ -505,6 +633,42 @@ func (e *snapshotEngine) AllByRole(role string) []string {
 	return names
 }
 
+func (e *snapshotEngine) lookupElementCandidateByTestID(testID string) (elementCandidate, bool) {
+	for i := range e.elementCandidates {
+		if e.elementCandidates[i].TestID == testID {
+			return e.elementCandidates[i], true
+		}
+	}
+	return elementCandidate{}, false
+}
+
+func (e *snapshotEngine) lookupElementCandidatesByRoleName(role, name, op string) []elementCandidate {
+	var results []elementCandidate
+	for i := range e.elementCandidates {
+		candidate := e.elementCandidates[i]
+		if !strings.EqualFold(candidate.Role, role) {
+			continue
+		}
+		if name == "" || matchOp(candidate.Name, op, name) {
+			results = append(results, candidate)
+		}
+	}
+	return results
+}
+
+func (e *snapshotEngine) allElementCandidateNamesByRole(role string) []string {
+	seen := make(map[string]bool)
+	var names []string
+	for i := range e.elementCandidates {
+		candidate := e.elementCandidates[i]
+		if strings.EqualFold(candidate.Role, role) && !seen[candidate.Name] {
+			seen[candidate.Name] = true
+			names = append(names, candidate.Name)
+		}
+	}
+	return names
+}
+
 // ============================================================
 // § A11y Tree 处理函数 [Ref: T5-B4, TC-09-U-01, TC-09-U-02, TC-09-U-26]
 // ============================================================
@@ -577,7 +741,8 @@ func isActiveModalContainer(node *accessibility.Node) bool {
 //
 // 真因备忘: 模态/抽屉通常 Teleport/append 到 <body> 末尾 → DFS 序天然排最后 →
 // 被 observe 默认 top-20 截断 → agent 看不见"当前唯一能点的那一层"，却把背后点不到的
-// 元素全列出来 → 一路点空气且零报错。排序而非过滤是正解：不丢信息，只纠正优先级。
+// 元素全列出来 → 一路点空气且零报错。当前先按截图可见性过滤，再在可见集内保留
+// modal-first；全文档信息只进入无 ref census。
 func extractInteractableRefs(nodes []*accessibility.Node) []ElementRef {
 	var refs []ElementRef
 
@@ -878,7 +1043,9 @@ func enrichTestIDsViaJS(ctx context.Context, refs []ElementRef) {
 }
 
 // discoverClickableDOMViaJS 补充发现有 data-testid 但不在 A11y 树的元素。纯 JS，零 CDP DOM API。
-func discoverClickableDOMViaJS(ctx context.Context, existingRefs []ElementRef) []ElementRef {
+// visibleOnly 保留 legacy 行为；see-to-click 传 false，先收集全文档已渲染候选，再由统一
+// bbox/hit-test 阶段过滤，从而 total/offscreen 不随当前滚动位置漂移。
+func discoverClickableDOMViaJS(ctx context.Context, existingRefs []ElementRef, visibleOnly bool) []ElementRef {
 	counter := len(existingRefs) + 1
 	type domItem struct {
 		TestID string `json:"testid"`
@@ -886,6 +1053,7 @@ func discoverClickableDOMViaJS(ctx context.Context, existingRefs []ElementRef) [
 	}
 	var items []domItem
 	js := `(() => {
+		const visibleOnly = ` + fmt.Sprintf("%t", visibleOnly) + `;
 		const skipNative = new Set(['INPUT','SELECT','TEXTAREA','LABEL']);
 		const results = [];
 		const isBlocked = (el) => {
@@ -895,11 +1063,23 @@ func discoverClickableDOMViaJS(ctx context.Context, existingRefs []ElementRef) [
 			}
 			return false;
 		};
-		const isTopmost = (el) => {
+		const isRendered = (el) => {
 			const r = el.getBoundingClientRect();
 			if (r.width <= 0 || r.height <= 0) return false;
 			const style = window.getComputedStyle(el);
 			if (style.display === 'none' || style.visibility === 'hidden' || style.pointerEvents === 'none') return false;
+			return true;
+		};
+		const isPotentiallyInteractive = (el) => {
+			const native = new Set(['A','BUTTON','SUMMARY','DETAILS']);
+			const roles = new Set(['button','link','textbox','searchbox','combobox','listbox','option','menuitem','checkbox','radio','switch','slider','spinbutton','tab','treeitem']);
+			const role = (el.getAttribute('role') || '').toLowerCase();
+			const style = window.getComputedStyle(el);
+			return native.has(el.tagName) || roles.has(role) || el.tabIndex >= 0 || el.isContentEditable ||
+				typeof el.onclick === 'function' || style.cursor === 'pointer';
+		};
+		const isTopmost = (el) => {
+			const r = el.getBoundingClientRect();
 			const x = Math.min(Math.max(r.left + r.width / 2, 0), window.innerWidth - 1);
 			// 布局视口高作 clamp 基准（chrome 仿真下 innerHeight 被 shim 成小视口，
 			// 用它会把遮挡带内元素探测点夹到带外 → 误判非顶层）
@@ -909,7 +1089,7 @@ func discoverClickableDOMViaJS(ctx context.Context, existingRefs []ElementRef) [
 		};
 		document.querySelectorAll('[data-testid]').forEach(el => {
 			if (skipNative.has(el.tagName)) return;
-			if (isBlocked(el) || !isTopmost(el)) return;
+			if (isBlocked(el) || !isRendered(el) || (!visibleOnly && !isPotentiallyInteractive(el)) || (visibleOnly && !isTopmost(el))) return;
 			const text = (
 				(el.textContent||'').trim() ||
 				(el.getAttribute('aria-label')||'').trim() ||
@@ -941,8 +1121,8 @@ func discoverClickableDOMViaJS(ctx context.Context, existingRefs []ElementRef) [
 		if name == "" {
 			name = item.TestID
 		}
-		if len(name) > 40 {
-			name = name[:37] + "..."
+		if runes := []rune(name); len(runes) > 40 {
+			name = string(runes[:37]) + "..."
 		}
 		ref := fmt.Sprintf("e%d", counter)
 		counter++
@@ -1258,6 +1438,22 @@ func (e *snapshotEngine) SnapWithOptions(ctx context.Context, opts SnapOptions) 
 			rawRefs = filterCompactRefs(rawRefs)
 		}
 
+		documentInteractableCount := len(rawRefs)
+		visibleInteractableCount := len(rawRefs)
+		e.elementCandidates = elementCandidatesFromRefs(rawRefs)
+		var census []CensusEntry
+		if e.observeAll {
+			census = censusFromCandidates(e.elementCandidates)
+		}
+		var viewport ViewportFacts
+		if e.seeToClick {
+			var visibilityErr error
+			rawRefs, viewport, visibleInteractableCount, visibilityErr = enrichSeeToClickRefs(ctx, rawRefs)
+			if visibilityErr != nil {
+				return nil, visibilityErr
+			}
+		}
+
 		// Renumber refs in session mode (@rN) or positional (eN)
 		refs = renumberRefs(rawRefs, opts.SessionMode)
 
@@ -1278,13 +1474,19 @@ func (e *snapshotEngine) SnapWithOptions(ctx context.Context, opts SnapOptions) 
 		tokenEst := estimateTokens(text)
 
 		snap := &Snapshot{
-			PageTitle:    title,
-			URL:          currentURL,
-			Text:         text,
-			Refs:         refs,
-			SnapshotType: snapshotTypeA11y,
-			TokenEst:     tokenEst,
-			LoadState:    loadStateActionable,
+			PageTitle:                  title,
+			URL:                        currentURL,
+			Text:                       text,
+			Refs:                       refs,
+			SnapshotType:               snapshotTypeA11y,
+			TokenEst:                   tokenEst,
+			LoadState:                  loadStateActionable,
+			SeeToClick:                 e.seeToClick,
+			Viewport:                   viewport,
+			DocumentInteractableCount:  documentInteractableCount,
+			VisibleInteractableCount:   visibleInteractableCount,
+			OffscreenInteractableCount: documentInteractableCount - visibleInteractableCount,
+			Census:                     census,
 		}
 		return snap, nil
 	}

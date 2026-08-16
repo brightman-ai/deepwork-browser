@@ -1,11 +1,13 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
-	"github.com/brightman-ai/deepwork-browser/browser"
 	"os"
 	"strings"
 	"testing"
+
+	"github.com/brightman-ai/deepwork-browser/browser"
 )
 
 // ============================================================
@@ -144,6 +146,9 @@ func TestIsNLGoalDistinguishesStructuredActions(t *testing.T) {
 		{action: "click #submit", want: false},
 		{action: "fill textbox:'Search' 'deepwork'", want: false},
 		{action: "press Enter", want: false},
+		{action: "wait", want: false},
+		{action: "noop", want: false},
+		{action: "none", want: false},
 		{action: "back", want: false},
 		{action: "Open settings and inspect provider status", want: true},
 		{action: "在浏览器中打开设置并检查 Provider", want: true},
@@ -153,6 +158,145 @@ func TestIsNLGoalDistinguishesStructuredActions(t *testing.T) {
 		if got := isNLGoal(tc.action); got != tc.want {
 			t.Fatalf("isNLGoal(%q) = %v, want %v", tc.action, got, tc.want)
 		}
+	}
+}
+
+func TestActionMovesWitnessViewport(t *testing.T) {
+	for _, action := range []string{"scroll down", "scroll @r2 up 3", "scrollto @r9", "scrollinto #panel"} {
+		if !actionMovesWitnessViewport(action) {
+			t.Errorf("actionMovesWitnessViewport(%q)=false, want true", action)
+		}
+	}
+	for _, action := range []string{"click @r1", "hover @r2", "fill @r3 hi"} {
+		if actionMovesWitnessViewport(action) {
+			t.Errorf("actionMovesWitnessViewport(%q)=true, want false", action)
+		}
+	}
+}
+
+func TestScenarioUsesSeeToClickForEveryAgentScenario(t *testing.T) {
+	for _, scenario := range []string{"app-test-explore", "app-test-baseline", "webvisit"} {
+		if !scenarioUsesSeeToClick(scenario) {
+			t.Fatalf("scenarioUsesSeeToClick(%q)=false", scenario)
+		}
+	}
+	for _, scenario := range []string{"", "unknown"} {
+		if scenarioUsesSeeToClick(scenario) {
+			t.Fatalf("scenarioUsesSeeToClick(%q)=true", scenario)
+		}
+	}
+}
+
+func TestObserveAllListingIsRefLessAndClearsSessionCapabilities(t *testing.T) {
+	snap := &browser.Snapshot{
+		SeeToClick:                true,
+		DocumentInteractableCount: 2,
+		Refs: []browser.ElementRef{{
+			Ref:               "@r1",
+			BackendNodeID:     11,
+			Role:              "button",
+			NameFull:          "Visible",
+			VisibilityKnown:   true,
+			VisibleInViewport: true,
+		}},
+		Census: []browser.CensusEntry{
+			{Role: "button", Name: "Visible"},
+			{Role: "button", Name: "Below fold"},
+		},
+	}
+
+	listing, truncated := observeListing(snap, true, 20, 4096)
+	if truncated {
+		t.Fatal("census unexpectedly marked truncated")
+	}
+	if _, ok := listing["elements"]; ok {
+		t.Fatalf("--all listing exposed actionable elements: %#v", listing)
+	}
+	if actionable, ok := listing["actionable"].(bool); !ok || actionable {
+		t.Fatalf("actionable=%#v, want false", listing["actionable"])
+	}
+	encoded, err := json.Marshal(listing)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	for _, forbidden := range []string{"\"ref\"", "@r1", "backend_node_id", "testid"} {
+		if strings.Contains(string(encoded), forbidden) {
+			t.Fatalf("--all JSON leaked %q: %s", forbidden, encoded)
+		}
+	}
+	if got := sessionRefsForObservation(snap, true); len(got) != 0 {
+		t.Fatalf("--all persisted refs: %+v", got)
+	}
+}
+
+func TestSessionRefsForStrictObservationDropsInvisibleEntries(t *testing.T) {
+	snap := &browser.Snapshot{
+		SeeToClick: true,
+		Refs: []browser.ElementRef{
+			{Ref: "@r1", BackendNodeID: 1, BBox: browser.Rect{X: 10, Y: 20, Width: 30, Height: 40}, VisibilityKnown: true, VisibleInViewport: true},
+			{Ref: "@r2", BackendNodeID: 2, VisibilityKnown: true, VisibleInViewport: false},
+			{Ref: "@r3", BackendNodeID: 3, VisibilityKnown: false, VisibleInViewport: true},
+		},
+	}
+	refs := sessionRefsForObservation(snap, false)
+	if len(refs) != 1 || refs[0].Ref != "@r1" {
+		t.Fatalf("persisted refs=%+v, want only @r1", refs)
+	}
+	if !refs[0].Observed || !refs[0].Visible || refs[0].BBox == nil {
+		t.Fatalf("visible observation authority not persisted: %+v", refs[0])
+	}
+	openRefs := browser.SessionRefsFromSnapshot(snap, false)
+	if len(openRefs) != 1 || openRefs[0].Observed {
+		t.Fatalf("open refs must not grant observation authority: %+v", openRefs)
+	}
+	if got := browser.SessionRefsFromSnapshot(&browser.Snapshot{SeeToClick: true}, false); len(got) != 0 {
+		t.Fatalf("empty snapshot retained stale refs: %+v", got)
+	}
+}
+
+func TestSamePageFillThenClickKeepsObservedRefAuthority(t *testing.T) {
+	const pageURL = "http://127.0.0.1/form"
+	observed := &browser.Snapshot{
+		URL:        pageURL,
+		SeeToClick: true,
+		Refs: []browser.ElementRef{
+			{Ref: "@r1", BackendNodeID: 11, Role: "textbox", NameFull: "Name", VisibilityKnown: true, VisibleInViewport: true},
+			{Ref: "@r2", BackendNodeID: 12, Role: "button", NameFull: "Submit", VisibilityKnown: true, VisibleInViewport: true},
+		},
+	}
+	sessionInfo := &browser.SessionInfo{
+		PageURL: pageURL,
+		Refs:    browser.SessionRefsFromSnapshot(observed, true),
+	}
+
+	// A successful fill returns a same-document snapshot. It must not replace
+	// the explicit observation with an internal, unobserved ref table.
+	if navigated := applyPostActionSnapshot(sessionInfo, &browser.Snapshot{URL: pageURL}); navigated {
+		t.Fatal("same-page fill was classified as navigation")
+	}
+	if len(sessionInfo.Refs) != 2 || sessionInfo.Refs[1].Ref != "@r2" || !sessionInfo.Refs[1].Observed {
+		t.Fatalf("fill revoked the observed click ref: %+v", sessionInfo.Refs)
+	}
+}
+
+func TestNavigationAfterActRevokesOldRefAuthority(t *testing.T) {
+	sessionInfo := &browser.SessionInfo{
+		PageURL: "http://127.0.0.1/form",
+		Refs: []browser.SessionRef{{
+			Ref:      "@r2",
+			Visible:  true,
+			Observed: true,
+		}},
+	}
+
+	if navigated := applyPostActionSnapshot(sessionInfo, &browser.Snapshot{URL: "http://127.0.0.1/done"}); !navigated {
+		t.Fatal("URL change was not classified as navigation")
+	}
+	if len(sessionInfo.Refs) != 0 {
+		t.Fatalf("navigation retained old-page refs: %+v", sessionInfo.Refs)
+	}
+	if sessionInfo.PageURL != "http://127.0.0.1/done" {
+		t.Fatalf("PageURL=%q, want destination URL", sessionInfo.PageURL)
 	}
 }
 

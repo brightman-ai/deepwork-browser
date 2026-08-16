@@ -85,6 +85,24 @@ type Snapshot struct {
 	RetryAfterMillis int          // 建议调用方下一次刷新 action view 的最小等待时间
 	ProgressReason   string       // 渐进状态原因，面向日志和 CLI 输出
 	Diagnostics      map[string]interface{}
+
+	// See-to-click observation facts. For every recognized scenario, Refs is a
+	// visible-only capability set. Census is a deliberately ref-less document
+	// inventory populated only by observe --all.
+	SeeToClick                 bool
+	Viewport                   ViewportFacts
+	DocumentInteractableCount  int
+	VisibleInteractableCount   int
+	OffscreenInteractableCount int
+	Census                     []CensusEntry
+}
+
+// CensusEntry is a non-actionable document inventory item. Keeping it as a
+// separate type with no Ref/locator/backend-node field prevents observe --all
+// from minting capabilities for unseen elements.
+type CensusEntry struct {
+	Role string `json:"role"`
+	Name string `json:"name"`
 }
 
 // BrowserEngine 标识浏览器引擎类型。
@@ -101,6 +119,16 @@ type Rect struct {
 	Y      float64 `json:"y"`
 	Width  float64 `json:"width"`
 	Height float64 `json:"height"`
+}
+
+// ViewportFacts describes the screenshot/layout viewport in CSS pixels.
+// Screenshot pixels map to CSS pixels by DevicePixelRatio.
+type ViewportFacts struct {
+	Width            float64 `json:"width"`
+	Height           float64 `json:"height"`
+	DevicePixelRatio float64 `json:"dpr"`
+	ScrollX          float64 `json:"scroll_x"`
+	ScrollY          float64 `json:"scroll_y"`
 }
 
 // NodeLocator 是引擎无关的元素定位器。Chrome 使用 BackendNodeID，Safari 使用 AXPath + StableKey。
@@ -138,6 +166,15 @@ type ElementRef struct {
 	NameShort          string      // 截断后的 name（≤50 字符，用于显示）
 	RecommendedLocator string      // 推荐的 locator（供 Agent 直接使用）
 	MatchCount         int         // 同 role+name 的元素数量
+
+	// BBox is the element border box in viewport CSS pixels. VisibilityKnown is
+	// false only for engines/snapshots that do not implement the visual model.
+	// Observed records whether the ref was actually emitted by an explicit CLI
+	// observe (session persistence distinguishes that from open/post-act snaps).
+	BBox              Rect
+	VisibilityKnown   bool
+	VisibleInViewport bool
+	Observed          bool
 
 	// ModalRank 活跃模态层序号 [BUG-MODAL-FIRST]。
 	// 0 = 基础层（页面本体）；≥1 = 处于第 N 个活跃模态（aria-modal=true / <dialog> showModal）子树内。
@@ -194,6 +231,27 @@ type SessionCore interface {
 	ActWithSessionMode(ctx context.Context, action string, observe bool) (*Snapshot, error)
 	// RestoreRefsFromSession 从 session 文件恢复 ref 表。
 	RestoreRefsFromSession(refs []SessionRef)
+}
+
+// ScenarioInteractionCapable is implemented by CDP cores that can derive their
+// observation/action model from the persisted business scenario. It is kept
+// separate from BrowserCore so non-CDP engines retain their existing contract.
+type ScenarioInteractionCapable interface {
+	SetInteractionScenario(s Scenario)
+	SetObserveAll(all bool)
+}
+
+// InteractionModeActCapable is the optional CDP extension used by journey
+// steps. BrowserCore stays engine-neutral; non-CDP implementations do not gain
+// an implicit fidelity downgrade.
+type InteractionModeActCapable interface {
+	ActWithInteractionMode(ctx context.Context, action string, observe bool, mode InteractionMode) (*Snapshot, error)
+}
+
+// SessionInteractionModeActCapable is the session-ref counterpart of
+// InteractionModeActCapable.
+type SessionInteractionModeActCapable interface {
+	ActWithSessionInteractionMode(ctx context.Context, action string, observe bool, mode InteractionMode) (*Snapshot, error)
 }
 
 // BrowserCore — internal/browser/ 对外服务接口（Core 层，零 Deepwork 依赖）。

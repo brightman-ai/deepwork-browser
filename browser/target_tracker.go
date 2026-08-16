@@ -46,6 +46,20 @@ type windowOpenHint struct {
 	Created    time.Time
 }
 
+type targetTrackerBrowserEventKind uint8
+
+const (
+	targetTrackerEventCreated targetTrackerBrowserEventKind = iota + 1
+	targetTrackerEventDestroyed
+	targetTrackerEventInfoChanged
+)
+
+type targetTrackerBrowserEvent struct {
+	kind targetTrackerBrowserEventKind
+	info *target.Info
+	id   target.ID
+}
+
 // JavaScriptDialogEvent describes a page-level alert/confirm/prompt that must
 // be surfaced through LiveView when Chrome itself is running on a virtual display.
 type JavaScriptDialogEvent struct {
@@ -60,26 +74,90 @@ type JavaScriptDialogEvent struct {
 
 // TargetTracker 管理所有已知的 page Target，自动跟随活跃 Target 的 Screencast。
 type TargetTracker struct {
-	mu              sync.RWMutex
-	refreshMu       sync.Mutex      // 序列化并发 RefreshTargets 调用，防止 CDP GetTargets 请求洪泛
-	browserCtx      context.Context // 原始 browser context（创建子 context 的 parent）
-	primaryID       target.ID       // browserCtx 对应的 primary target；对外必须呈现真实 CDP target.ID
-	targets         map[target.ID]*trackedTarget
-	activeID        target.ID          // 当前 foreground/screencast 的真实 TargetID；空只表示尚未识别
-	order           []target.ID        // 插入顺序，用于关闭时回退
-	pendingSwitch   map[target.ID]bool // window.open('') pattern: 等待真实 URL 后切换
-	liveEngine      *liveViewEngine
-	hub             *FrameBroadcastHub
-	onSwitch        func(url, title string, targetCount int) // 切换回调 → SessionAuthority 更新
-	onCDPSwitch     func(newCtx context.Context)             // CDP context 切换回调 → InputGateway 更新
-	onDialog        func(JavaScriptDialogEvent)              // JS dialog bridge → WebUI modal
-	foregroundGuard func(target.ID, string) error            // fail-closed guard before Target.activateTarget/Page.bringToFront
-	closeTarget     func(target.ID) error                    // Target close strategy; BrowserMuxHost uses DevTools HTTP close
-	gestureClaims          []gestureClaim                           // 本地 takeover 输入成功 dispatch 后的弱证据兜底
-	windowHints            []windowOpenHint                         // CDP Page.windowOpen(userGesture=true) 强证据
-	pageListeners          map[string]bool                          // 每个 target 只绑定一次 Page.windowOpen listener
-	followProgrammaticNav  bool                                     // [FIX-CUJ16-LIVEVIEW] 当 activeID==primaryID(blank) 且其他 tab 有真实 URL 时自动跟随
-	noFrontMode           bool                                     // headed/CGVirtualDisplay: skip Page.bringToFront on ALL activations
+	mu                    sync.RWMutex
+	refreshMu             sync.Mutex      // 序列化并发 RefreshTargets 调用，防止 CDP GetTargets 请求洪泛
+	browserCtx            context.Context // 原始 browser context（创建子 context 的 parent）
+	primaryID             target.ID       // browserCtx 对应的 primary target；对外必须呈现真实 CDP target.ID
+	targets               map[target.ID]*trackedTarget
+	activeID              target.ID          // 当前 foreground/screencast 的真实 TargetID；空只表示尚未识别
+	order                 []target.ID        // 插入顺序，用于关闭时回退
+	pendingSwitch         map[target.ID]bool // window.open('') pattern: 等待真实 URL 后切换
+	liveEngine            *liveViewEngine
+	hub                   *FrameBroadcastHub
+	onSwitch              func(url, title string, targetCount int) // 切换回调 → SessionAuthority 更新
+	onCDPSwitch           func(newCtx context.Context)             // CDP context 切换回调 → InputGateway 更新
+	onDialog              func(JavaScriptDialogEvent)              // JS dialog bridge → WebUI modal
+	foregroundGuard       func(target.ID, string) error            // fail-closed guard before Target.activateTarget/Page.bringToFront
+	closeTarget           func(target.ID) error                    // Target close strategy; BrowserMuxHost uses DevTools HTTP close
+	eventOnce             sync.Once                                // browser callback -> ordered worker, never re-enter CDP under listener lock
+	eventMu               sync.Mutex
+	eventQueue            []targetTrackerBrowserEvent
+	eventReady            chan struct{}
+	gestureClaims         []gestureClaim   // 本地 takeover 输入成功 dispatch 后的弱证据兜底
+	windowHints           []windowOpenHint // CDP Page.windowOpen(userGesture=true) 强证据
+	pageListeners         map[string]bool  // 每个 target 只绑定一次 Page.windowOpen listener
+	followProgrammaticNav bool             // [FIX-CUJ16-LIVEVIEW] 当 activeID==primaryID(blank) 且其他 tab 有真实 URL 时自动跟随
+	noFrontMode           bool             // headed/CGVirtualDisplay: skip Page.bringToFront on ALL activations
+}
+
+// startBrowserEventLoop establishes one ordered owner for browser target
+// events. chromedp invokes ListenBrowser callbacks while holding its listener
+// mutex; running cancellation or any CDP command there can deadlock by
+// re-entering that same mutex. The callback therefore only appends immutable
+// event data and signals this worker.
+func (tt *TargetTracker) startBrowserEventLoop(ctx context.Context) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	tt.eventOnce.Do(func() {
+		tt.eventReady = make(chan struct{}, 1)
+		go func() {
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-tt.eventReady:
+					for {
+						tt.eventMu.Lock()
+						if len(tt.eventQueue) == 0 {
+							tt.eventMu.Unlock()
+							break
+						}
+						event := tt.eventQueue[0]
+						tt.eventQueue[0] = targetTrackerBrowserEvent{}
+						tt.eventQueue = tt.eventQueue[1:]
+						tt.eventMu.Unlock()
+						tt.dispatchBrowserEvent(event)
+					}
+				}
+			}
+		}()
+	})
+}
+
+func (tt *TargetTracker) enqueueBrowserEvent(event targetTrackerBrowserEvent) {
+	tt.eventMu.Lock()
+	tt.eventQueue = append(tt.eventQueue, event)
+	ready := tt.eventReady
+	tt.eventMu.Unlock()
+	if ready == nil {
+		return
+	}
+	select {
+	case ready <- struct{}{}:
+	default:
+	}
+}
+
+func (tt *TargetTracker) dispatchBrowserEvent(event targetTrackerBrowserEvent) {
+	switch event.kind {
+	case targetTrackerEventCreated:
+		tt.HandleTargetCreated(event.info)
+	case targetTrackerEventDestroyed:
+		tt.HandleTargetDestroyed(event.id)
+	case targetTrackerEventInfoChanged:
+		tt.HandleTargetInfoChanged(event.info)
+	}
 }
 
 func (tt *TargetTracker) totalTabCountLocked() int {
@@ -1633,14 +1711,21 @@ func (tt *TargetTracker) CreateTab(url string) (string, error) {
 //     不能错误绑到 browserCtx，否则 Baidu 这类 opener-less page-opened target 会失去归属证据，
 //     只能在 RefreshTargets() 时被动补登记
 func (tt *TargetTracker) SetupListeners(browserCtx context.Context) {
+	tt.startBrowserEventLoop(browserCtx)
 	chromedp.ListenBrowser(browserCtx, func(ev interface{}) {
 		switch e := ev.(type) {
 		case *target.EventTargetCreated:
-			tt.HandleTargetCreated(e.TargetInfo)
+			if e.TargetInfo != nil {
+				info := *e.TargetInfo
+				tt.enqueueBrowserEvent(targetTrackerBrowserEvent{kind: targetTrackerEventCreated, info: &info})
+			}
 		case *target.EventTargetDestroyed:
-			tt.HandleTargetDestroyed(e.TargetID)
+			tt.enqueueBrowserEvent(targetTrackerBrowserEvent{kind: targetTrackerEventDestroyed, id: e.TargetID})
 		case *target.EventTargetInfoChanged:
-			tt.HandleTargetInfoChanged(e.TargetInfo)
+			if e.TargetInfo != nil {
+				info := *e.TargetInfo
+				tt.enqueueBrowserEvent(targetTrackerBrowserEvent{kind: targetTrackerEventInfoChanged, info: &info})
+			}
 		}
 	})
 

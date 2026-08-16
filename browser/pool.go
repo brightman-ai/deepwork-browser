@@ -1339,6 +1339,9 @@ func (p *BrowserPool) materializeManagedTabLocked(entry *chromePoolEntry, tabCtx
 		launcher:           NewChromeLauncher(),
 		supervisor:         NewChromeSupervisor(),
 	}
+	if entry.chromeHandle != nil {
+		core.wsURL = entry.chromeHandle.WSURL()
+	}
 	if mode == ModeVisible && entry.chromeHandle != nil {
 		scheduleBootstrapBlankCleanup(entry.browserCtx, string(entry.identity.Key), targetID, entry.chromeHandle.WSURL())
 	}

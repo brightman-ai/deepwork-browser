@@ -95,6 +95,53 @@ type SessionRef struct {
 	Locator       NodeLocator `json:"locator,omitempty"`
 	AXPath        string      `json:"ax_path,omitempty"`
 	StableKey     string      `json:"stable_key,omitempty"`
+	BBox          *Rect       `json:"bbox,omitempty"`
+	Visible       bool        `json:"visible,omitempty"`
+	Observed      bool        `json:"observed,omitempty"`
+}
+
+// SessionRefsFromSnapshot is the single persistence boundary from a runtime
+// Snapshot to session refs. observed must be true only when the snapshot was
+// explicitly shown to the agent by observe; internal open/recovery snapshots
+// pass false and therefore cannot grant see-to-click authority.
+//
+// A see-to-click snapshot is also filtered here as a type/capability backstop:
+// an offscreen or visibility-unknown element can never be persisted as a ref.
+func SessionRefsFromSnapshot(snap *Snapshot, observed bool) []SessionRef {
+	if snap == nil {
+		return nil
+	}
+	refs := make([]SessionRef, 0, len(snap.Refs))
+	for _, ref := range snap.Refs {
+		if snap.SeeToClick && (!ref.VisibilityKnown || !ref.VisibleInViewport) {
+			continue
+		}
+
+		var bbox *Rect
+		if ref.VisibilityKnown {
+			box := ref.BBox
+			bbox = &box
+		}
+		name := ref.NameFull
+		if name == "" {
+			name = ref.Name
+		}
+		refs = append(refs, SessionRef{
+			Ref:           ref.Ref,
+			BackendNodeID: ref.BackendNodeID,
+			Role:          ref.Role,
+			Name:          name,
+			TestID:        ref.TestID,
+			Placeholder:   ref.Placeholder,
+			Locator:       ref.Locator,
+			AXPath:        ref.AXPath,
+			StableKey:     ref.Locator.StableKey,
+			BBox:          bbox,
+			Visible:       ref.VisibleInViewport,
+			Observed:      observed,
+		})
+	}
+	return refs
 }
 
 // sessionFilePath セッションIDからファイルパスを取得。

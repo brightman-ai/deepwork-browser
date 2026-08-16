@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"math"
 	"strconv"
 	"strings"
 	"sync"
@@ -25,6 +26,11 @@ import (
 // actionEngine 实现操作解析与执行。
 type actionEngine struct {
 	snapEngine *snapshotEngine
+	// seeToClick is enabled by every recognized agent-driven scenario. humanInput
+	// reuses the existing InputGateway dispatch path (Gaussian jitter + real CDP
+	// mouse events) without acquiring a takeover lease.
+	seeToClick bool
+	humanInput *InputGateway
 	// pointerGuard 指针动作前置守卫（browser chrome 仿真：拒绝点击遮挡带内的点）。
 	// nil = 无守卫。由 browserCoreImpl.EnableBrowserChromeSim 在会话启用时安装
 	// （单写者：act 执行前设置，执行期只读）。
@@ -43,7 +49,14 @@ type actionEngine struct {
 
 // newActionEngine 创建 ActionEngine 实例。
 func newActionEngine(snapEngine *snapshotEngine) *actionEngine {
-	return &actionEngine{snapEngine: snapEngine}
+	return &actionEngine{
+		snapEngine: snapEngine,
+		humanInput: NewInputGateway(nil, nil),
+	}
+}
+
+func (e *actionEngine) setSeeToClick(enabled bool) {
+	e.seeToClick = enabled
 }
 
 // setPointerGuard 安装指针守卫（见 pointerGuard 字段）。
@@ -140,7 +153,7 @@ func (e *actionEngine) autoSyncKeyboard(ctx context.Context) {
 
 // ParsedAction 是解析后的操作结构。
 type ParsedAction struct {
-	Op      string  // "click" | "clickat" | "hoverat" | "dragat" | "tap" | "tapat" | "type" | "scroll" | "hover" | "select"
+	Op      string  // "click" | "clickxy" | "clickat" | "hoverat" | "dragat" | "tap" | "tapat" | "type" | "scroll" | "hover" | "select"
 	Ref     string  // Element Ref（如 "e3"）或语义选择器（如 "#testid", "button:'name'"）
 	Value   string  // type/select 的值
 	CoordX  float64 // clickat/hoverat/dragat/wheelat/... 起点相对 X 坐标（0..1）
@@ -149,6 +162,12 @@ type ParsedAction struct {
 	CoordY2 float64 // dragat/swipeat 终点相对 Y 坐标（0..1）
 	DeltaX  float64 // wheelat 横向滚轮位移（带符号像素）
 	DeltaY  float64 // wheelat 纵向滚轮位移（带符号像素）
+	// ScrollTarget is empty for viewport scrolling; otherwise the pointer is
+	// moved to this element before wheel input. Steps=0 means the human default
+	// of approximately one viewport.
+	ScrollTarget string
+	Direction    string
+	Steps        int
 }
 
 // SelectorType 语义选择器类型。
@@ -415,6 +434,7 @@ func isLegacyRef(s string) bool {
 //
 // 支持操作:
 //   - "click #testid" | "click button:'名称'"
+//   - "click 320,240" — 视口 CSS 像素坐标真实鼠标点击
 //   - 坐标指针动作族（canvas 类 UI：echarts/Univer/地图/白板，无子 DOM，靠真实坐标命中）:
 //   - "clickat #canvas 92% 8%" — 真实鼠标左键单击（点选柱/扇区/数据点）
 //   - "dblclickat css=#cell 30% 40%" — 真实鼠标双击（Univer 单元格进入编辑 / 缩放复位）
@@ -429,11 +449,11 @@ func isLegacyRef(s string) bool {
 //   - "type textbox:'名称' 'hello'"
 //   - "press Enter" | "press Ctrl+A" | "press #btn Ctrl+K"
 //   - "hover button:'名称'"
-//   - "scroll down" | "scroll up"
+//   - "scroll down" | "scroll up 3" | "scroll @r4 down 3"
 //   - "select e4 'opt2'"
 //   - "back" | "forward"
 //   - "focus #selector"
-//   - "scrollinto #selector"
+//   - "scrollinto #selector" | "scrollto @r4"
 //   - "check #selector" | "uncheck #selector"
 func ParseAction(action string) (*ParsedAction, error) {
 	action = strings.TrimSpace(action)
@@ -485,8 +505,21 @@ func ParseAction(action string) (*ParsedAction, error) {
 		return &ParsedAction{Op: "typetext", Value: text}, nil
 	}
 
+	// Vision-native absolute click: coordinates are viewport CSS pixels, not
+	// normalized fractions. Only a pair of numeric values claims this syntax so
+	// CSS selector lists such as "button.primary,a.cta" remain CSS selectors.
+	if op == "click" {
+		rest := strings.TrimSpace(strings.TrimPrefix(action, parts[0]))
+		if x, y, matched, err := parseViewportCoordinatePair(rest); matched {
+			if err != nil {
+				return nil, err
+			}
+			return &ParsedAction{Op: "clickxy", CoordX: x, CoordY: y}, nil
+		}
+	}
+
 	switch op {
-	case "click", "tap", "hover", "focus", "scrollinto", "check", "uncheck":
+	case "click", "tap", "hover", "focus", "scrollinto", "scrollto", "check", "uncheck":
 		if len(parts) < 2 {
 			return nil, fmt.Errorf("%w: %s requires selector argument", ErrActFailed, op)
 		}
@@ -632,10 +665,29 @@ func ParseAction(action string) (*ParsedAction, error) {
 
 	case "scroll":
 		if len(parts) < 2 {
-			return nil, fmt.Errorf("%w: scroll requires direction or ref", ErrActFailed)
+			return nil, fmt.Errorf("%w: scroll requires direction or selector + direction", ErrActFailed)
 		}
-		dir := strings.ToLower(parts[1])
-		return &ParsedAction{Op: "scroll", Ref: dir}, nil
+		if dir := strings.ToLower(parts[1]); dir == "down" || dir == "up" {
+			steps, err := parseScrollSteps(parts, 2)
+			if err != nil {
+				return nil, err
+			}
+			// Keep Ref=direction for compatibility with the original parser
+			// contract; Direction is the unambiguous execution field.
+			return &ParsedAction{Op: "scroll", Ref: dir, Direction: dir, Steps: steps}, nil
+		}
+		if len(parts) < 3 {
+			return nil, fmt.Errorf("%w: scroll %q requires up|down", ErrActFailed, parts[1])
+		}
+		dir := strings.ToLower(parts[2])
+		if dir != "down" && dir != "up" {
+			return nil, fmt.Errorf("%w: scroll direction must be up or down, got %q", ErrActFailed, parts[2])
+		}
+		steps, err := parseScrollSteps(parts, 3)
+		if err != nil {
+			return nil, err
+		}
+		return &ParsedAction{Op: "scroll", ScrollTarget: parts[1], Direction: dir, Steps: steps}, nil
 
 	case "select":
 		if len(parts) < 3 {
@@ -656,6 +708,38 @@ func ParseAction(action string) (*ParsedAction, error) {
 	default:
 		return nil, fmt.Errorf("%w: unknown operation %q", ErrActFailed, op)
 	}
+}
+
+func parseViewportCoordinatePair(raw string) (x, y float64, matched bool, err error) {
+	left, right, ok := strings.Cut(strings.TrimSpace(raw), ",")
+	if !ok || strings.Contains(right, ",") {
+		return 0, 0, false, nil
+	}
+	left = strings.TrimSpace(left)
+	right = strings.TrimSpace(right)
+	x, xErr := strconv.ParseFloat(left, 64)
+	y, yErr := strconv.ParseFloat(right, 64)
+	if xErr != nil && yErr != nil {
+		return 0, 0, false, nil
+	}
+	if xErr != nil || yErr != nil || math.IsNaN(x) || math.IsNaN(y) || math.IsInf(x, 0) || math.IsInf(y, 0) {
+		return 0, 0, true, fmt.Errorf("%w: click coordinates must be finite CSS pixels in x,y form, got %q", ErrActFailed, raw)
+	}
+	return x, y, true, nil
+}
+
+func parseScrollSteps(parts []string, index int) (int, error) {
+	if len(parts) <= index {
+		return 0, nil
+	}
+	if len(parts) > index+1 {
+		return 0, fmt.Errorf("%w: scroll accepts at most one step count", ErrActFailed)
+	}
+	steps, err := strconv.Atoi(parts[index])
+	if err != nil || steps <= 0 || steps > 100 {
+		return 0, fmt.Errorf("%w: scroll steps must be an integer in 1..100, got %q", ErrActFailed, parts[index])
+	}
+	return steps, nil
 }
 
 // parseDelta 解析滚轮位移量（带符号像素，如 -240 / 120），不做 0..1 归一。
@@ -792,6 +876,19 @@ func (e *actionEngine) Execute(ctx context.Context, action string, observe bool)
 
 // ExecuteWithSessionMode 执行操作，支持 session 模式（允许 @rN ref）。
 func (e *actionEngine) ExecuteWithSessionMode(ctx context.Context, action string, observe bool, sessionMode bool) (*Snapshot, error) {
+	return e.ExecuteWithInteractionMode(ctx, action, observe, sessionMode, InteractionModeVisual)
+}
+
+// ExecuteWithInteractionMode executes one action with a step-local fidelity
+// choice. It never mutates the scenario/global posture.
+func (e *actionEngine) ExecuteWithInteractionMode(ctx context.Context, action string, observe bool, sessionMode bool, mode InteractionMode) (*Snapshot, error) {
+	normalizedMode, err := NormalizeInteractionMode(string(mode))
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrActFailed, err)
+	}
+	elementMode := normalizedMode == InteractionModeElement
+	seeToClick := e.seeToClick && !elementMode
+
 	parsed, err := ParseAction(action)
 	if err != nil {
 		return nil, err
@@ -800,17 +897,24 @@ func (e *actionEngine) ExecuteWithSessionMode(ctx context.Context, action string
 	// page-level 操作不需要选择器
 	// tapxy 是绝对视口坐标点击，刻意不解析 ref（绕过 a11y/locator）。
 	// typetext 向当前聚焦元素插入文本，同样刻意不解析 ref。
-	noSelectorOps := map[string]bool{"scroll": true, "back": true, "forward": true, "tapxy": true, "typetext": true, "zoom": true, "keyboard": true}
+	noSelectorOps := map[string]bool{"scroll": true, "back": true, "forward": true, "clickxy": true, "tapxy": true, "typetext": true, "zoom": true, "keyboard": true}
 
 	var resolvedRef string
 	if !noSelectorOps[parsed.Op] && parsed.Ref != "" {
-		ref, err := e.resolveSemanticSelectorWithSession(parsed.Ref, sessionMode)
+		ref, err := e.resolveSemanticSelectorForMode(parsed.Ref, sessionMode, elementMode)
 		if err != nil {
 			return nil, err
 		}
 		resolvedRef = ref
 	} else {
 		resolvedRef = parsed.Ref
+	}
+	var resolvedScrollTarget string
+	if parsed.Op == "scroll" && parsed.ScrollTarget != "" {
+		resolvedScrollTarget, err = e.resolveSemanticSelectorForMode(parsed.ScrollTarget, sessionMode, elementMode)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	// 直接使用调用方 context（不派生子 context）。
@@ -819,7 +923,11 @@ func (e *actionEngine) ExecuteWithSessionMode(ctx context.Context, action string
 	// 诊断证据: EvalJS(browserCtx) 370µs OK, Run(WithTimeout(browserCtx, 5s)) 5s 超时。
 	switch parsed.Op {
 	case "click":
-		if err := e.executeClick(ctx, resolvedRef); err != nil {
+		if err := e.executeClick(ctx, resolvedRef, seeToClick, elementMode); err != nil {
+			return nil, err
+		}
+	case "clickxy":
+		if err := e.executeClickXY(ctx, parsed.CoordX, parsed.CoordY, seeToClick); err != nil {
 			return nil, err
 		}
 	case "clickat":
@@ -895,7 +1003,7 @@ func (e *actionEngine) ExecuteWithSessionMode(ctx context.Context, action string
 			return nil, err
 		}
 	case "scroll":
-		if err := e.executeScroll(ctx, resolvedRef); err != nil {
+		if err := e.executeScroll(ctx, resolvedScrollTarget, parsed.Direction, parsed.Steps, seeToClick); err != nil {
 			return nil, err
 		}
 	case "select":
@@ -918,12 +1026,16 @@ func (e *actionEngine) ExecuteWithSessionMode(ctx context.Context, action string
 		if err := e.executeScrollIntoView(ctx, resolvedRef); err != nil {
 			return nil, err
 		}
+	case "scrollto":
+		if err := e.executeScrollIntoView(ctx, resolvedRef); err != nil {
+			return nil, err
+		}
 	case "check":
-		if err := e.executeCheck(ctx, resolvedRef); err != nil {
+		if err := e.executeCheck(ctx, resolvedRef, seeToClick, elementMode); err != nil {
 			return nil, err
 		}
 	case "uncheck":
-		if err := e.executeUncheck(ctx, resolvedRef); err != nil {
+		if err := e.executeUncheck(ctx, resolvedRef, seeToClick, elementMode); err != nil {
 			return nil, err
 		}
 	default:
@@ -945,7 +1057,7 @@ func (e *actionEngine) ExecuteWithSessionMode(ctx context.Context, action string
 	// 焦点自动同步（REQ-BC-12 真机语义）：可能改变焦点的 op 之后，
 	// activeElement 可编辑 ⇒ 软键盘弹起，否则收起。settle 之后判（焦点已定）。
 	focusSyncOps := map[string]bool{
-		"click": true, "tap": true, "clickat": true, "tapat": true, "tapxy": true,
+		"click": true, "tap": true, "clickxy": true, "clickat": true, "tapat": true, "tapxy": true,
 		"dblclickat": true, "fill": true, "fillsecret": true, "type": true,
 		"typetext": true, "press": true, "focus": true,
 	}
@@ -1006,6 +1118,10 @@ func (e *actionEngine) resolveSemanticSelector(selector string) (string, error) 
 // resolveSemanticSelectorWithSession 将语义选择器解析为内部可执行的 ref 或 CSS 选择器字符串。
 // sessionMode=true 时允许 @rN ref。
 func (e *actionEngine) resolveSemanticSelectorWithSession(selector string, sessionMode bool) (string, error) {
+	return e.resolveSemanticSelectorForMode(selector, sessionMode, false)
+}
+
+func (e *actionEngine) resolveSemanticSelectorForMode(selector string, sessionMode, elementMode bool) (string, error) {
 	sel, err := ParseSelector(selector)
 	if err != nil {
 		return "", fmt.Errorf("%w: %v", ErrActFailed, err)
@@ -1023,10 +1139,16 @@ func (e *actionEngine) resolveSemanticSelectorWithSession(selector string, sessi
 		}
 		// Return as internal ref string so executeClick etc. can use it
 		return refKey, nil
+	}
 
+	if elementMode {
+		return e.resolveElementModeSelector(sel)
+	}
+
+	switch sel.SType {
 	case SelectorTestID:
 		meta, ok := e.snapEngine.LookupByTestID(sel.TestID)
-		if ok && meta.BackendNodeID != 0 {
+		if ok && (meta.BackendNodeID != 0 || e.seeToClick) {
 			return meta.Ref, nil
 		}
 		// 回退到 CSS 选择器
@@ -1064,6 +1186,112 @@ func (e *actionEngine) resolveSemanticSelectorWithSession(selector string, sessi
 	}
 }
 
+const internalBackendNodePrefix = "__dw_backend_node__:"
+
+func elementCandidateLocator(candidate elementCandidate) (string, error) {
+	if candidate.BackendNodeID != 0 {
+		return internalBackendNodePrefix + strconv.FormatInt(candidate.BackendNodeID, 10), nil
+	}
+	if candidate.TestID != "" {
+		return `[data-testid="` + candidate.TestID + `"]`, nil
+	}
+	return "", fmt.Errorf("%w: element-mode candidate role=%q name=%q has no live locator", ErrRefNotFound, candidate.Role, candidate.Name)
+}
+
+func (e *actionEngine) resolveElementModeSelector(sel *ParsedSelector) (string, error) {
+	switch sel.SType {
+	case SelectorTestID:
+		if candidate, ok := e.snapEngine.lookupElementCandidateByTestID(sel.TestID); ok {
+			return elementCandidateLocator(candidate)
+		}
+		return `[data-testid="` + sel.TestID + `"]`, nil
+
+	case SelectorCanonical:
+		return e.resolveCanonicalElementSelector(sel)
+
+	case SelectorRoleName, SelectorRoleNameExact:
+		matches := e.snapEngine.lookupElementCandidatesByRoleName(sel.Role, sel.Name, sel.NameOp)
+		if len(matches) == 0 {
+			byRole := e.snapEngine.allElementCandidateNamesByRole(sel.Role)
+			if len(byRole) == 0 {
+				return "", fmt.Errorf("%w: 元素 %s:'%s' 未找到。当前页面无 %s 元素",
+					ErrRefNotFound, sel.Role, sel.Name, sel.Role)
+			}
+			return "", fmt.Errorf("%w: 元素 %s:'%s' 未找到。可用的 %s: %v",
+				ErrRefNotFound, sel.Role, sel.Name, sel.Role, byRole)
+		}
+		if len(matches) > 1 {
+			return "", buildAmbiguousCandidateError(sel.Raw, matches)
+		}
+		return elementCandidateLocator(matches[0])
+
+	case SelectorRole:
+		matches := e.snapEngine.lookupElementCandidatesByRoleName(sel.Role, "", "*=")
+		if len(matches) == 0 {
+			return "", fmt.Errorf("%w: role=%s 的元素未找到", ErrRefNotFound, sel.Role)
+		}
+		return elementCandidateLocator(matches[0])
+
+	default:
+		return sel.Raw, nil
+	}
+}
+
+func (e *actionEngine) resolveCanonicalElementSelector(sel *ParsedSelector) (string, error) {
+	name, nameOp := "", "*="
+	for _, filter := range sel.Filters {
+		if filter.Field == "testid" {
+			if candidate, ok := e.snapEngine.lookupElementCandidateByTestID(filter.Value); ok {
+				return elementCandidateLocator(candidate)
+			}
+			return `[data-testid="` + filter.Value + `"]`, nil
+		}
+		if filter.Field == "name" {
+			name, nameOp = filter.Value, filter.Op
+		}
+	}
+	matches := e.snapEngine.lookupElementCandidatesByRoleName(sel.Role, name, nameOp)
+	for _, filter := range sel.Filters {
+		if filter.Field != "placeholder" {
+			continue
+		}
+		filtered := matches[:0:0]
+		for _, candidate := range matches {
+			if matchOp(candidate.Placeholder, filter.Op, filter.Value) {
+				filtered = append(filtered, candidate)
+			}
+		}
+		matches = filtered
+	}
+	if len(matches) == 0 {
+		return "", fmt.Errorf("%w: canonical selector %q matched no elements", ErrRefNotFound, sel.Raw)
+	}
+	if sel.Nth > 0 {
+		if sel.Nth > len(matches) {
+			return "", fmt.Errorf("%w: nth=%d out of range (matched %d elements for %q)", ErrRefNotFound, sel.Nth, len(matches), sel.Raw)
+		}
+		return elementCandidateLocator(matches[sel.Nth-1])
+	}
+	if len(matches) > 1 {
+		return "", buildAmbiguousCandidateError(sel.Raw, matches)
+	}
+	return elementCandidateLocator(matches[0])
+}
+
+func buildAmbiguousCandidateError(locator string, matches []elementCandidate) error {
+	suggestions := make([]string, 0, len(matches))
+	for i, candidate := range matches {
+		if candidate.TestID != "" {
+			suggestions = append(suggestions, fmt.Sprintf("  - #%s", candidate.TestID))
+		} else {
+			suggestions = append(suggestions, fmt.Sprintf("  - role=%s[name=%q][nth=%d]", candidate.Role, candidate.Name, i+1))
+		}
+	}
+	msg := fmt.Sprintf("%s:\n  locator: %s\n  matches: %d\n  suggestions:\n%s",
+		ErrAmbiguousLocator.Error(), locator, len(matches), strings.Join(suggestions, "\n"))
+	return fmt.Errorf("%w: %s", ErrAmbiguousLocator, msg)
+}
+
 // resolveCanonicalSelector 解析 canonical DSL 选择器（role=TYPE[filters...]）。
 func (e *actionEngine) resolveCanonicalSelector(sel *ParsedSelector, sessionMode bool) (string, error) {
 	// If scoped (A >> B), first resolve parent scope (simplified: we just use child resolution for now)
@@ -1083,7 +1311,7 @@ func (e *actionEngine) resolveCanonicalSelector(sel *ParsedSelector, sessionMode
 	for _, f := range sel.Filters {
 		if f.Field == "testid" {
 			meta, ok := e.snapEngine.LookupByTestID(f.Value)
-			if ok && meta.BackendNodeID != 0 {
+			if ok && (meta.BackendNodeID != 0 || e.seeToClick) {
 				return meta.Ref, nil
 			}
 			return `[data-testid="` + f.Value + `"]`, nil
@@ -1160,6 +1388,9 @@ func isCSSSelector(ref string) bool {
 	if len(ref) < 2 {
 		return false
 	}
+	if strings.HasPrefix(ref, internalBackendNodePrefix) {
+		return false
+	}
 	// Session refs 格式: @r1, @r2, ...
 	if strings.HasPrefix(ref, "@r") {
 		return false
@@ -1178,6 +1409,14 @@ func isCSSSelector(ref string) bool {
 
 // resolveBackendNodeID 将 ref（eN 或 @rN）解析为 BackendNodeID。
 func (e *actionEngine) resolveBackendNodeID(ref string) (int64, error) {
+	if strings.HasPrefix(ref, internalBackendNodePrefix) {
+		value := strings.TrimPrefix(ref, internalBackendNodePrefix)
+		backendNodeID, err := strconv.ParseInt(value, 10, 64)
+		if err != nil || backendNodeID <= 0 {
+			return 0, fmt.Errorf("%w: invalid internal element locator %q", ErrRefNotFound, ref)
+		}
+		return backendNodeID, nil
+	}
 	backendNodeID, ok := e.snapEngine.LookupRef(ref)
 	if !ok {
 		return 0, fmt.Errorf("%w: ref %q not found in current snapshot", ErrRefNotFound, ref)
@@ -1186,7 +1425,14 @@ func (e *actionEngine) resolveBackendNodeID(ref string) (int64, error) {
 }
 
 // executeClick 执行点击操作（支持 element ref、@rN ref 和 CSS 选择器）。
-func (e *actionEngine) executeClick(ctx context.Context, ref string) error {
+func (e *actionEngine) executeClick(ctx context.Context, ref string, seeToClick, elementMode bool) error {
+	if elementMode {
+		return e.executeElementModeClick(ctx, ref)
+	}
+	if seeToClick {
+		return e.executeSeeToClick(ctx, ref)
+	}
+
 	// CSS 选择器模式 — CDP 坐标点击（anti-bot 安全）
 	if isCSSSelector(ref) {
 		if err := chromedp.Run(ctx, chromedp.WaitVisible(ref, chromedp.ByQuery)); err != nil {
@@ -1238,6 +1484,87 @@ func (e *actionEngine) executeClick(ctx context.Context, ref string) error {
 		// 通过 NodeID 执行点击
 		return chromedp.Run(ctx, chromedp.Click([]cdp.NodeID{nodeIDs[0]}, chromedp.ByNodeID))
 	}))
+}
+
+// executeElementModeClick is the explicit journey escape hatch. Locator-driven
+// chromedp.Click may scroll the target into view; this is intentionally scoped
+// to one mode: element step and never mutates the scenario posture.
+func (e *actionEngine) executeElementModeClick(ctx context.Context, ref string) error {
+	if isCSSSelector(ref) {
+		return chromedp.Run(ctx, chromedp.Click(ref, chromedp.ByQuery))
+	}
+	backendNodeID, err := e.resolveBackendNodeID(ref)
+	if err != nil {
+		return err
+	}
+	return chromedp.Run(ctx, chromedp.ActionFunc(func(execCtx context.Context) error {
+		nodeIDs, err := dom.PushNodesByBackendIDsToFrontend([]cdp.BackendNodeID{cdp.BackendNodeID(backendNodeID)}).Do(execCtx)
+		if err != nil {
+			return fmt.Errorf("%w: backend node not found: %v", ErrActFailed, err)
+		}
+		if len(nodeIDs) == 0 {
+			return fmt.Errorf("%w: node not found for element locator", ErrRefNotFound)
+		}
+		return chromedp.Run(execCtx, chromedp.Click([]cdp.NodeID{nodeIDs[0]}, chromedp.ByNodeID))
+	}))
+}
+
+// executeSeeToClick is the default agent click path. It never delegates to
+// chromedp.Click, so no implicit scrollIntoView/wait can click content that was
+// absent from the witness viewport.
+func (e *actionEngine) executeSeeToClick(ctx context.Context, ref string) error {
+	var (
+		meta  *ElementRef
+		probe elementVisibilityProbe
+		err   error
+	)
+	requireObserved := !isCSSSelector(ref)
+	if requireObserved {
+		var ok bool
+		meta, ok = e.snapEngine.LookupRefMeta(ref)
+		if !ok {
+			return fmt.Errorf("%w: click ref %q is not from the most recent observe — run observe again", ErrRefNotFound, ref)
+		}
+		// Reject before touching the DOM when session persistence says this came
+		// from open/post-act rather than an explicit observe.
+		if !meta.Observed || !meta.VisibleInViewport {
+			return fmt.Errorf("%w: click target %q was not in the visible set from the most recent observe — scroll, then run observe again", ErrRefNotFound, ref)
+		}
+		probe, err = probeMetaVisibilityNow(ctx, meta)
+	} else {
+		probe, err = probeSelectorVisibilityNow(ctx, ref)
+	}
+	if err != nil {
+		return fmt.Errorf("%w: resolve click target %q without scrolling: %v — run observe again", ErrRefNotFound, ref, err)
+	}
+	if err := validateSeeToClickProbe("click", ref, meta, requireObserved, probe); err != nil {
+		return err
+	}
+	x := probe.Box.X + probe.Box.Width*0.5
+	y := probe.Box.Y + probe.Box.Height*0.5
+	if err := e.guardPoint(ctx, x, y); err != nil {
+		return err
+	}
+	return e.dispatchHumanMouseClick(ctx, x, y)
+}
+
+// dispatchHumanMouseClick reuses InputGateway's real mouse dispatcher so the
+// explore model gets the same Gaussian event jitter as Human takeover input.
+func (e *actionEngine) dispatchHumanMouseClick(ctx context.Context, x, y float64) error {
+	if e.humanInput == nil {
+		e.humanInput = NewInputGateway(nil, nil)
+	}
+	events := []*InputEvent{
+		{Type: "mouse", Event: "mouseMoved", X: x, Y: y},
+		{Type: "mouse", Event: "mousePressed", X: x, Y: y, Button: "left", ClickCount: 1},
+		{Type: "mouse", Event: "mouseReleased", X: x, Y: y, Button: "left", ClickCount: 1},
+	}
+	for _, event := range events {
+		if err := e.humanInput.dispatchMouseEvent(ctx, event); err != nil {
+			return fmt.Errorf("%w: dispatch human mouse %s: %v", ErrActFailed, event.Event, err)
+		}
+	}
+	return nil
 }
 
 type actionElementBox struct {
@@ -1565,6 +1892,25 @@ func (e *actionEngine) viewportSize(ctx context.Context) (float64, float64, erro
 		return 0, 0, fmt.Errorf("%w: viewport size invalid %.0fx%.0f", ErrActFailed, dims.W, dims.H)
 	}
 	return dims.W, dims.H, nil
+}
+
+// executeClickXY clicks an absolute viewport point in CSS pixels. It is the
+// direct bridge from screenshot vision coordinates to real mouse input.
+func (e *actionEngine) executeClickXY(ctx context.Context, x, y float64, seeToClick bool) error {
+	w, h, err := e.viewportSize(ctx)
+	if err != nil {
+		return err
+	}
+	if x < 0 || y < 0 || x >= w || y >= h {
+		return fmt.Errorf("%w: click point (%.1f,%.1f) is outside the %.1fx%.1f CSS-pixel viewport", ErrActFailed, x, y, w, h)
+	}
+	if err := e.guardPoint(ctx, x, y); err != nil {
+		return err
+	}
+	if seeToClick {
+		return e.dispatchHumanMouseClick(ctx, x, y)
+	}
+	return dispatchMouseClickAt(ctx, x, y)
 }
 
 // executeTapXY 对视口比例坐标 (xfrac, yfrac ∈ 0..1) 执行真实鼠标左键单击。
@@ -2388,6 +2734,14 @@ func (e *actionEngine) executeScrollIntoView(ctx context.Context, ref string) er
 		}
 		return chromedp.Run(ctx, chromedp.ScrollIntoView(ref, chromedp.ByQuery))
 	}
+	// DOM-only custom controls discovered through data-testid have no
+	// BackendNodeID. Their explicit scrollto escape hatch can still use the
+	// stable testid selector; this is the only explore path allowed to invoke
+	// scrollIntoView, and click still requires a subsequent observe.
+	if meta, ok := e.snapEngine.LookupRefMeta(ref); ok && meta.BackendNodeID == 0 && meta.TestID != "" {
+		selector := `[data-testid="` + meta.TestID + `"]`
+		return chromedp.Run(ctx, chromedp.ScrollIntoView(selector, chromedp.ByQuery))
+	}
 	backendNodeID, err := e.resolveBackendNodeID(ref)
 	if err != nil {
 		return err
@@ -2402,13 +2756,13 @@ func (e *actionEngine) executeScrollIntoView(ctx context.Context, ref string) er
 }
 
 // executeCheck 勾选复选框（若未勾选则点击）。
-func (e *actionEngine) executeCheck(ctx context.Context, ref string) error {
-	return e.executeToggleCheckbox(ctx, ref, true)
+func (e *actionEngine) executeCheck(ctx context.Context, ref string, seeToClick, elementMode bool) error {
+	return e.executeToggleCheckbox(ctx, ref, true, seeToClick, elementMode)
 }
 
 // executeUncheck 取消勾选复选框（若已勾选则点击）。
-func (e *actionEngine) executeUncheck(ctx context.Context, ref string) error {
-	return e.executeToggleCheckbox(ctx, ref, false)
+func (e *actionEngine) executeUncheck(ctx context.Context, ref string, seeToClick, elementMode bool) error {
+	return e.executeToggleCheckbox(ctx, ref, false, seeToClick, elementMode)
 }
 
 // checkedProbe 是"读取元素勾选状态"探针的三态结果。
@@ -2435,7 +2789,7 @@ const checkedClassifyBody = `
 // 终局实现（去除 no-op 假阳）：读真实 checked 状态走"与 executeClick 同源的节点解析路径"，
 // 仅当当前态 != 目标态时才复用 executeClick 点击（保持可信事件链不变）。
 // 状态读取失败 / 目标非可勾选控件 → 返回显式错误（fail-loud），绝不静默返回 nil 冒充成功。
-func (e *actionEngine) executeToggleCheckbox(ctx context.Context, ref string, wantChecked bool) error {
+func (e *actionEngine) executeToggleCheckbox(ctx context.Context, ref string, wantChecked, seeToClick, elementMode bool) error {
 	isChecked, err := e.readCheckedState(ctx, ref)
 	if err != nil {
 		return err
@@ -2443,7 +2797,7 @@ func (e *actionEngine) executeToggleCheckbox(ctx context.Context, ref string, wa
 	if isChecked == wantChecked {
 		return nil
 	}
-	return e.executeClick(ctx, ref)
+	return e.executeClick(ctx, ref, seeToClick, elementMode)
 }
 
 // readCheckedState 读取 ref 指向元素的真实勾选态。
@@ -2524,23 +2878,100 @@ func interpretCheckedProbe(ref string, p checkedProbe) (bool, error) {
 	return p.Checked, nil
 }
 
-// executeScroll 执行滚动操作。
-// 使用 JS window.scrollBy 替代 CDP Input.dispatchMouseEvent(mouseWheel)。
-// 原因: CDP mouseWheel 在 headless Chrome + RemoteAllocator 场景下不可靠（响应延迟/超时）。
-// JS 路径经诊断验证 370µs 即时完成，且跨所有 Chrome 模式一致可靠。
-func (e *actionEngine) executeScroll(ctx context.Context, dir string) error {
-	var deltaY int
-	switch strings.ToLower(dir) {
-	case "down":
-		deltaY = 300
-	case "up":
-		deltaY = -300
-	default:
-		deltaY = 300
+const humanWheelStepCSSPixels = 120.0
+
+// executeScroll uses a Human wheel in the visual default. The legacy JS path is
+// reachable only outside a recognized scenario or from an explicit element
+// step. `scroll <ref> ...` moves the pointer to the target first so nested
+// scroll containers receive the event naturally.
+func (e *actionEngine) executeScroll(ctx context.Context, targetRef, dir string, steps int, seeToClick bool) error {
+	dir = strings.ToLower(strings.TrimSpace(dir))
+	if dir != "down" && dir != "up" {
+		return fmt.Errorf("%w: scroll direction must be up or down, got %q", ErrActFailed, dir)
+	}
+	if !seeToClick && targetRef == "" && steps == 0 {
+		deltaY := 300
+		if dir == "up" {
+			deltaY = -deltaY
+		}
+		return chromedp.Run(ctx, chromedp.Evaluate(fmt.Sprintf("window.scrollBy(0, %d)", deltaY), nil))
 	}
 
-	js := fmt.Sprintf("window.scrollBy(0, %d)", deltaY)
-	return chromedp.Run(ctx, chromedp.Evaluate(js, nil))
+	viewportW, viewportH, err := e.viewportSize(ctx)
+	if err != nil {
+		return err
+	}
+	if steps == 0 {
+		steps = int(math.Ceil((viewportH * 0.9) / humanWheelStepCSSPixels))
+		if steps < 1 {
+			steps = 1
+		}
+	}
+	x, y := viewportW*0.5, viewportH*0.5
+	if targetRef != "" {
+		if seeToClick {
+			var (
+				meta            *ElementRef
+				probe           elementVisibilityProbe
+				requireObserved = !isCSSSelector(targetRef)
+			)
+			if requireObserved {
+				var ok bool
+				meta, ok = e.snapEngine.LookupRefMeta(targetRef)
+				if !ok {
+					return fmt.Errorf("%w: scroll target %q is not from the most recent observe", ErrRefNotFound, targetRef)
+				}
+				probe, err = probeMetaVisibilityNow(ctx, meta)
+			} else {
+				probe, err = probeSelectorVisibilityNow(ctx, targetRef)
+			}
+			if err != nil {
+				return fmt.Errorf("%w: resolve scroll target %q: %v", ErrRefNotFound, targetRef, err)
+			}
+			if err := validateSeeToClickProbe("scroll", targetRef, meta, requireObserved, probe); err != nil {
+				return err
+			}
+			x = probe.Box.X + probe.Box.Width*0.5
+			y = probe.Box.Y + probe.Box.Height*0.5
+		} else {
+			x, y, err = e.resolvePoint(ctx, targetRef, 0.5, 0.5)
+			if err != nil {
+				return err
+			}
+		}
+	}
+	if err := e.guardPoint(ctx, x, y); err != nil {
+		return err
+	}
+	deltaY := humanWheelStepCSSPixels
+	if dir == "up" {
+		deltaY = -deltaY
+	}
+	if seeToClick {
+		return e.dispatchHumanMouseWheel(ctx, x, y, deltaY, steps)
+	}
+	for i := 0; i < steps; i++ {
+		if err := dispatchMouseWheel(ctx, x, y, 0, deltaY); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (e *actionEngine) dispatchHumanMouseWheel(ctx context.Context, x, y, deltaY float64, steps int) error {
+	if e.humanInput == nil {
+		e.humanInput = NewInputGateway(nil, nil)
+	}
+	if err := e.humanInput.dispatchMouseEvent(ctx, &InputEvent{Type: "mouse", Event: "mouseMoved", X: x, Y: y}); err != nil {
+		return fmt.Errorf("%w: move mouse before scroll: %v", ErrActFailed, err)
+	}
+	for i := 0; i < steps; i++ {
+		event := &InputEvent{Type: "mouse", Event: "mouseWheel", X: x, Y: y, DeltaY: deltaY}
+		if err := e.humanInput.dispatchMouseEvent(ctx, event); err != nil {
+			return fmt.Errorf("%w: dispatch human wheel step %d/%d: %v", ErrActFailed, i+1, steps, err)
+		}
+	}
+	return nil
 }
 
 // executeSelect 执行下拉选择操作。

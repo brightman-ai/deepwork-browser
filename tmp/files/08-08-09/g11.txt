@@ -1,0 +1,409 @@
+## feat/ios-p1-design
+ M .gitignore
+ M docs/.tg/work/20260724-mac-ui-redesign/HARMONY-SYNC-DESIGN.md
+ M docs/.tg/work/20260727-204951-voicemore-ios-seamless-return-navigation/implementation-notes.md
+ M docs/.tg/work/20260727-204951-voicemore-ios-seamless-return-navigation/run.json
+ M docs/.tg/work/20260801-001657-voicemore-meeting-stepwise-ux/decisions.md
+ M docs/.tg/work/20260801-001657-voicemore-meeting-stepwise-ux/handoff.md
+ M docs/product/voicemore-core/spec.md
+ M docs/product/voicemore-harmony/spec.md
+ M docs/product/voicemore-harmony/status.yaml
+ M docs/product/voicemore-ios/status.yaml
+ M docs/product/voicemore-mac/spec.md
+ M docs/product/voicemore-mac/status.yaml
+ M docs/product/voicemore-meeting/spec.md
+ M docs/product/voicemore-meeting/status.yaml
+ M shared/text-pipeline/README.md
+ M shared/text-pipeline/cmd/text-pipeline-gen/main.go
+ M shared/text-pipeline/schema.v1.json
+ M shared/text-pipeline/voicemore-text-pipeline.v1.json
+ M voicemore-harmony/README.md
+ M voicemore-harmony/entry/src/main/ets/capture/AudioImportController.ets
+ M voicemore-harmony/entry/src/main/ets/capture/CaptureController.ets
+ M voicemore-harmony/entry/src/main/ets/capture/RecordingStore.ets
+ M voicemore-harmony/entry/src/main/ets/capture/ReelPlayer.ets
+ D voicemore-harmony/entry/src/main/ets/capture/UploadManager.ets
+ M voicemore-harmony/entry/src/main/ets/entryability/EntryAbility.ets
+ M voicemore-harmony/entry/src/main/ets/model/Recording.ets
+ M voicemore-harmony/entry/src/main/ets/pages/Index.ets
+ M voicemore-harmony/entry/src/main/ets/wire/DerivationLedger.ets
+ M voicemore-harmony/entry/src/main/ets/wire/EncryptPipelineSelfTest.ets
+ M voicemore-harmony/entry/src/main/ets/wire/GcQueue.ets
+ M voicemore-harmony/entry/src/main/ets/wire/Outbox.ets
+ M voicemore-harmony/entry/src/main/ets/wire/PairingController.ets
+ M voicemore-harmony/entry/src/main/ets/wire/RelayClient.ets
+ M voicemore-harmony/entry/src/main/ets/wire/Sink.ets
+ M voicemore-harmony/tools/relay-stub/README.md
+ M voicemore-harmony/tools/relay-stub/conformance_client.py
+ M voicemore-harmony/tools/relay-stub/relay_stub.py
+ M voicemore-ios/App/HostResolver.swift
+ M voicemore-ios/App/KeyboardBridge.swift
+ M voicemore-ios/App/KeyboardHarnessView.swift
+ M voicemore-ios/App/Onboarding.swift
+ M voicemore-ios/App/RecordingController.swift
+ M voicemore-ios/App/RimeDeployer.swift
+ M voicemore-ios/App/SeamlessTransitionView.swift
+ M voicemore-ios/App/Settings.swift
+ M voicemore-ios/App/VoicemoreApp.swift
+ M voicemore-ios/Keyboard/KeyboardUI.swift
+ M voicemore-ios/Keyboard/KeyboardViewController.swift
+ M voicemore-ios/Keyboard/RIME/RimeEngine.swift
+ M voicemore-ios/Keyboard/TypingKeyboardView.swift
+ M voicemore-ios/RimeKit/Bridge/RimeAPI.c
+ M voicemore-ios/RimeKit/Bridge/RimeAPI.h
+ M voicemore-ios/RimeKit/RIMEBridge.swift
+ M voicemore-ios/RimeKit/RIMETypes.swift
+ M voicemore-ios/UITests/VoicemoreExperienceUITests.swift
+ M voicemore-ios/UITests/VoicemoreKeyboardUITests.swift
+ M voicemore-ios/UITests/VoicemoreUITests.swift
+ M voicemore-ios/Voicemore.xcodeproj/project.pbxproj
+ M voicemore-ios/VoicemoreKit/Sources/VoicemoreKit/QwenProviders.swift
+ M voicemore-ios/VoicemoreKit/Sources/VoicemoreKit/TextPipelineGenerated.swift
+ M voicemore-ios/VoicemoreKit/Sources/VoicemoreShared/KbHostActivationState.swift
+ M voicemore-ios/VoicemoreKit/Sources/VoicemoreShared/KbSharedState.swift
+ M voicemore-ios/VoicemoreKit/Sources/VoicemoreShared/KbStore.swift
+ M voicemore-ios/VoicemoreKit/Sources/VoicemoreShared/SeamlessSymbols.swift
+ M voicemore-ios/VoicemoreKit/Tests/VoicemoreKitTests/KbDictationJourneyTests.swift
+ M voicemore-ios/VoicemoreKit/Tests/VoicemoreKitTests/KbHostActivationStateTests.swift
+ M voicemore-ios/VoicemoreKit/Tests/VoicemoreKitTests/KbSharedStateTests.swift
+ M voicemore-ios/VoicemoreKit/Tests/VoicemoreKitTests/TextPipelineTests.swift
+ M voicemore-ios/project.yml
+ M voicemore-ios/vendor/rime-data/build/default.yaml
+ M voicemore-ios/vendor/rime-data/build/luna_pinyin.prism.bin
+ M voicemore-ios/vendor/rime-data/build/luna_pinyin.schema.yaml
+ M voicemore-ios/vendor/rime-data/build/wubi86.prism.bin
+ M voicemore-ios/vendor/rime-data/build/wubi86.schema.yaml
+ M voicemore-ios/vendor/rime-data/default.yaml
+ M voicemore-ios/vendor/rime-data/user.yaml
+ M voicemore-mac/app/app.go
+ M voicemore-mac/app/background_asr_audit_store.go
+ M voicemore-mac/app/capabilities.go
+ M voicemore-mac/app/capture_adapters.go
+ M voicemore-mac/app/capture_adapters_test.go
+ M voicemore-mac/app/frontend/dist/index.html
+ M voicemore-mac/app/frontend/dist/main.js
+ M voicemore-mac/app/frontend/wailsjs/go/main/App.d.ts
+ M voicemore-mac/app/frontend/wailsjs/go/main/App.js
+ M voicemore-mac/app/frontend/wailsjs/go/models.ts
+ M voicemore-mac/app/frontend_contract_test.go
+ M voicemore-mac/app/harmony_device_store.go
+ M voicemore-mac/app/harmony_device_store_test.go
+ M voicemore-mac/app/harmony_empirical_evidence_test.go
+ M voicemore-mac/app/harmony_meeting_adapter.go
+ M voicemore-mac/app/harmony_meeting_adapter_test.go
+ M voicemore-mac/app/harmony_pairing.go
+ M voicemore-mac/app/harmony_pairing_test.go
+ M voicemore-mac/app/harmony_preview_adapter.go
+ M voicemore-mac/app/main.go
+ M voicemore-mac/app/meeting_capture_adapter.go
+ M voicemore-mac/app/meeting_capture_adapter_test.go
+ M voicemore-mac/app/meeting_corrections.go
+ M voicemore-mac/app/meeting_corrections_test.go
+ M voicemore-mac/app/meeting_import.go
+ M voicemore-mac/app/meeting_import_test.go
+ M voicemore-mac/app/meeting_live_diagnostic_test.go
+ M voicemore-mac/app/meeting_minutes_authority.go
+ M voicemore-mac/app/meeting_minutes_authority_test.go
+ M voicemore-mac/app/meeting_preview.go
+ M voicemore-mac/app/meeting_preview_test.go
+ M voicemore-mac/app/meeting_processing_adapter.go
+ M voicemore-mac/app/meeting_processing_adapter_test.go
+ M voicemore-mac/app/meeting_task_store.go
+ M voicemore-mac/app/meeting_task_store_test.go
+ M voicemore-mac/app/settings.go
+ M voicemore-mac/app/test_rpc.go
+ M voicemore-mac/app/workspace_api.go
+ M voicemore-mac/app/workspace_store.go
+ M voicemore-mac/app/workspace_store_test.go
+ M voicemore-mac/cmd/harness/journey_run_test.go
+ M voicemore-mac/cmd/harness/runner.go
+ M voicemore-mac/cmd/harness/runner_test.go
+ M voicemore-mac/cmd/harness/workspace_visual_probe.mjs
+ M voicemore-mac/cmd/meetingprompt/main.go
+ M voicemore-mac/cmd/meetingprompt/validate.go
+ M voicemore-mac/cmd/prompt37/main.go
+ M voicemore-mac/cmd/promptjudge/main.go
+ M voicemore-mac/core/contracts.go
+ M voicemore-mac/core/funasrws/funasrws.go
+ D voicemore-mac/core/localasr/localasr.go
+ D voicemore-mac/core/localasr/localasr_test.go
+ D voicemore-mac/core/localasr/runtime.go
+ D voicemore-mac/core/localstreamingasr/bridge.py
+ D voicemore-mac/core/localstreamingasr/hybrid.go
+ D voicemore-mac/core/localstreamingasr/hybrid_test.go
+ D voicemore-mac/core/localstreamingasr/provider.go
+ D voicemore-mac/core/localstreamingasr/provider_test.go
+ M voicemore-mac/core/meeting/asr_speaker_voiceprint.go
+ M voicemore-mac/core/meeting/contracts.go
+ M voicemore-mac/core/meeting/localdiarization/localdiarization_test.go
+ M voicemore-mac/core/meeting/localvoiceprint/bridge.py
+ M voicemore-mac/core/meeting/localvoiceprint/external_rss_test.go
+ M voicemore-mac/core/meeting/localvoiceprint/localvoiceprint.go
+ M voicemore-mac/core/meeting/localvoiceprint/localvoiceprint_test.go
+ M voicemore-mac/core/meeting/longrun.go
+ M voicemore-mac/core/meeting/utterance_test.go
+ M voicemore-mac/core/meetingreview/conversation.go
+ M voicemore-mac/core/meetingreview/digest.go
+ M voicemore-mac/core/meetingreview/observation.go
+ M voicemore-mac/core/meetingreview/prompt.go
+ M voicemore-mac/core/meetingreview/session.go
+ M voicemore-mac/core/qwen_http.go
+ M voicemore-mac/core/qwen_http_test.go
+ M voicemore-mac/core/text_pipeline_artifact_test.go
+ M voicemore-mac/core/text_pipeline_executor.go
+ M voicemore-mac/core/text_pipeline_generated.go
+ M voicemore-mac/internal/captureapp/delivery.go
+ M voicemore-mac/internal/captureapp/machine.go
+ M voicemore-mac/internal/captureapp/meeting_anchor_track_real_test.go
+ M voicemore-mac/internal/captureapp/meeting_progress.go
+ M voicemore-mac/internal/captureapp/meeting_progress_test.go
+ M voicemore-mac/internal/captureapp/meeting_turn.go
+ M voicemore-mac/internal/captureapp/meeting_turn_real_test.go
+ M voicemore-mac/internal/captureapp/meeting_utterance_real_test.go
+ M voicemore-mac/internal/captureapp/presenter.go
+ M voicemore-mac/internal/captureapp/revision.go
+ M voicemore-mac/internal/captureapp/revision_test.go
+ M voicemore-mac/internal/captureapp/service.go
+ M voicemore-mac/internal/captureapp/types.go
+ M voicemore-mac/internal/capturecontract/capture-contract.schema.json
+ M voicemore-mac/internal/capturecontract/contract_test.go
+ M voicemore-mac/internal/capturecontract/types_gen.go
+ M voicemore-mac/internal/capturecontract/validation.go
+ D voicemore-mac/internal/captureexec/executor_localasr_integration_test.go
+ M voicemore-mac/internal/meetingapp/capture_processor.go
+ M voicemore-mac/internal/meetingapp/capture_processor_test.go
+ M voicemore-mac/internal/meetingapp/long_chunk.go
+ M voicemore-mac/internal/meetingapp/long_chunk_anchor_geometry_test.go
+ M voicemore-mac/internal/meetingapp/longform.go
+ M voicemore-mac/internal/meetingapp/longform_test.go
+ M voicemore-mac/internal/runtimeconfig/meeting.go
+ M voicemore-mac/internal/runtimeconfig/meeting_test.go
+ M voicemore-mac/platform/audio_darwin.go
+ M voicemore-mac/platform/capturepanel_cocoa.m
+ M voicemore-mac/platform/capturepanel_darwin.go
+ M voicemore-mac/platform/hotkey_darwin.go
+ M voicemore-mac/platform/hotkey_darwin_test.go
+ M voicemore-mac/platform/platform.go
+ M voicemore-mac/platform/statusbar_darwin.go
+ M voicemore-mac/platform/text_target_darwin.go
+ M voicemore-mac/platform/text_target_live_darwin_test.go
+ M voicemore-mac/platform/text_target_readback_darwin_test.go
+?? docs/.tg/lessons/20260804-ios-keyboard-attach-certificate-signing.md
+?? docs/.tg/work/20260727-002330-harmony-mac-transfer-review/
+?? docs/.tg/work/20260727-151218-harmony-mac-witness-review/
+?? docs/.tg/work/20260727-204951-voicemore-ios-seamless-return-navigation/findings-intermittent-source-return-20260801.md
+?? docs/.tg/work/20260727-204951-voicemore-ios-seamless-return-navigation/findings-pinyin-profile-language-20260801.md
+?? docs/.tg/work/20260728-005908-voicemore-mac-usage-report/
+?? docs/.tg/work/20260728-010622-voicemore-mac-process-exit/
+?? docs/.tg/work/20260728-184017-voicemore-ios-keyboard-switch-failure/evidence/
+?? docs/.tg/work/20260728-184226-voicemore-harmony/
+?? docs/.tg/work/20260728-195858-voicemore-ios-transition-prewarm/evidence/
+?? docs/.tg/work/20260728-211003-voicemore-ios-no-pip/evidence/
+?? docs/.tg/work/20260728-234500-voicemore-meeting-prompt-experiment/
+?? docs/.tg/work/20260728-235042-voicemore-mac-fn-background-meeting/
+?? docs/.tg/work/20260729-002400-voicemore-ios-dictation-journey/evidence/
+?? docs/.tg/work/20260729-010059-voicemore-meeting-minutes-observability/
+?? docs/.tg/work/20260729-022948-voicemore-meeting-library-ux/
+?? docs/.tg/work/20260729-053320-voicemore-meeting-prompt-compact/
+?? docs/.tg/work/20260729-070441-voicemore-meeting-prompt-contrastive/
+?? docs/.tg/work/20260729-071941-voicemore-meeting-model-selection/
+?? docs/.tg/work/20260729-100606-voicemore-meeting-visibility/
+?? docs/.tg/work/20260729-102221-voicemore-meeting-prompt-champion/
+?? docs/.tg/work/20260729-194745-voicemore-meeting-chapter-density/
+?? docs/.tg/work/20260729-215503-voicemore-meeting-review-sidecar/
+?? docs/.tg/work/20260729-233017-voicemore-ios-pinyin-nine-key/
+?? docs/.tg/work/20260730-024050-voicemore-dictation-prompt-loss-preservation/
+?? docs/.tg/work/20260730-082124-voicemore-meeting-retry-witness/
+?? docs/.tg/work/20260730-093900-voicemore-meeting-ai-review-sidebar/
+?? docs/.tg/work/20260730-153600-voicemore-ios-keyboard-position/
+?? docs/.tg/work/20260730-173754-voicemore-meeting-review-conversation/
+?? docs/.tg/work/20260730-233701-voicemore-ios-pinyin-nine-key-legends/
+?? docs/.tg/work/20260730-meeting-ai-conversation-brainstorm/
+?? docs/.tg/work/20260730-meeting-review-silence-ux/
+?? docs/.tg/work/20260730-voicemore-meeting-review-pulse-ui/
+?? docs/.tg/work/20260730-voicemore-meeting-review-replay/
+?? docs/.tg/work/20260731-010609-voicemore-ios-keyboard-first-wall/
+?? docs/.tg/work/20260731-022800-voicemore-meeting-review/
+?? docs/.tg/work/20260731-142319-voicemore-ios-keyboard-root-cause/
+?? docs/.tg/work/20260731-155038-voicemore-meeting-cloud-first/
+?? docs/.tg/work/20260801-001657-voicemore-meeting-stepwise-ux/handoff-20260802-delivery-and-meeting-ux.md
+?? docs/.tg/work/20260801-001657-voicemore-meeting-stepwise-ux/handoff-20260802-ux-fix-round2.md
+?? docs/.tg/work/20260801-001657-voicemore-meeting-stepwise-ux/witness/
+?? docs/.tg/work/20260801-170118-voicemore-ios-nine-key-dictation-clarify/
+?? docs/.tg/work/20260802-voicemore-meeting-ux-redesign/
+?? docs/.tg/work/20260803-003505-voicemore-meeting-ux-redesign/
+?? docs/.tg/work/20260804-0847-voicemore-ios-signing-retro/
+?? docs/.tg/work/20260804-1445-voicemore-meeting-heavy-journey/
+?? docs/.tg/work/20260804-voicemore-meeting-voiceprint-experiment/
+?? docs/.tg/work/20260806-0930-voicemore-meeting/
+?? docs/.tg/work/20260806-1050-unify-speaker-review/
+?? docs/.tg/work/20260806-remove-sherpa-asr/
+?? docs/.tg/work/20260808-voicemore-dictation-llm-egress/
+?? docs/.tg/work/20260808-voicemore-meeting-speaker-identity/
+?? docs/product/voicemore-meeting-review/
+?? evidence/
+?? for-meeting.md
+?? shared/text-pipeline/model-output-unwrap-cases.json
+?? tools/vm-transcribe/default.profraw
+?? tools/vm-transcribe/eval_moss_joint.py
+?? tools/vm-transcribe/exp_cluster.py
+?? tools/vm-transcribe/exp_embed_cache.py
+?? tools/vm-transcribe/exp_pyannote.py
+?? tools/vm-transcribe/exp_third_speaker.py
+?? tools/vm-transcribe/probe_timestamps_funasr.py
+?? tools/vm-transcribe/sample_speaker_disagreements.py
+?? voicemore-harmony/entry/oh-package-lock.json5
+?? voicemore-harmony/entry/oh_modules/
+?? voicemore-harmony/entry/src/main/ets/capture/AssetCatalog.ets
+?? voicemore-harmony/entry/src/main/ets/capture/AudioMaterializer.ets
+?? voicemore-harmony/entry/src/main/ets/capture/FileDigest.ets
+?? voicemore-harmony/entry/src/main/ets/capture/ImportBatchStore.ets
+?? voicemore-harmony/entry/src/main/ets/capture/PublicationAuthorization.ets
+?? voicemore-harmony/entry/src/main/ets/capture/ReelPublisher.ets
+?? voicemore-harmony/entry/src/main/ets/wire/CrashSafeStore.ets
+?? voicemore-harmony/entry/src/main/ets/wire/DeviceEnrollment.ets
+?? voicemore-harmony/entry/src/main/ets/wire/DurableJsonl.ets
+?? voicemore-ios/App/HostResolverBootstrap.m
+?? voicemore-ios/Keyboard/InputProfileCards.swift
+?? voicemore-ios/Keyboard/KeyboardHostSourceObserver.swift
+?? voicemore-ios/Keyboard/KeyboardRuntimeScope.swift
+?? voicemore-ios/RimeKit/Fixtures/
+?? voicemore-ios/RimeKit/Tools/
+?? voicemore-ios/UITests/Fixtures/
+?? voicemore-ios/VoicemoreKit/Sources/VoicemoreKit/TextPipelineModelOutput.swift
+?? voicemore-ios/VoicemoreKit/Sources/VoicemoreShared/KbTokenLedger.swift
+?? voicemore-ios/VoicemoreKit/Sources/VoicemoreShared/KbVoiceJourneyAudit.swift
+?? voicemore-ios/VoicemoreKit/Sources/VoicemoreShared/PinyinNineKeyLayout.swift
+?? voicemore-ios/VoicemoreKit/Sources/VoicemoreShared/RimeCompositionPresentation.swift
+?? voicemore-ios/VoicemoreKit/Tests/VoicemoreKitTests/KbInputProfileTests.swift
+?? voicemore-ios/VoicemoreKit/Tests/VoicemoreKitTests/KbVoiceActivationRegressionTests.swift
+?? voicemore-ios/VoicemoreKit/Tests/VoicemoreKitTests/KbVoiceJourneyAuditTests.swift
+?? voicemore-ios/VoicemoreKit/Tests/VoicemoreKitTests/KeyboardLayoutSourceGuardTests.swift
+?? voicemore-ios/VoicemoreKit/Tests/VoicemoreKitTests/PinyinNineKeyContractTests.swift
+?? voicemore-ios/VoicemoreKit/Tests/VoicemoreKitTests/RimeCompositionPresentationTests.swift
+?? voicemore-ios/VoicemoreKit/Tests/VoicemoreKitTests/TextPipelineModelOutputTests.swift
+?? voicemore-ios/docs/
+?? voicemore-ios/vendor/rime-data/build/luna_pinyin_nine.prism.bin
+?? voicemore-ios/vendor/rime-data/build/luna_pinyin_nine.schema.yaml
+?? voicemore-ios/vendor/rime-data/luna_pinyin_nine.schema.yaml
+?? voicemore-ios/vendor/rime-data/opencc/
+?? voicemore-mac/app/capture_runtime_rebuild_test.go
+?? voicemore-mac/app/digest_answered_probe_test.go
+?? voicemore-mac/app/fixture_dump_test.go
+?? voicemore-mac/app/frontend/dist/meeting-workbench.css
+?? voicemore-mac/app/frontend/dist/meeting-workbench.js
+?? voicemore-mac/app/harmony_pairing_local.go
+?? voicemore-mac/app/harmony_pairing_local_test.go
+?? voicemore-mac/app/meeting_asr_endpoint.go
+?? voicemore-mac/app/meeting_audio.go
+?? voicemore-mac/app/meeting_audio_test.go
+?? voicemore-mac/app/meeting_deletion.go
+?? voicemore-mac/app/meeting_library.go
+?? voicemore-mac/app/meeting_library_test.go
+?? voicemore-mac/app/meeting_processing_admission.go
+?? voicemore-mac/app/meeting_processing_admission_test.go
+?? voicemore-mac/app/meeting_resume.go
+?? voicemore-mac/app/meeting_review_api.go
+?? voicemore-mac/app/meeting_review_api_test.go
+?? voicemore-mac/app/meeting_review_diagnostics.go
+?? voicemore-mac/app/meeting_review_evidence.go
+?? voicemore-mac/app/meeting_review_evidence_test.go
+?? voicemore-mac/app/meeting_review_merge.go
+?? voicemore-mac/app/meeting_review_merge_test.go
+?? voicemore-mac/app/meeting_review_observations.go
+?? voicemore-mac/app/meeting_review_observations_real_test.go
+?? voicemore-mac/app/meeting_review_observations_test.go
+?? voicemore-mac/app/meeting_review_observations_wiring_test.go
+?? voicemore-mac/app/meeting_review_replay.go
+?? voicemore-mac/app/meeting_review_replay_real_test.go
+?? voicemore-mac/app/meeting_review_replay_test.go
+?? voicemore-mac/app/meeting_review_runs.go
+?? voicemore-mac/app/meeting_review_runs_test.go
+?? voicemore-mac/app/meeting_review_store.go
+?? voicemore-mac/app/meeting_task_scan_noncapture_test.go
+?? voicemore-mac/app/meeting_title.go
+?? voicemore-mac/app/meeting_trash.go
+?? voicemore-mac/app/meeting_trash_test.go
+?? voicemore-mac/app/meeting_waveform.go
+?? voicemore-mac/app/meeting_waveform_test.go
+?? voicemore-mac/app/personal_lexicon_during_session_test.go
+?? voicemore-mac/app/proc_probe_test.go
+?? voicemore-mac/app/queued_projection_test.go
+?? voicemore-mac/app/restore_probe_test.go
+?? voicemore-mac/app/review_merge_backfill_test.go
+?? voicemore-mac/app/review_premise_e2e_test.go
+?? voicemore-mac/app/review_prompt_ab_test.go
+?? voicemore-mac/app/usage_report.go
+?? voicemore-mac/app/usage_report_test.go
+?? voicemore-mac/app/zz_export_workspace_test.go
+?? voicemore-mac/cmd/harness/meeting_review_replay_probe.mjs
+?? voicemore-mac/cmd/meetingprompt/gold.go
+?? voicemore-mac/cmd/meetingprompt/gold_test.go
+?? voicemore-mac/cmd/meetingprompt/main_test.go
+?? voicemore-mac/cmd/meetingreprocess/
+?? voicemore-mac/cmd/prompt37/main_test.go
+?? voicemore-mac/cmd/reviewprompt/
+?? voicemore-mac/cmd/tmp_journey_probe/
+?? voicemore-mac/core/dictation_calibration_invariants_test.go
+?? voicemore-mac/core/meeting/utterance_speaker_split_test.go
+?? voicemore-mac/core/model_output_unwrap.go
+?? voicemore-mac/core/model_output_unwrap_contract_test.go
+?? voicemore-mac/core/model_output_unwrap_test.go
+?? voicemore-mac/core/qwenasrbatch/
+?? voicemore-mac/docs/.tg/work/20260729-215503-voicemore-meeting-review-sidecar/
+?? voicemore-mac/evals/dictation-prompt-37/FULL-SCALE-REPORT-20260805.md
+?? voicemore-mac/evals/dictation-prompt-37/MODEL-AND-JUDGE-REPORT.md
+?? voicemore-mac/evals/dictation-prompt-37/runs/ITERATION-REPORT.md
+?? voicemore-mac/evals/meeting-notes-prompt/fixtures-generalized/
+?? voicemore-mac/evals/meeting-notes-prompt/prompts/embed.go
+?? voicemore-mac/evals/meeting-notes-prompt/prompts/v10-compact-ledger-boundaries.txt
+?? voicemore-mac/evals/meeting-notes-prompt/prompts/v11-contrastive-acceptance-tests.txt
+?? voicemore-mac/evals/meeting-notes-prompt/prompts/v12-continuous-chapter-trace.txt
+?? voicemore-mac/evals/meeting-notes-prompt/prompts/v13-semantic-move-coverage.txt
+?? voicemore-mac/evals/meeting-notes-prompt/prompts/v14-chapter-trace-worker.txt
+?? voicemore-mac/evals/meeting-notes-prompt/prompts/v15-chapter-evidence-spine.txt
+?? voicemore-mac/evals/meeting-notes-prompt/prompts/v15-outline-ledger.txt
+?? voicemore-mac/evals/meeting-notes-prompt/prompts/v16-chapter-evidence-spine.txt
+?? voicemore-mac/evals/meeting-notes-prompt/prompts/v16-outline-ledger.txt
+?? voicemore-mac/evals/meeting-notes-prompt/prompts/v17-chapter-evidence-spine.txt
+?? voicemore-mac/evals/meeting-notes-prompt/prompts/v18-chapter-evidence-spine.txt
+?? voicemore-mac/evals/meeting-notes-prompt/prompts/v4-final-state-grounded.txt
+?? voicemore-mac/evals/meeting-notes-prompt/prompts/v5-domain-boundaries.txt
+?? voicemore-mac/evals/meeting-notes-prompt/prompts/v6-evidence-final-scan.txt
+?? voicemore-mac/evals/meeting-notes-prompt/prompts/v7-followup-contention-ownership.txt
+?? voicemore-mac/evals/meeting-notes-prompt/prompts/v8-followup-counterexamples.txt
+?? voicemore-mac/evals/meeting-notes-prompt/prompts/v9-atomic-followups-outcome-ownership.txt
+?? voicemore-mac/evals/meeting-notes-prompt/runs/generalized-offline-v3.json
+?? voicemore-mac/evals/meeting-notes-prompt/runs/generalized-v10-scout.json
+?? voicemore-mac/evals/meeting-notes-prompt/runs/generalized-v3-frozen-run1.json
+?? voicemore-mac/evals/meeting-notes-prompt/runs/generalized-v3-repeat1.json
+?? voicemore-mac/evals/meeting-notes-prompt/runs/generalized-v3-repeat2.json
+?? voicemore-mac/evals/meeting-notes-prompt/runs/generalized-v3-repeat3.json
+?? voicemore-mac/evals/meeting-notes-prompt/runs/generalized-v3-run1.json
+?? voicemore-mac/evals/meeting-notes-prompt/runs/generalized-v4-scout.json
+?? voicemore-mac/evals/meeting-notes-prompt/runs/generalized-v5-critical-scout.json
+?? voicemore-mac/evals/meeting-notes-prompt/runs/generalized-v5-frozen-run1.json
+?? voicemore-mac/evals/meeting-notes-prompt/runs/generalized-v6-scout-run1.json
+?? voicemore-mac/evals/meeting-notes-prompt/runs/generalized-v7-critical-scout.json
+?? voicemore-mac/evals/meeting-notes-prompt/runs/generalized-v7-repeat1.json
+?? voicemore-mac/evals/meeting-notes-prompt/runs/generalized-v7-repeat2.json
+?? voicemore-mac/evals/meeting-notes-prompt/runs/generalized-v7-repeat3.json
+?? voicemore-mac/evals/meeting-notes-prompt/runs/generalized-v8-critical-scout.json
+?? voicemore-mac/evals/meeting-notes-prompt/runs/generalized-v9-repeat1.json
+?? voicemore-mac/evals/meeting-notes-prompt/runs/generalized-v9-repeat2.json
+?? voicemore-mac/evals/meeting-notes-prompt/runs/generalized-v9-repeat3.json
+?? voicemore-mac/evals/meeting-notes-prompt/runs/ueba-tiering-v5-live1.json
+?? voicemore-mac/evals/meeting-notes-prompt/runs/ueba-tiering-v5-offline.json
+?? voicemore-mac/evals/review-prompt/
+?? voicemore-mac/internal/captureapp/delivery_recovery_integration_test.go
+?? voicemore-mac/internal/capturecontract/authority_coverage_test.go
+?? voicemore-mac/internal/contentidentity/funasr_runtime.go
+?? voicemore-mac/internal/funasrruntime/
+?? voicemore-mac/internal/meetingapp/qwen_batch_e2e_test.go
+?? voicemore-mac/internal/meetingapp/qwen_rescue_real_test.go
+?? voicemore-mac/meetingreprocess
+?? voicemore-mac/platform/audio_ring_darwin_test.go
+?? voicemore-mac/platform/capturepanel_kinds_darwin_test.go
+?? voicemore-mac/platform/main_thread_reentry_darwin_test.go
+?? voicemore-mac/platform/native_intent_darwin.go
+?? voicemore-mac/reviewprompt

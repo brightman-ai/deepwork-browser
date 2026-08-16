@@ -344,24 +344,6 @@ func ensureForegroundAllowed(ctx context.Context, sessionInfo *browser.SessionIn
 	}
 }
 
-func refsFromSnapshot(snap *browser.Snapshot) []browser.SessionRef {
-	if snap == nil {
-		return nil
-	}
-	refs := make([]browser.SessionRef, 0, len(snap.Refs))
-	for _, ref := range snap.Refs {
-		refs = append(refs, browser.SessionRef{
-			Ref:           ref.Ref,
-			BackendNodeID: ref.BackendNodeID,
-			Role:          ref.Role,
-			Name:          ref.NameFull,
-			TestID:        ref.TestID,
-			Placeholder:   ref.Placeholder,
-		})
-	}
-	return refs
-}
-
 func stringFromMap(m map[string]interface{}, key string) string {
 	v, _ := m[key].(string)
 	return v
