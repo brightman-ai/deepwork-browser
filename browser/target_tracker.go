@@ -245,6 +245,18 @@ func warmTargetContext(ctx context.Context) error {
 	if ctx == nil {
 		return nil
 	}
+	// Warming a tab must never be the thing that *starts* a browser. A bare
+	// chromedp.Run on a context whose Browser is still nil makes chromedp call
+	// Allocator.Allocate — which, for an ExecAllocator, forks Chrome. Requiring
+	// a live Browser keeps the legitimate case (attach to a target of the
+	// browser we already drive: chromedp.Run then skips Allocate and goes
+	// straight to newTarget) and closes the illegitimate one. Mirrors the same
+	// precondition runBrowserCDPWithSoftTimeout has always had.
+	if c := chromedp.FromContext(ctx); c == nil || c.Browser == nil {
+		err := fmt.Errorf("warm target context: browser executor unavailable")
+		logger.Warn(targetLogContext(), "warm target context failed", "error", err)
+		return err
+	}
 	if err := runCDPWithSoftTimeout(ctx, TargetWarmTimeout); err != nil {
 		logger.Warn(targetLogContext(), "warm target context failed", "error", err)
 		return err
@@ -726,11 +738,23 @@ func (tt *TargetTracker) registerTargetLocked(info *target.Info) (*trackedTarget
 	var newCtx context.Context
 	var newCancel context.CancelFunc
 	if closable {
-		parent := tt.browserCtx
-		if parent == nil {
-			parent = context.Background()
+		// A tracked tab context may only ever *attach* to the browser this
+		// tracker already drives — never *start* one. chromedp.NewContext on a
+		// parent that carries no chromedp Context silently installs
+		// DefaultExecAllocatorOptions, and the first chromedp.Run on the result
+		// forks a real Chrome with its own /tmp/chromedp-runner* profile. That
+		// is how ~60 orphaned Chromes per `go test ./browser/` were born: pure
+		// unit tests construct NewTargetTracker(context.Background()) and feed
+		// it synthetic target.Info, HandleTargetCreated's pending-warm goroutine
+		// then called chromedp.Run on the fabricated allocator, and nothing ever
+		// cancelled it (see warmTargetContext's guard for the second half).
+		// Trackers with no browser get a nil ctx — every consumer below and in
+		// bindPageListener/warmTargetContext already treats nil as "no CDP".
+		if parent := tt.browserCtx; parent != nil && chromedp.FromContext(parent) != nil {
+			newCtx, newCancel = chromedp.NewContext(parent, chromedp.WithTargetID(info.TargetID))
+		} else {
+			newCtx, newCancel = nil, func() {}
 		}
-		newCtx, newCancel = chromedp.NewContext(parent, chromedp.WithTargetID(info.TargetID))
 	} else {
 		newCtx = tt.browserCtx
 		newCancel = func() {}

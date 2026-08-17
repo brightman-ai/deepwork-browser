@@ -633,6 +633,8 @@ func main() {
 		runCookieImport(os.Args[2:])
 	case "profile":
 		runProfile(os.Args[2:])
+	case "gc":
+		runGC(os.Args[2:])
 	case "skills":
 		runSkills(os.Args[2:])
 	case "record":
@@ -1272,6 +1274,7 @@ func printUsage() {
 	p("  htr attach|takeover|yield|share --id X   Human Trust Runtime 接管")
 	p("  muxhost ensure|status|release|shutdown   全局 BrowserMuxHost 运维")
 	p("  profile list|import|prune            CLI profile 管理")
+	p("  gc [--dry-run] [--older-than 10m]    回收无主 Chrome 进程树与陈旧 chromedp profile")
 	p("  skills list|read|write               站点操作知识库")
 	p("  record start|stop|export --id X      录制操作轨迹 → 提炼 skill")
 	p("  layout <url> · test <spec.yaml> · eval --id X \"<js>\" · cookie-import · audit")
@@ -1797,6 +1800,11 @@ func findChromePIDForDebugPort(port int) int {
 //
 // [BRR-MODE-1]: visible/headed/headless 路径分离, 各自不互相污染.
 func startDetachedChrome(chromePath string, chromeArgs []string) (int, error) {
+	// Settle any Chrome whose owner died before we add another one. This is the
+	// SIGKILL fallback in action: the note on disk outlives the process that
+	// wrote it, and the next dw-browser invocation is the first thing able to
+	// act on it.
+	browser.EnsureChromeRegistryReaped()
 	cmd := exec.Command(chromePath, chromeArgs...)
 	browser.ApplyDetachedProcAttr(cmd)
 	var stderrBuf bytes.Buffer
@@ -1804,6 +1812,11 @@ func startDetachedChrome(chromePath string, chromeArgs []string) (int, error) {
 	if err := cmd.Start(); err != nil {
 		return 0, fmt.Errorf("start Chrome: %w", err)
 	}
+	// Detached by design (`dw-browser open` exits, Chrome stays), so this note
+	// is not an owner-death trigger — it is what lets `dw-browser gc` find the
+	// process group later, once no live session references it any more.
+	_, _ = browser.RegisterChromeProcess(browser.ChromeDetachedSession, cmd.Process.Pid,
+		browser.ChromeProfileDirFromArgs(chromeArgs), false)
 	return cmd.Process.Pid, nil
 }
 

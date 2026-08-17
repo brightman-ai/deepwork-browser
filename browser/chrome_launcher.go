@@ -366,7 +366,13 @@ func (l *chromeLauncherImpl) Launch(ctx context.Context, profileID string, headl
 		Mode:       mode,
 	})
 
+	EnsureChromeRegistryReaped()
 	cmd := exec.CommandContext(ctx, chromePath, args...)
+	// 这条路径此前完全没有 SysProcAttr: ctx 取消时 exec.CommandContext 只 SIGKILL 直接子进程,
+	// 而 snap 链上那个 pid 虽然就是真 Chrome, 它的 zygote/renderer/gpu 子进程仍活着;
+	// owner 被 SIGKILL 时更是一个信号都发不出去。给它自己的进程组 + Pdeathsig, 让取消/退出
+	// 能整棵树带走。
+	ApplyOwnedChromeProcAttr(cmd)
 	// 捕获 stderr 用于调试 Chrome 启动失败
 	var stderrBuf bytes.Buffer
 	cmd.Stderr = &stderrBuf
@@ -375,13 +381,17 @@ func (l *chromeLauncherImpl) Launch(ctx context.Context, profileID string, headl
 	}
 
 	procPID := cmd.Process.Pid
+	procPGID := ChromeProcessGroupID(procPID)
+	regToken, _ := RegisterChromeProcess(ChromeOwnedByLauncher, procPID, profilePath, false)
 
 	// 等待 Chrome CDP 就绪 (端口已知，只需轮询连通性)
 	// snap chromium 启动较慢 (~3-5s)，给足等待时间
 	cdpURL, err = waitForCDP(ctx, cdpPort, ChromeCDPStartupAttempts, ChromeCDPStartupPollInterval)
 	if err != nil {
-		// 超时则 Kill 残留进程
+		// 超时则 Kill 残留进程 — 整个进程组, 否则 zygote/renderer 继续写 profile 目录
 		_ = cmd.Process.Kill()
+		KillChromeProcessGroupID(procPGID)
+		UnregisterChromeProcess(regToken)
 		_ = cmd.Wait()
 		stderr := stderrBuf.String()
 		if len(stderr) > 200 {
@@ -518,12 +528,17 @@ func splitFields(s string) []string {
 	return fields
 }
 
-// Kill 杀死指定 PID 的 Chrome 进程。
+// Kill 杀死指定 PID 的 Chrome 进程及其整棵进程树。
+//
+// 单 PID kill 只带走 browser 进程, zygote/renderer/gpu-process/crashpad_handler
+// 仍在跑并继续写 profile 目录 (见 KillChromeProcessGroup 的实测注释)。Launch 已经
+// 用 ApplyOwnedChromeProcAttr 把它们放进同一个进程组, 这里按组杀。
 func (l *chromeLauncherImpl) Kill(pid int) error {
 	proc, err := os.FindProcess(pid)
 	if err != nil {
 		return err
 	}
+	KillChromeProcessGroup(pid)
 	return proc.Kill()
 }
 

@@ -31,6 +31,14 @@ type chromeHandleImpl struct {
 	doneCh   chan struct{}
 	waitErr  error
 	killOnce sync.Once
+	// regToken is the on-disk ownership note (chrome_registry.go). Dropped on
+	// Kill; left behind on an unclean death so the next dw-browser process can
+	// finish the kill this one never got to run.
+	regToken string
+	// pgid is read once, while the leader is still alive. Reading it later is
+	// too late: after the browser process exits, getpgid(pid) fails and the
+	// surviving zygote/renderer children become unreachable by group.
+	pgid int
 }
 
 func (h *chromeHandleImpl) WSURL() string         { return h.wsURL }
@@ -43,13 +51,21 @@ func (h *chromeHandleImpl) Wait() error {
 	return h.waitErr
 }
 
-// Kill SIGKILLs the Chrome process and waits for exit. Idempotent.
+// Kill SIGKILLs the Chrome process *group* and waits for exit. Idempotent.
+//
+// Group, not pid: cmd.Process.Kill() only ever reached the browser process, and
+// Chrome's zygote/renderer/gpu-process/utility/crashpad_handler children go on
+// running (and writing into the profile dir) after it. They inherit the pgid
+// set at fork by ApplyOwnedChromeProcAttr / ApplyDetachedProcAttr, so
+// kill(-pgid) is the one signal that reaches all of them.
 func (h *chromeHandleImpl) Kill() error {
 	var killErr error
 	h.killOnce.Do(func() {
 		if h.cmd != nil && h.cmd.Process != nil {
 			killErr = h.cmd.Process.Kill()
+			KillChromeProcessGroupID(h.pgid)
 		}
+		UnregisterChromeProcess(h.regToken)
 	})
 	select {
 	case <-h.doneCh:
@@ -96,6 +112,7 @@ func startChromeProcessWithOwnership(spec ChromeLaunchSpec, detached bool) (*chr
 		timeout = 30 * time.Second
 	}
 
+	EnsureChromeRegistryReaped()
 	cmd := exec.Command(spec.ChromePath, spec.Args...)
 	if detached {
 		// Detached process group — Chrome survives parent exit (dw-browser CLI
@@ -103,6 +120,14 @@ func startChromeProcessWithOwnership(spec ChromeLaunchSpec, detached bool) (*chr
 		// Windows: no-op (Setpgid not available; CREATE_NEW_PROCESS_GROUP via
 		// SysProcAttr is a future TODO if needed).
 		ApplyDetachedProcAttr(cmd)
+	} else {
+		// Owned Chrome must die with its owner. Previously this branch set no
+		// SysProcAttr at all, which left the fork in *our* process group with
+		// no death signal: the only thing that ever killed it was h.Kill()
+		// running, and a SIGKILLed owner never runs anything. Now it gets its
+		// own process group (so Kill can group-kill) plus Pdeathsig where the
+		// kernel honours it.
+		ApplyOwnedChromeProcAttr(cmd)
 	}
 	var stderrBuf bytes.Buffer
 	cmd.Stderr = &stderrBuf
@@ -121,14 +146,33 @@ func startChromeProcessWithOwnership(spec ChromeLaunchSpec, detached bool) (*chr
 	h := &chromeHandleImpl{
 		cmd:    cmd,
 		pid:    cmd.Process.Pid,
+		pgid:   ChromeProcessGroupID(cmd.Process.Pid),
 		doneCh: make(chan struct{}),
 	}
+	// Register before waiting for CDP readiness — a launch that times out is
+	// precisely the case where nobody is left holding this pid.
+	//
+	// ChromeOwnedByCore for *both* ownership modes, deliberately. `detached`
+	// here means "own process group so parent signals don't fan out", not "may
+	// outlive this process": every caller of startChromeProcess (NewBrowserCore
+	// for act/eval/observe/once/journey) closes it before returning, so if the
+	// caller is SIGKILLed that Chrome is abandoned and must be reaped. The one
+	// genuinely-persistent Chrome, `dw-browser open`, is forked by
+	// startDetachedChrome in cmd/dw-browser and registers ChromeDetachedSession
+	// itself. A live session file protects a record regardless of its kind, so
+	// a hand-off that does happen is still safe.
+	h.regToken, _ = RegisterChromeProcess(ChromeOwnedByCore, h.pid, ChromeProfileDirFromArgs(spec.Args), false)
 
 	// Reap the child + signal exit. Single goroutine owns cmd.Wait().
 	go func() {
 		h.waitErr = cmd.Wait()
 		log.Printf("[CHROME-LAUNCH] process_exited pid=%d debug_port=%d err=%v",
 			h.pid, spec.DebugPort, h.waitErr)
+		// The browser process is gone; its children are not. Same reason Kill
+		// group-kills — a crashed Chrome leaves the same residue as a killed
+		// one, and residue keeps writing into the profile dir.
+		KillChromeProcessGroupID(h.pgid)
+		UnregisterChromeProcess(h.regToken)
 		close(h.doneCh)
 	}()
 

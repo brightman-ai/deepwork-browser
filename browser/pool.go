@@ -33,6 +33,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -286,6 +287,17 @@ type chromePoolEntry struct {
 	virtualDisplay  *VirtualDisplayManager
 	browserMuxHost  *BrowserMuxHostState
 	runtimeContract browserPoolRuntimeContract
+
+	// execChromePID / execChromeToken track the Chrome that chromedp's
+	// ExecAllocator forked for the headless path. chromedp cancels it by
+	// SIGKILLing the single pid it forked; on a snap-confined Chrome that pid
+	// is the browser process but its zygote/renderer/gpu children live on in
+	// the same process group, so cleanup has to group-kill. The token is the
+	// on-disk ownership note (chrome_registry.go) that lets a later process
+	// finish the job if this one is killed before it can.
+	execChromePID   int
+	execChromePGID  int
+	execChromeToken string
 }
 
 type tabEntry struct {
@@ -698,6 +710,7 @@ func (p *BrowserPool) GracefulShutdown(ctx context.Context) error {
 			entry.browserMuxHost = nil
 		}
 
+		releaseExecChrome(entry)
 		entry.started = false
 	}
 	p.entries = make(map[IdentityKey]*chromePoolEntry)
@@ -1124,6 +1137,7 @@ func cleanupEntryLaunch(entry *chromePoolEntry) {
 		entry.chromeHandle = nil
 		entry.browserMuxHost = nil
 	}
+	releaseExecChrome(entry)
 	entry.allocCtx = nil
 	entry.browserCtx = nil
 	entry.rootTargetID = ""
@@ -1147,18 +1161,62 @@ func (p *BrowserPool) startChromeHeadlessLocked(ctx context.Context, entry *chro
 	})
 	opts := ExecAllocatorOptionsFromArgs(chromePath, launchArgs)
 
+	// Take ownership of the process chromedp is about to fork. ModifyCmdFunc
+	// replaces chromedp's own allocateCmdOptions (which only sets Pdeathsig —
+	// cleared by snap-confine's setuid exec, so on this host it guarantees
+	// nothing), so ApplyOwnedChromeProcAttr has to set both Setpgid and
+	// Pdeathsig itself. Capturing the *exec.Cmd here is the only way to learn
+	// the forked pid: chromedp keeps Browser.process unexported.
+	EnsureChromeRegistryReaped()
+	var launchedCmd *exec.Cmd
+	opts = append(opts, chromedp.ModifyCmdFunc(func(cmd *exec.Cmd) {
+		ApplyOwnedChromeProcAttr(cmd)
+		launchedCmd = cmd
+	}))
+
 	entry.allocCtx, entry.allocCancel = chromedp.NewExecAllocator(context.Background(), opts...)
 	entry.browserCtx, entry.browserCancel = chromedp.NewContext(entry.allocCtx, chromedp.WithErrorf(chromedpErrorf))
-	if err := runCDPWithSoftTimeout(entry.browserCtx, BrowserPoolChromeWarmup); err != nil {
+	warmErr := runCDPWithSoftTimeout(entry.browserCtx, BrowserPoolChromeWarmup)
+	// Record the pid before deciding success/failure: a warmup that timed out
+	// is exactly the case where a half-started Chrome would otherwise be left
+	// with nobody holding its pid.
+	if launchedCmd != nil && launchedCmd.Process != nil {
+		entry.execChromePID = launchedCmd.Process.Pid
+		// Read the pgid now, while the leader is alive — after chromedp's
+		// cancel SIGKILLs it, getpgid() fails and its children are no longer
+		// reachable as a group.
+		entry.execChromePGID = ChromeProcessGroupID(entry.execChromePID)
+		entry.execChromeToken, _ = RegisterChromeProcess(ChromeOwnedByPool, entry.execChromePID, entry.profileDir, false)
+	}
+	if warmErr != nil {
 		entry.browserCancel()
 		entry.browserCtx = nil
 		entry.browserCancel = nil
 		entry.allocCancel()
 		entry.allocCancel = nil
-		return fmt.Errorf("chrome warmup (exec): %w", err)
+		releaseExecChrome(entry)
+		return fmt.Errorf("chrome warmup (exec): %w", warmErr)
 	}
 	entry.rootTargetID = captureTargetID(entry.browserCtx)
 	return nil
+}
+
+// releaseExecChrome finishes what cancelling the ExecAllocator context starts.
+// chromedp SIGKILLs the one pid it forked and stops there; Chrome's
+// zygote/renderer/gpu-process/utility children share the pgid we set at fork
+// (ApplyOwnedChromeProcAttr) and keep running — verified: they go on writing
+// into the profile dir for seconds afterwards. Group-kill closes that, and
+// dropping the registry note stops a later reaper from chasing a dead pid.
+func releaseExecChrome(entry *chromePoolEntry) {
+	if entry == nil || entry.execChromePID <= 0 {
+		return
+	}
+	KillChromeProcessGroupID(entry.execChromePGID)
+	KillChromeProcessGroup(entry.execChromePID)
+	UnregisterChromeProcess(entry.execChromeToken)
+	entry.execChromePID = 0
+	entry.execChromePGID = 0
+	entry.execChromeToken = ""
 }
 
 // createTabLocked 在 entry 上创建一个新 Tab (锁内调用).
@@ -1435,6 +1493,7 @@ func (p *BrowserPool) resetEntryLocked(identityKey IdentityKey, reason string) b
 		entry.chromeHandle = nil
 		entry.browserMuxHost = nil
 	}
+	releaseExecChrome(entry)
 	entry.browserCtx = nil
 	entry.rootTargetID = ""
 	entry.rootClaimed = false
@@ -1666,6 +1725,7 @@ func (p *BrowserPool) SwitchProfile(ctx context.Context, profileID string) (rest
 			entry.chromeHandle = nil
 			entry.browserMuxHost = nil
 		}
+		releaseExecChrome(entry)
 		entry.started = false
 		delete(p.entries, p.defaultIdentityKey)
 		log.Printf("[BROWSER-POOL/v2] SwitchProfile: from=%s to=%s preset=%s destroyed_tabs=%d",
