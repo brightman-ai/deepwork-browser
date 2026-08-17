@@ -599,6 +599,10 @@ func NewBrowserCore(ctx context.Context, profileID string, optFns ...BrowserOpti
 		}
 	}
 
+	// 输入派发窗口的第二把锁按浏览器实例键控 —— 两个会话可能坐在同一个浏览器上
+	// (mux-host 多 tab),前台归属必须在一次输入的生命周期内不被抢走。
+	actEngine.setBrowserInputKey(impl.wsURL, impl.chromePID)
+
 	return impl, nil
 }
 
@@ -1895,6 +1899,9 @@ func NewBrowserCoreFromSession(ctx context.Context, wsURL string, targetID strin
 		impl.liveViewportTouch = sessionPreset.Touch
 		impl.liveViewportMaxTP = int64(sessionPreset.MaxTouchPoints)
 	}
+
+	// 附着已有会话时同样键控到那个浏览器实例(此路径 chromePID 未知,ws_url 就是键)。
+	actEngine.setBrowserInputKey(impl.wsURL, impl.chromePID)
 
 	return impl, nil
 }

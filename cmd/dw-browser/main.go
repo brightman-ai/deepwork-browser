@@ -33,7 +33,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-const version = "0.11.3"
+const version = "0.11.4"
 
 // ActionEngine returns its own explicit error at 15s. The CLI watchdog is a
 // slightly wider process-level fence covering every BrowserCore implementation.
@@ -100,6 +100,10 @@ type commonFlags struct {
 	hasPersona         bool
 	personaTouch       bool   // 解析后:所选 persona 的 Fingerprint facet 是否触摸设备
 	personaFingerprint string // 解析后:所选 persona 的身份指纹 ID(流入 PresetID 管道)
+	// 单操作者/会话锁 (见 acquireSessionOperatorLockOrExit)。真正的取锁发生在
+	// main() 的公共入口,这里只是把 flag 从 positional 里吃掉,免得它漏进动作串。
+	lockWait string // --lock-wait <dur>: 第二操作者的有界等待时长 (默认 10s)
+	force    bool   // --force: 运维逃生口,close 用它跳过会话锁
 }
 
 // scenarioPolicyOrExit enforces the REQUIRED --scenario on every session-creating
@@ -291,6 +295,15 @@ func parseCommonFlags(args []string, cmd string) (positional []string, flags com
 			flags.mode = mode
 			flags.headless = mode == browser.ModeHeadless
 			flags.modeExplicit = true
+			i++
+		case arg == "--lock-wait" && i+1 < len(args):
+			flags.lockWait = args[i+1]
+			i += 2
+		case strings.HasPrefix(arg, "--lock-wait="):
+			flags.lockWait = arg[len("--lock-wait="):]
+			i++
+		case arg == "--force":
+			flags.force = true
 			i++
 		case arg == "--diag":
 			flags.diag = true
@@ -596,6 +609,10 @@ func main() {
 		printUsage()
 		os.Exit(exitRunErr)
 	}
+
+	// 单操作者门:凡带 --id 的会话作用域调用,在分派之前取该会话的排他锁,全程持有。
+	// 一个入口 = 一条不变量(见 session_lock.go)。
+	acquireSessionOperatorLockOrExit(os.Args[1:])
 
 	cmd := os.Args[1]
 	switch cmd {
@@ -1219,6 +1236,8 @@ func printUsage() {
 	p("─── 核心参数 ───────────────────────────────────────────────")
 	p("  --scenario <场景>    ★必选 (open/once/session start): app-test-explore|app-test-baseline|webvisit")
 	p("  --id <id>            会话句柄 (开一次, 后续命令全程复用)")
+	p("  --lock-wait <dur>    单操作者门: 会话被别人占着时最多等多久 (默认 10s; 超时响亮失败并点名占有者 pid)")
+	p("  --force              close 专用逃生口: 跳过会话锁强行收掉会话 (占有者卡死时用)")
 	p("  --mode <mode>        headless | headed | visible — 覆盖场景默认 render (CI 锁 DW_BROWSER_DEFAULT_MODE=headless)")
 	p("  --allow-host <h>     webvisit 信任放行主机 (逗号分隔/可重复), 其 origin 视为本地→写放行")
 	p("  --ephemeral          临时 profile, 命令结束即删 (与 --profile 互斥)")
@@ -1572,6 +1591,15 @@ func injectActionFidelity(output map[string]interface{}, report browser.ActionFi
 	}
 	if report.HitCoverage != "" {
 		output["hit_coverage"] = report.HitCoverage
+	}
+	// 前台切换回报: 这次输入之前, 目标 target 不在浏览器前台, 我们把它提了上来。
+	// 后台 target 会静默吞掉指针输入, 所以"发生过切换"是判断这次派发健康与否的
+	// 一手证据 —— 反复出现意味着有人在和你抢同一个浏览器的前台。
+	if report.BroughtToFront {
+		output["brought_to_front"] = true
+	}
+	if report.InputContention != "" {
+		output["input_contention"] = report.InputContention
 	}
 	// 坐标动作的命中回报: 谁真的收到了这次输入 [BUG-COORD-SILENT-FALSE-SUCCESS]。
 	// 只报告不拦截 —— 人类同样可能点在遮罩上; 但 agent 必须能据此断言。

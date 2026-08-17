@@ -22,6 +22,17 @@ type ActionFidelityReport struct {
 	// legitimately click a backdrop, so the tool must not decide intent — it
 	// must only tell the caller who actually received the input.
 	Hit *CoordinateHit `json:"hit,omitempty"`
+	// BroughtToFront is true when this action had to raise its own page target
+	// to the browser front before dispatching input. It is evidence, not noise:
+	// a background target silently swallows pointer input, so "we had to switch"
+	// is exactly what distinguishes a healthy dispatch from the class of hangs
+	// that used to look like a mysterious timeout.
+	BroughtToFront bool `json:"brought_to_front,omitempty"`
+	// InputContention is set when the front-most target is being flipped back
+	// and forth, i.e. more than one operator is driving the same browser
+	// instance. Input is still serialized (the browser-level input lock holds),
+	// but the two operators disturb each other's rhythm.
+	InputContention string `json:"input_contention,omitempty"`
 	// Dispatched is false only when the action provably failed before any input
 	// reached the page (parse / locator resolution / see-to-click validation /
 	// pointer guard). Callers use it to decide whether the page may have

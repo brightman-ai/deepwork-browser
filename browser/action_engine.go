@@ -54,6 +54,15 @@ type actionEngine struct {
 	// keyboardVisible 镜像当前键盘态（act "keyboard"/焦点自动同步更新；psMu 保护）。
 	keyboardCtl     func(ctx context.Context, show bool) error
 	keyboardVisible bool
+	// browserInputKey 标识"这个引擎坐在哪个浏览器实例上"(ws_url 优先,退到 chrome
+	// pid)。两个会话可能共享同一个浏览器实例(mux-host 多 tab),输入派发窗口要按它
+	// 取第二把锁。空 = 构造不出键,输入临界区退化为不加锁(见 AcquireBrowserInputLock)。
+	browserInputKey string
+}
+
+// setBrowserInputKey 由 browserCoreImpl 在构造完成后注入。单写者:构造期写,执行期只读。
+func (e *actionEngine) setBrowserInputKey(wsURL string, chromePID int) {
+	e.browserInputKey = BrowserInputKey(wsURL, chromePID)
 }
 
 // newActionEngine 创建 ActionEngine 实例。
@@ -1176,158 +1185,37 @@ func (e *actionEngine) executeWithInteractionMode(ctx context.Context, action st
 		}
 	}
 
+	// — 输入派发窗口 —— 所有真实输入动作的单一公共入口 [ARCH-INPUT-FRONTMOST]。
+	//
+	// 校验期到此为止，下面开始真的碰页面。前台确保(bringToFront)与浏览器级输入
+	// 临界区都收口在这一处：每个输入动作只经过一次，滚轮路径原来那两处调用已经
+	// 撤掉。窗口在 switch 结束时关闭 —— DOM settle / 快照不占前台归属。
+	var releaseInputWindow = func() {}
+	if inputDispatchOps[parsed.Op] {
+		release, brought, contention, windowErr := e.enterInputDispatchWindow(ctx)
+		if windowErr != nil {
+			// 前台没摆正 = 输入必然被后台 target 吞掉，页面绝无可能被改动。
+			return nil, e.failedBeforeDispatch(windowErr)
+		}
+		releaseInputWindow = release
+		if brought || contention != "" {
+			e.updateActionFidelity(func(report *ActionFidelityReport) {
+				report.BroughtToFront = brought
+				report.InputContention = contention
+			})
+		}
+	}
+
 	// 直接使用调用方 context（不派生子 context）。
 	// 原因: chromedp 在 NewRemoteAllocator 模式下，context.WithTimeout 派生的 context
 	// 会导致 CDP 响应路由异常（Run 挂起直到超时）。调用方 context 已包含合理超时。
 	// 诊断证据: EvalJS(browserCtx) 370µs OK, Run(WithTimeout(browserCtx, 5s)) 5s 超时。
-	switch parsed.Op {
-	case "click":
-		if err := e.executeClick(ctx, resolvedRef, seeToClick, elementMode); err != nil {
-			return nil, err
-		}
-	case "clickxy":
-		if err := e.executeClickXY(ctx, parsed.CoordX, parsed.CoordY, seeToClick); err != nil {
-			return nil, err
-		}
-	case "clickat":
-		if err := e.executeClickAt(ctx, resolvedRef, parsed.CoordX, parsed.CoordY); err != nil {
-			return nil, err
-		}
-	case "tapxy":
-		if err := e.executeTapXY(ctx, parsed.CoordX, parsed.CoordY); err != nil {
-			return nil, err
-		}
-	case "typetext":
-		if err := e.executeTypeText(ctx, parsed.Value); err != nil {
-			return nil, err
-		}
-	case "zoom":
-		if err := e.executeZoom(ctx, parsed.Value); err != nil {
-			return nil, err
-		}
-	case "keyboard":
-		if err := e.executeKeyboard(ctx, parsed.Value); err != nil {
-			return nil, err
-		}
-	case "dblclickat":
-		if err := e.executeDoubleClickAt(ctx, resolvedRef, parsed.CoordX, parsed.CoordY); err != nil {
-			return nil, err
-		}
-	case "rclickat":
-		if err := e.executeRightClickAt(ctx, resolvedRef, parsed.CoordX, parsed.CoordY); err != nil {
-			return nil, err
-		}
-	case "hoverat":
-		if err := e.executeHoverAt(ctx, resolvedRef, parsed.CoordX, parsed.CoordY); err != nil {
-			return nil, err
-		}
-	case "dragat":
-		if err := e.executeDragAt(ctx, resolvedRef, parsed.CoordX, parsed.CoordY, parsed.CoordX2, parsed.CoordY2); err != nil {
-			return nil, err
-		}
-	case "wheelat":
-		if err := e.executeWheelAt(ctx, resolvedRef, parsed.CoordX, parsed.CoordY, parsed.DeltaX, parsed.DeltaY, parsed.Steps); err != nil {
-			return nil, err
-		}
-	case "swipeat":
-		if err := e.executeSwipeAt(ctx, resolvedRef, parsed.CoordX, parsed.CoordY, parsed.CoordX2, parsed.CoordY2); err != nil {
-			return nil, err
-		}
-	case "tap":
-		if err := e.executeTap(ctx, resolvedRef); err != nil {
-			return nil, err
-		}
-	case "tapat":
-		if err := e.executeTapAt(ctx, resolvedRef, parsed.CoordX, parsed.CoordY); err != nil {
-			return nil, err
-		}
-	case "fill":
-		if strictHuman {
-			err = e.executeStrictHumanText(ctx, resolvedRef, parsed.Value, true, false)
-		} else {
-			err = e.executeFill(ctx, resolvedRef, parsed.Value)
-		}
-		if err != nil {
-			return nil, err
-		}
-	case "fillsecret":
-		if strictHuman {
-			err = e.executeStrictHumanText(ctx, resolvedRef, parsed.Value, true, true)
-		} else {
-			err = e.executeFillSecret(ctx, resolvedRef, parsed.Value)
-		}
-		if err != nil {
-			return nil, err
-		}
-	case "type":
-		if strictHuman {
-			err = e.executeStrictHumanText(ctx, resolvedRef, parsed.Value, false, false)
-		} else {
-			err = e.executeType(ctx, resolvedRef, parsed.Value)
-		}
-		if err != nil {
-			return nil, err
-		}
-	case "press":
-		if strictHuman {
-			err = e.executeStrictHumanPress(ctx, resolvedRef, parsed.Value)
-		} else {
-			err = e.executePress(ctx, resolvedRef, parsed.Value)
-		}
-		if err != nil {
-			return nil, err
-		}
-	case "hover":
-		if err := e.executeHover(ctx, resolvedRef); err != nil {
-			return nil, err
-		}
-	case "scroll":
-		if err := e.executeScroll(ctx, resolvedScrollTarget, parsed.Direction, parsed.Steps, seeToClick); err != nil {
-			return nil, err
-		}
-	case "select":
-		if err := e.executeSelect(ctx, resolvedRef, parsed.Value); err != nil {
-			return nil, err
-		}
-		e.updateActionFidelity(func(report *ActionFidelityReport) {
-			report.Synthetic = true
-			report.SyntheticNote = "native <select> uses DOM state plus synthetic input/change events; this is not evidence that a human can operate the picker"
-		})
-	case "back":
-		if err := e.executeBack(ctx); err != nil {
-			return nil, err
-		}
-	case "forward":
-		if err := e.executeForward(ctx); err != nil {
-			return nil, err
-		}
-	case "focus":
-		if strictHuman {
-			err = e.executeStrictHumanFocus(ctx, resolvedRef)
-		} else {
-			err = e.executeFocusSelector(ctx, resolvedRef)
-		}
-		if err != nil {
-			return nil, err
-		}
-	case "scrollinto":
-		if err := e.executeScrollIntoView(ctx, resolvedRef); err != nil {
-			return nil, err
-		}
-	case "scrollto":
-		if err := e.executeScrollIntoView(ctx, resolvedRef); err != nil {
-			return nil, err
-		}
-	case "check":
-		if err := e.executeCheck(ctx, resolvedRef, seeToClick, elementMode); err != nil {
-			return nil, err
-		}
-	case "uncheck":
-		if err := e.executeUncheck(ctx, resolvedRef, seeToClick, elementMode); err != nil {
-			return nil, err
-		}
-	default:
-		return nil, fmt.Errorf("%w: unsupported op %q", ErrActFailed, parsed.Op)
+	dispatchErr := func() error {
+		defer releaseInputWindow()
+		return e.dispatchParsedAction(ctx, parsed, resolvedRef, resolvedScrollTarget, seeToClick, elementMode, strictHuman)
+	}()
+	if dispatchErr != nil {
+		return nil, dispatchErr
 	}
 
 	// 点击/输入后等待 DOM 稳定（MutationObserver idle 检测）
@@ -1362,6 +1250,171 @@ func (e *actionEngine) executeWithInteractionMode(ctx context.Context, action st
 		return e.snapEngine.GetSnapshotWithSessionMode(ctx, 0)
 	}
 	return e.snapEngine.GetSnapshot(ctx)
+}
+
+// dispatchParsedAction 是动作动词的分派表。它被单独切出来，是为了让"输入派发窗口"
+// 有一个精确的边界：窗口在进入这里之前打开、在离开时立刻关闭，覆盖且只覆盖
+// bringToFront→dispatch→等 ack 这一段。
+func (e *actionEngine) dispatchParsedAction(
+	ctx context.Context,
+	parsed *ParsedAction,
+	resolvedRef string,
+	resolvedScrollTarget string,
+	seeToClick bool,
+	elementMode bool,
+	strictHuman bool,
+) error {
+	var err error
+	switch parsed.Op {
+	case "click":
+		if err := e.executeClick(ctx, resolvedRef, seeToClick, elementMode); err != nil {
+			return err
+		}
+	case "clickxy":
+		if err := e.executeClickXY(ctx, parsed.CoordX, parsed.CoordY, seeToClick); err != nil {
+			return err
+		}
+	case "clickat":
+		if err := e.executeClickAt(ctx, resolvedRef, parsed.CoordX, parsed.CoordY); err != nil {
+			return err
+		}
+	case "tapxy":
+		if err := e.executeTapXY(ctx, parsed.CoordX, parsed.CoordY); err != nil {
+			return err
+		}
+	case "typetext":
+		if err := e.executeTypeText(ctx, parsed.Value); err != nil {
+			return err
+		}
+	case "zoom":
+		if err := e.executeZoom(ctx, parsed.Value); err != nil {
+			return err
+		}
+	case "keyboard":
+		if err := e.executeKeyboard(ctx, parsed.Value); err != nil {
+			return err
+		}
+	case "dblclickat":
+		if err := e.executeDoubleClickAt(ctx, resolvedRef, parsed.CoordX, parsed.CoordY); err != nil {
+			return err
+		}
+	case "rclickat":
+		if err := e.executeRightClickAt(ctx, resolvedRef, parsed.CoordX, parsed.CoordY); err != nil {
+			return err
+		}
+	case "hoverat":
+		if err := e.executeHoverAt(ctx, resolvedRef, parsed.CoordX, parsed.CoordY); err != nil {
+			return err
+		}
+	case "dragat":
+		if err := e.executeDragAt(ctx, resolvedRef, parsed.CoordX, parsed.CoordY, parsed.CoordX2, parsed.CoordY2); err != nil {
+			return err
+		}
+	case "wheelat":
+		if err := e.executeWheelAt(ctx, resolvedRef, parsed.CoordX, parsed.CoordY, parsed.DeltaX, parsed.DeltaY, parsed.Steps); err != nil {
+			return err
+		}
+	case "swipeat":
+		if err := e.executeSwipeAt(ctx, resolvedRef, parsed.CoordX, parsed.CoordY, parsed.CoordX2, parsed.CoordY2); err != nil {
+			return err
+		}
+	case "tap":
+		if err := e.executeTap(ctx, resolvedRef); err != nil {
+			return err
+		}
+	case "tapat":
+		if err := e.executeTapAt(ctx, resolvedRef, parsed.CoordX, parsed.CoordY); err != nil {
+			return err
+		}
+	case "fill":
+		if strictHuman {
+			err = e.executeStrictHumanText(ctx, resolvedRef, parsed.Value, true, false)
+		} else {
+			err = e.executeFill(ctx, resolvedRef, parsed.Value)
+		}
+		if err != nil {
+			return err
+		}
+	case "fillsecret":
+		if strictHuman {
+			err = e.executeStrictHumanText(ctx, resolvedRef, parsed.Value, true, true)
+		} else {
+			err = e.executeFillSecret(ctx, resolvedRef, parsed.Value)
+		}
+		if err != nil {
+			return err
+		}
+	case "type":
+		if strictHuman {
+			err = e.executeStrictHumanText(ctx, resolvedRef, parsed.Value, false, false)
+		} else {
+			err = e.executeType(ctx, resolvedRef, parsed.Value)
+		}
+		if err != nil {
+			return err
+		}
+	case "press":
+		if strictHuman {
+			err = e.executeStrictHumanPress(ctx, resolvedRef, parsed.Value)
+		} else {
+			err = e.executePress(ctx, resolvedRef, parsed.Value)
+		}
+		if err != nil {
+			return err
+		}
+	case "hover":
+		if err := e.executeHover(ctx, resolvedRef); err != nil {
+			return err
+		}
+	case "scroll":
+		if err := e.executeScroll(ctx, resolvedScrollTarget, parsed.Direction, parsed.Steps, seeToClick); err != nil {
+			return err
+		}
+	case "select":
+		if err := e.executeSelect(ctx, resolvedRef, parsed.Value); err != nil {
+			return err
+		}
+		e.updateActionFidelity(func(report *ActionFidelityReport) {
+			report.Synthetic = true
+			report.SyntheticNote = "native <select> uses DOM state plus synthetic input/change events; this is not evidence that a human can operate the picker"
+		})
+	case "back":
+		if err := e.executeBack(ctx); err != nil {
+			return err
+		}
+	case "forward":
+		if err := e.executeForward(ctx); err != nil {
+			return err
+		}
+	case "focus":
+		if strictHuman {
+			err = e.executeStrictHumanFocus(ctx, resolvedRef)
+		} else {
+			err = e.executeFocusSelector(ctx, resolvedRef)
+		}
+		if err != nil {
+			return err
+		}
+	case "scrollinto":
+		if err := e.executeScrollIntoView(ctx, resolvedRef); err != nil {
+			return err
+		}
+	case "scrollto":
+		if err := e.executeScrollIntoView(ctx, resolvedRef); err != nil {
+			return err
+		}
+	case "check":
+		if err := e.executeCheck(ctx, resolvedRef, seeToClick, elementMode); err != nil {
+			return err
+		}
+	case "uncheck":
+		if err := e.executeUncheck(ctx, resolvedRef, seeToClick, elementMode); err != nil {
+			return err
+		}
+	default:
+		return fmt.Errorf("%w: unsupported op %q", ErrActFailed, parsed.Op)
+	}
+	return nil
 }
 
 // waitForDOMSettle 等待 DOM 稳定 — 通过 MutationObserver 检测连续 idleMs 毫秒无变化。
@@ -2262,20 +2315,109 @@ func rendererLooksBusy(ctx context.Context) bool {
 	return !answered && err == nil
 }
 
-// ensureTargetFrontmost 把当前 page target 提到浏览器前台。
+// ensureTargetFrontmost 保证当前 page target 在浏览器前台，返回是否发生了真实切换。
 //
-// 这是滚轮挂死的根因修复：后台 target 的鼠标/滚轮事件不会被处理，
-// Input.dispatchMouseEvent 的 ack 永远不来。命令幂等且只要几毫秒，失败不阻断派发
-// —— 它只是把"输入能不能被处理"这个前提摆正，真正的结论仍由后面的 ack 给出。
-func ensureTargetFrontmost(ctx context.Context) {
-	if _, err := dispatchInputWithAckBudget(ctx, targetActivationBudget,
+// 这是"后台 target 吞输入"的根因修复：后台 target 的鼠标/滚轮/hover 事件不会被
+// 处理，Input.dispatchMouseEvent 的 ack 永远不来（hover 实测挂满 5s 才超时返回）。
+// v0.11.3 只在滚轮路径修了这一处；现在它上提到动作派发的公共入口，所有真实输入
+// 动作共用同一次前置。
+//
+// 与 v0.11.3 的两点差别：
+//   - 先探一次 visibilityState 再决定要不要切。这既省掉"已经在前台还发一遍"的
+//     无谓往返，也让"真的发生了切换"成为可上报的事实（brought_to_front）。
+//   - 失败 fail loud，不再只 WARN。理由是它已经不再是滚轮路径上的尽力而为前置，
+//     而是所有输入动作的公共前提：前提没摆正就派发，等来的只会是那个我们刚刚
+//     根治掉的静默挂死。宁可这一步明确报错，也不要把失败推迟成 ack 超时。
+func ensureTargetFrontmost(ctx context.Context) (bool, error) {
+	if targetLooksFrontmost(ctx) {
+		return false, nil
+	}
+	acked, err := dispatchInputWithAckBudget(ctx, targetActivationBudget,
 		chromedp.ActionFunc(func(ctx context.Context) error {
 			return page.BringToFront().Do(ctx)
-		})); err != nil {
-		logger.Warn(inputLogContext(), "could not bring page target to front before wheel dispatch",
-			"error", err,
-			"note", "a background target silently swallows wheel events; dispatch continues but may not be processed")
+		}))
+	if err != nil {
+		return false, fmt.Errorf("%w: bring target to front before input dispatch: %v", ErrActFailed, err)
 	}
+	if !acked {
+		return false, fmt.Errorf("%w: bring target to front did not return within %s;"+
+			" a background target swallows pointer/keyboard input, so dispatching now would hang silently",
+			ErrActFailed, targetActivationBudget)
+	}
+	return true, nil
+}
+
+// targetLooksFrontmost 探一次"这个 target 现在收不收得到输入"。
+//
+// 用 visibilityState 而不是 hasFocus()：前者精确对应"这个 tab 是不是它那个窗口的
+// 当前 tab"，也就是 CDP 输入能不能被路由过来的那个条件；hasFocus() 还掺进了 OS
+// 级窗口焦点，而窗口焦点不是 bringToFront 能保证的东西，拿它当判据会让我们在
+// 明明已经修好的情况下反复空切。
+//
+// 探针本身失败(没有可用的 CDP context / 超预算)时返回 false：宁可多切一次前台
+// (幂等)，也不要凭猜测跳过前置。
+func targetLooksFrontmost(ctx context.Context) bool {
+	var visible bool
+	acked, err := dispatchInputWithAckBudget(ctx, targetActivationBudget,
+		chromedp.ActionFunc(func(ctx context.Context) error {
+			return chromedp.Evaluate(`document.visibilityState === 'visible'`, &visible).Do(ctx)
+		}))
+	if err != nil || !acked {
+		return false
+	}
+	return visible
+}
+
+// currentTargetID 读当前 chromedp target 的 ID，只用于前台切换账本的记账。
+// 拿不到就返回空串 —— 账本少一条身份不影响输入本身。
+func currentTargetID(ctx context.Context) string {
+	c := chromedp.FromContext(ctx)
+	if c == nil || c.Target == nil {
+		return ""
+	}
+	return string(c.Target.TargetID)
+}
+
+// enterInputDispatchWindow 进入一次输入派发窗口：取浏览器级输入临界区 →
+// 把自己的 target 提到前台 → 把控制权交回给调用方去真正派发。
+//
+// 返回的 release 必须在派发（含等 ack）结束后立刻调用：临界区只覆盖
+// bringToFront→dispatch→ack 这一段，毫秒级。DOM settle、快照这些不占前台归属的
+// 步骤刻意留在临界区之外，否则两个操作者会在对方的 5s settle 上排队。
+func (e *actionEngine) enterInputDispatchWindow(ctx context.Context) (release func(), brought bool, contention string, err error) {
+	lock, lockErr := AcquireBrowserInputLock(e.browserInputKey, DefaultBrowserInputLockWait)
+	if lockErr != nil {
+		return func() {}, false, "", fmt.Errorf("%w: %v", ErrActFailed, lockErr)
+	}
+	release = func() { lock.Release() }
+
+	brought, err = ensureTargetFrontmost(ctx)
+	if err != nil {
+		release()
+		return func() {}, false, "", err
+	}
+	if brought {
+		contention = RecordBringToFront(e.browserInputKey, currentTargetID(ctx))
+		if contention != "" {
+			logger.Warn(inputLogContext(), "front-most target is flipping between operators", "detail", contention)
+		}
+	}
+	return release, brought, contention, nil
+}
+
+// inputDispatchOps 是"会向页面派发真实输入"的动作集合 —— 也就是必须先确保
+// target 在前台的那些。导航/纯读类动作(back/forward/scrollinto/zoom/keyboard)
+// 不派发指针或键盘事件，不需要前台，也不该为它们抢浏览器级临界区。
+var inputDispatchOps = map[string]bool{
+	"click": true, "clickxy": true, "clickat": true,
+	"dblclickat": true, "rclickat": true,
+	"tap": true, "tapat": true, "tapxy": true,
+	"hover": true, "hoverat": true,
+	"wheelat": true, "scroll": true,
+	"drag": true, "dragat": true, "swipeat": true,
+	"press": true, "fill": true, "fillsecret": true,
+	"type": true, "typetext": true, "select": true,
+	"check": true, "uncheck": true, "focus": true,
 }
 
 // wheelPulseAckBudget 把手势剩余预算公平摊给剩余脉冲，并夹在 [下界, 上界] 内。
@@ -2392,14 +2534,15 @@ func runWheelGesture(
 	return true, nil
 }
 
-// dispatchMouseWheelSteps 派发一次滚轮手势：先把 target 提到前台并把指针移到落点，
-// 再按 runWheelGesture 的节奏发出 steps 个脉冲。返回 acked=false 表示手势发完时
-// 渲染器还没 ack。
+// dispatchMouseWheelSteps 派发一次滚轮手势：把指针移到落点，再按 runWheelGesture
+// 的节奏发出 steps 个脉冲。target 前台由公共入口保证（见 enterInputDispatchWindow）。
+// 返回 acked=false 表示手势发完时渲染器还没 ack。
 func dispatchMouseWheelSteps(ctx context.Context, x, y, deltaX, deltaY float64, steps int) (bool, error) {
 	if steps <= 0 {
 		steps = 1
 	}
-	ensureTargetFrontmost(ctx)
+	// 前台确保已上提到 executeWithInteractionMode 的输入派发公共入口，这里不再重复
+	// 调用 —— 单一调用点，避免同一次动作里两次 bringToFront。
 	// 指针 move 同样要等渲染器 ack（后台 target 上实测一并挂死），所以也走预算。
 	if _, err := dispatchInputWithAckBudget(ctx, wheelAckPulseCap,
 		chromedp.ActionFunc(func(ctx context.Context) error {
@@ -4079,9 +4222,9 @@ func (e *actionEngine) executeScroll(ctx context.Context, targetRef, dir string,
 	return err
 }
 
-// dispatchHumanMouseWheel 走人类输入网关派发滚轮手势。先把 target 提到前台（后台
-// target 会把滚轮事件整条吞掉，见 wheelGestureAckBudget 处的根因说明），再按
-// runWheelGesture 的节奏发脉冲，等 ack 的时间有硬上界。
+// dispatchHumanMouseWheel 走人类输入网关派发滚轮手势。target 前台由公共入口保证
+// （后台 target 会把滚轮事件整条吞掉，见 wheelGestureAckBudget 处的根因说明），
+// 这里按 runWheelGesture 的节奏发脉冲，等 ack 的时间有硬上界。
 func (e *actionEngine) dispatchHumanMouseWheel(ctx context.Context, x, y, deltaY float64, steps int) error {
 	if e.humanInput == nil {
 		e.humanInput = NewInputGateway(nil, nil)
@@ -4089,7 +4232,7 @@ func (e *actionEngine) dispatchHumanMouseWheel(ctx context.Context, x, y, deltaY
 	if steps <= 0 {
 		steps = 1
 	}
-	ensureTargetFrontmost(ctx)
+	// 前台确保已上提到输入派发公共入口（见 enterInputDispatchWindow），此处不双调。
 	if _, err := e.humanInput.dispatchMouseEventWithAckBudget(ctx,
 		&InputEvent{Type: "mouse", Event: "mouseMoved", X: x, Y: y},
 		wheelAckPulseCap); err != nil {
