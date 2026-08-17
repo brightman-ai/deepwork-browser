@@ -17,6 +17,7 @@ import (
 	"github.com/chromedp/cdproto/dom"
 	"github.com/chromedp/cdproto/emulation"
 	"github.com/chromedp/cdproto/input"
+	"github.com/chromedp/cdproto/page"
 	"github.com/chromedp/cdproto/runtime"
 	"github.com/chromedp/chromedp"
 )
@@ -2195,35 +2196,246 @@ func dispatchMouseClickAt(ctx context.Context, x, y float64) error {
 	return dispatchMouseClick(ctx, x, y, input.Left, 1)
 }
 
+// ============================================================
+// § 滚轮派发：目标激活 + ack 等待预算 [BUG-WHEEL-DISPATCH-HANGS]
+// ============================================================
+//
+// 症状：直连 headless 会话里 `scroll down N` / `wheelat x,y` 打满 15s 动作看门狗、
+// 无输出，同一页上 click/fill/observe 全部正常。
+//
+// 根因（实测钉死，见 action_wheel_ack_budget_test.go 的契约与下面的数据）：
+//
+//  1. Chromium 的 Input.dispatchMouseEvent 不是"发出去就回"：DevTools 把回调压进
+//     pending_mouse_callbacks_，要等渲染器 ack 了这个输入事件才 sendSuccess。
+//  2. 当页面 target 不是浏览器的前台 target 时，它的鼠标/滚轮事件根本不会被处理，
+//     于是那个 ack 永远不来 —— CDP 命令永久挂住。同一 target 上 Runtime.evaluate
+//     仍然 1~6ms 返回（渲染器主线程是好的），所以 observe/click 看起来一切正常，
+//     只有滚轮整条命令卡死。实测同一页同一 target：
+//     裸发       → mouseWheel 5s 预算打满、页面 scrollY 纹丝不动；
+//     先 bringToFront → mouseWheel 10~15ms 返回、页面正常滚动。
+//  3. 放大器在 executeScroll：一次 `scroll down` 展开成 ceil(viewportH*0.9/120)
+//     个脉冲（1080 视口 = 9 个）逐个串行等 ack，任何单脉冲的慢/挂都被乘以 9，
+//     所以滚动比只发 1~2 个事件的 click 早得多地撞上看门狗。
+//
+// 因此这里做两件事，而不是把超时改长：
+//   - 派发滚轮前先把目标 target 提到前台（根因），
+//   - 给 ack 等待一个上界作为兜底，且超预算时把剩余位移合并成一个事件继续等，
+//     位移一分不丢 —— 这正是真实浏览器在渲染器跟不上时对滚轮做的合并。
+const (
+	// wheelGestureAckBudget 是一整段滚轮手势能花在等 ack 上的总预算。它明显低于
+	// 15s 动作看门狗：滚动要么在预算内完成，要么带着明确的警告返回，不能再以
+	// "无输出超时"的形式失败。
+	wheelGestureAckBudget = 1200 * time.Millisecond
+	// wheelBusyPageAckBudget 是"页面确实在忙"被证实之后放宽到的总预算：这时候
+	// 滚轮不是没人处理，只是排在页面后面，提前返回只会让页面少滚一段。仍然明显
+	// 低于 15s 看门狗。
+	wheelBusyPageAckBudget = 10 * time.Second
+	// wheelAckPulseCap 是单个脉冲的等待上界，也是"渲染器跟不上了"的判定阈值：
+	// 超过它就不再逐个脉冲发，改为合并剩余位移。
+	wheelAckPulseCap = 300 * time.Millisecond
+	// wheelAckMinWait 是等待下界，保证上一条命令已经写进连接后才排下一条。
+	wheelAckMinWait = 25 * time.Millisecond
+	// targetActivationBudget 限制"把 target 提到前台"这步的耗时。它是尽力而为的
+	// 前置修复，不该反过来成为新的卡点。
+	targetActivationBudget = 250 * time.Millisecond
+	// rendererProbeBudget 是"渲染器主线程还在不在干活"这一问的等待上界。
+	rendererProbeBudget = 250 * time.Millisecond
+)
+
+// rendererLooksBusy 判定滚轮没被 ack 到底是"页面滚不动"还是"页面滚得慢" ——
+// 这两者的处置完全相反，不能一刀切：
+//
+//   - 主线程秒回、滚轮却不 ack ⇒ 这个 target 压根没在处理输入（后台 target 就是
+//     这样：Runtime.evaluate 1~6ms，mouseWheel 永久挂）。再等下去不会有任何结果，
+//     应当立刻返回。
+//   - 主线程也不回 ⇒ 页面真的在忙，我们的滚轮排在它后面迟早会被处理。这时提前
+//     返回等于"返回快了、页面少滚了"的静默错报，应当等完。
+//
+// 探针本身出错（没有可用的 CDP context 等）时返回 false：宁可快速返回，也不要凭
+// 猜测去延长等待。
+func rendererLooksBusy(ctx context.Context) bool {
+	answered, err := dispatchInputWithAckBudget(ctx, rendererProbeBudget,
+		chromedp.ActionFunc(func(ctx context.Context) error {
+			var alive bool
+			return chromedp.Evaluate("true", &alive).Do(ctx)
+		}))
+	return !answered && err == nil
+}
+
+// ensureTargetFrontmost 把当前 page target 提到浏览器前台。
+//
+// 这是滚轮挂死的根因修复：后台 target 的鼠标/滚轮事件不会被处理，
+// Input.dispatchMouseEvent 的 ack 永远不来。命令幂等且只要几毫秒，失败不阻断派发
+// —— 它只是把"输入能不能被处理"这个前提摆正，真正的结论仍由后面的 ack 给出。
+func ensureTargetFrontmost(ctx context.Context) {
+	if _, err := dispatchInputWithAckBudget(ctx, targetActivationBudget,
+		chromedp.ActionFunc(func(ctx context.Context) error {
+			return page.BringToFront().Do(ctx)
+		})); err != nil {
+		logger.Warn(inputLogContext(), "could not bring page target to front before wheel dispatch",
+			"error", err,
+			"note", "a background target silently swallows wheel events; dispatch continues but may not be processed")
+	}
+}
+
+// wheelPulseAckBudget 把手势剩余预算公平摊给剩余脉冲，并夹在 [下界, 上界] 内。
+func wheelPulseAckBudget(deadline time.Time, remaining int) time.Duration {
+	if remaining < 1 {
+		remaining = 1
+	}
+	budget := time.Until(deadline) / time.Duration(remaining)
+	if budget > wheelAckPulseCap {
+		budget = wheelAckPulseCap
+	}
+	if budget < wheelAckMinWait {
+		budget = wheelAckMinWait
+	}
+	return budget
+}
+
+// dispatchInputWithAckBudget 派发一条输入 CDP 命令，最多等 budget 拿渲染器 ack。
+// 返回 acked=false 表示命令已按序写进连接，但渲染器还没确认收下。
+//
+// 注意 acked=false 不等于"事件一定会生效"：实测过，排在浏览器输入队列里等 ack 的
+// 事件会在 CLI 进程退出、DevTools 连接断开时被丢弃。所以放弃等待前必须先弄清
+// 渲染器到底是在忙还是根本没在处理输入（见 rendererLooksBusy），不能一律不等。
+//
+// 刻意不用 context.WithTimeout 包 chromedp.Run：取消那个派生 context 会连带拆掉
+// chromedp 对 target 的附着，之后同一会话的所有命令都返回 context canceled（实测）。
+// 改成"命令跑在原 context 的 goroutine 里，调用方只限时等结果"：超预算时 goroutine
+// 随本次动作 context 结束而回收，chan 有缓冲，不泄漏。
+func dispatchInputWithAckBudget(ctx context.Context, budget time.Duration, action chromedp.Action) (bool, error) {
+	return awaitDispatchWithBudget(ctx, budget, func() error {
+		return chromedp.Run(ctx, action)
+	})
+}
+
+// awaitDispatchWithBudget 是 dispatchInputWithAckBudget 的传输无关内核：跑 dispatch，
+// 但最多等 budget 拿它的返回。超预算返回 (false, nil)。
+func awaitDispatchWithBudget(ctx context.Context, budget time.Duration, dispatch func() error) (bool, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if budget <= 0 {
+		budget = wheelAckMinWait
+	}
+	done := make(chan error, 1)
+	go func() { done <- dispatch() }()
+	timer := time.NewTimer(budget)
+	defer timer.Stop()
+	select {
+	case err := <-done:
+		return true, err
+	case <-ctx.Done():
+		return false, ctx.Err()
+	case <-timer.C:
+		return false, nil
+	}
+}
+
 // dispatchMouseWheel 在 (x,y) 派发真实滚轮：先 move 使指针落在目标上，再发 wheel。
 // echarts dataZoom:'inside'、Univer/地图缩放、canvas 内滚动均由 deltaX/deltaY 驱动；
 // deltaY<0 一般为向上滚/放大，deltaY>0 向下滚/缩小（最终方向由页面逻辑决定）。
 func dispatchMouseWheel(ctx context.Context, x, y, deltaX, deltaY float64) error {
-	return dispatchMouseWheelSteps(ctx, x, y, deltaX, deltaY, 1)
+	_, err := dispatchMouseWheelSteps(ctx, x, y, deltaX, deltaY, 1)
+	return err
 }
 
-// dispatchMouseWheelSteps keeps one pointer move and all wheel pulses in a
-// single chromedp task. Besides matching a human wheel gesture more closely,
-// this avoids re-entering the remote target executor once per requested step.
-func dispatchMouseWheelSteps(ctx context.Context, x, y, deltaX, deltaY float64, steps int) error {
+// runWheelGesture 派发一段滚轮手势的脉冲序列。
+//
+// 正常情况下逐个脉冲派发，保持真人滚轮一格一格的 tick 语义。一旦某个脉冲在预算内
+// 没等到 ack（= 渲染器跟不上，或者根本没在处理输入），就把剩余脉冲的位移合并成
+// 一个事件发出去并等它的 ack —— 位移一分不丢，而 N 次串行往返被压成 2 次。
+// 合并本身不是妥协：真实浏览器的 MouseWheelEventQueue 在渲染器跟不上时做的就是
+// 把排队的滚轮事件合并成一个大 delta。
+//
+// 返回 acked=false 表示这段手势最终仍没等到 ack：事件已按序发出，但动作返回时
+// 页面可能还没滚到位。
+func runWheelGesture(
+	steps int,
+	deltaX, deltaY float64,
+	rendererBusy func() bool,
+	pulse func(deltaX, deltaY float64, budget time.Duration) (bool, error),
+) (bool, error) {
 	if steps <= 0 {
 		steps = 1
 	}
-	return chromedp.Run(ctx, chromedp.ActionFunc(func(ctx context.Context) error {
-		if err := input.DispatchMouseEvent(input.MouseMoved, x, y).Do(ctx); err != nil {
-			return err
+	deadline := time.Now().Add(wheelGestureAckBudget)
+	for i := 0; i < steps; i++ {
+		remaining := steps - i
+		acked, err := pulse(deltaX, deltaY, wheelPulseAckBudget(deadline, remaining))
+		if err != nil {
+			return false, fmt.Errorf("step %d/%d: %w", i+1, steps, err)
 		}
-		time.Sleep(18 * time.Millisecond)
-		for i := 0; i < steps; i++ {
-			if err := input.DispatchMouseEvent(input.MouseWheel, x, y).
-				WithDeltaX(deltaX).
-				WithDeltaY(deltaY).
-				Do(ctx); err != nil {
-				return fmt.Errorf("step %d/%d: %w", i+1, steps, err)
+		if acked {
+			continue
+		}
+		if remaining == 1 {
+			// 位移已经全部发出去了，只剩这一条的 ack 没回来 —— 没有可合并的余量，
+			// 继续等也不会让页面多滚一格。
+			return false, nil
+		}
+		// 背压：先分清是"滚不动"还是"滚得慢"。证实页面在忙才放宽预算，
+		// 否则合并完就走，不为一个不会被处理的事件干等。
+		if rendererBusy != nil && rendererBusy() {
+			if extended := time.Now().Add(wheelBusyPageAckBudget); extended.After(deadline) {
+				deadline = extended
 			}
 		}
-		return nil
-	}))
+		merged := float64(remaining - 1)
+		mergedAcked, err := pulse(deltaX*merged, deltaY*merged, time.Until(deadline))
+		if err != nil {
+			return false, fmt.Errorf("coalesced tail of %d steps: %w", remaining-1, err)
+		}
+		return mergedAcked, nil
+	}
+	return true, nil
+}
+
+// dispatchMouseWheelSteps 派发一次滚轮手势：先把 target 提到前台并把指针移到落点，
+// 再按 runWheelGesture 的节奏发出 steps 个脉冲。返回 acked=false 表示手势发完时
+// 渲染器还没 ack。
+func dispatchMouseWheelSteps(ctx context.Context, x, y, deltaX, deltaY float64, steps int) (bool, error) {
+	if steps <= 0 {
+		steps = 1
+	}
+	ensureTargetFrontmost(ctx)
+	// 指针 move 同样要等渲染器 ack（后台 target 上实测一并挂死），所以也走预算。
+	if _, err := dispatchInputWithAckBudget(ctx, wheelAckPulseCap,
+		chromedp.ActionFunc(func(ctx context.Context) error {
+			return input.DispatchMouseEvent(input.MouseMoved, x, y).Do(ctx)
+		})); err != nil {
+		return false, err
+	}
+	acked, err := runWheelGesture(steps, deltaX, deltaY,
+		func() bool { return rendererLooksBusy(ctx) },
+		func(dx, dy float64, budget time.Duration) (bool, error) {
+			return dispatchInputWithAckBudget(ctx, budget, chromedp.ActionFunc(func(ctx context.Context) error {
+				return input.DispatchMouseEvent(input.MouseWheel, x, y).
+					WithDeltaX(dx).
+					WithDeltaY(dy).
+					Do(ctx)
+			}))
+		})
+	if err != nil {
+		return false, err
+	}
+	if !acked {
+		warnWheelAckPending(steps, x, y)
+	}
+	return acked, nil
+}
+
+// warnWheelAckPending 让"滚轮已派发但渲染器没在预算内 ack"这件事是响的，而不是被
+// success:true 吞掉：滚动本身没有失败（事件按序发出去了），但紧接着的 observe
+// 有可能看到还没滚到位的页面。
+func warnWheelAckPending(steps int, x, y float64) {
+	logger.Warn(inputLogContext(), "wheel dispatched without renderer ack within budget",
+		"steps", steps,
+		"x", x,
+		"y", y,
+		"budget", wheelGestureAckBudget.String(),
+		"note", "remaining scroll delta was coalesced into one event, but the renderer never acknowledged it: the page may still be catching up, or may not have scrolled at all — re-observe before trusting the scroll position")
 }
 
 // mouseDragInterpolationSteps 是拖拽时起点→终点之间插入的中间 move 段数。
@@ -2536,7 +2748,7 @@ func (e *actionEngine) executeWheelAt(ctx context.Context, ref string, relX, rel
 		steps = 1
 	}
 	e.recordCoordinateHit(ctx, x, y)
-	if err := dispatchMouseWheelSteps(ctx, x, y, deltaX, deltaY, steps); err != nil {
+	if _, err := dispatchMouseWheelSteps(ctx, x, y, deltaX, deltaY, steps); err != nil {
 		return fmt.Errorf("%w: wheelat: %v", ErrActFailed, err)
 	}
 	return nil
@@ -3861,26 +4073,39 @@ func (e *actionEngine) executeScroll(ctx context.Context, targetRef, dir string,
 	if seeToClick {
 		return e.dispatchHumanMouseWheel(ctx, x, y, deltaY, steps)
 	}
-	for i := 0; i < steps; i++ {
-		if err := dispatchMouseWheel(ctx, x, y, 0, deltaY); err != nil {
-			return err
-		}
-	}
-	return nil
+	// 一次 move + steps 个脉冲 = 一段手势，共享同一份 ack 预算。逐个 steps 调
+	// dispatchMouseWheel 会让每个脉冲各自重发一次 move、各自吃一份预算。
+	_, err = dispatchMouseWheelSteps(ctx, x, y, 0, deltaY, steps)
+	return err
 }
 
+// dispatchHumanMouseWheel 走人类输入网关派发滚轮手势。先把 target 提到前台（后台
+// target 会把滚轮事件整条吞掉，见 wheelGestureAckBudget 处的根因说明），再按
+// runWheelGesture 的节奏发脉冲，等 ack 的时间有硬上界。
 func (e *actionEngine) dispatchHumanMouseWheel(ctx context.Context, x, y, deltaY float64, steps int) error {
 	if e.humanInput == nil {
 		e.humanInput = NewInputGateway(nil, nil)
 	}
-	if err := e.humanInput.dispatchMouseEvent(ctx, &InputEvent{Type: "mouse", Event: "mouseMoved", X: x, Y: y}); err != nil {
+	if steps <= 0 {
+		steps = 1
+	}
+	ensureTargetFrontmost(ctx)
+	if _, err := e.humanInput.dispatchMouseEventWithAckBudget(ctx,
+		&InputEvent{Type: "mouse", Event: "mouseMoved", X: x, Y: y},
+		wheelAckPulseCap); err != nil {
 		return fmt.Errorf("%w: move mouse before scroll: %v", ErrActFailed, err)
 	}
-	for i := 0; i < steps; i++ {
-		event := &InputEvent{Type: "mouse", Event: "mouseWheel", X: x, Y: y, DeltaY: deltaY}
-		if err := e.humanInput.dispatchMouseEvent(ctx, event); err != nil {
-			return fmt.Errorf("%w: dispatch human wheel step %d/%d: %v", ErrActFailed, i+1, steps, err)
-		}
+	acked, err := runWheelGesture(steps, 0, deltaY,
+		func() bool { return rendererLooksBusy(ctx) },
+		func(dx, dy float64, budget time.Duration) (bool, error) {
+			event := &InputEvent{Type: "mouse", Event: "mouseWheel", X: x, Y: y, DeltaX: dx, DeltaY: dy}
+			return e.humanInput.dispatchMouseEventWithAckBudget(ctx, event, budget)
+		})
+	if err != nil {
+		return fmt.Errorf("%w: dispatch human wheel: %v", ErrActFailed, err)
+	}
+	if !acked {
+		warnWheelAckPending(steps, x, y)
 	}
 	return nil
 }
