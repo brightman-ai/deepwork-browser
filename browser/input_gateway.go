@@ -683,17 +683,37 @@ func (g *InputGateway) notifyStateChange() {
 // Cloudflare 反爬终局: 每次 dispatch 前 Gaussian 抖动 + mousePressed 前
 // 插入 1-2px 坐标漂移的 mouseMoved (模拟真人落点微调)。
 func (g *InputGateway) dispatchMouseEvent(dispatchCtx context.Context, event *InputEvent) error {
+	_, err := g.dispatchMouseEventWithAckBudget(dispatchCtx, event, 0)
+	return err
+}
+
+// dispatchMouseEventWithAckBudget 是 dispatchMouseEvent 的限时版本：最多等 budget
+// 拿渲染器 ack，返回 acked=false 表示事件已按序送达但 ack 未到。
+//
+// budget<=0 时：滚轮取默认上界 wheelAckPulseCap（滚轮的 ack 等待没有上界，见
+// action_engine.go 中 wheelGestureAckBudget 处的根因说明），其余事件保持既有的
+// "等到 ack 为止"语义 —— 点击/按键的调用方依赖 ack 来确认输入被消费。
+func (g *InputGateway) dispatchMouseEventWithAckBudget(dispatchCtx context.Context, event *InputEvent, budget time.Duration) (bool, error) {
 	if g.dispatchMouse != nil {
-		return g.dispatchMouse(dispatchCtx, event)
+		if budget > 0 {
+			return awaitDispatchWithBudget(dispatchCtx, budget, func() error {
+				return g.dispatchMouse(dispatchCtx, event)
+			})
+		}
+		return true, g.dispatchMouse(dispatchCtx, event)
 	}
 	if dispatchCtx == nil {
-		return fmt.Errorf("no CDP context available")
+		return false, fmt.Errorf("no CDP context available")
 	}
 
 	// mouseWheel 是特殊类型
 	if event.Event == "mouseWheel" {
+		wheelBudget := budget
+		if wheelBudget <= 0 {
+			wheelBudget = wheelAckPulseCap
+		}
 		time.Sleep(humanJitter())
-		return chromedp.Run(dispatchCtx,
+		return dispatchInputWithAckBudget(dispatchCtx, wheelBudget,
 			chromedp.ActionFunc(func(ctx context.Context) error {
 				return input.DispatchMouseEvent(input.MouseWheel, event.X, event.Y).
 					WithDeltaX(event.DeltaX).
@@ -749,15 +769,17 @@ func (g *InputGateway) dispatchMouseEvent(dispatchCtx context.Context, event *In
 
 	time.Sleep(humanJitter())
 
-	return chromedp.Run(dispatchCtx,
-		chromedp.ActionFunc(func(ctx context.Context) error {
-			return input.DispatchMouseEvent(mouseType, event.X, event.Y).
-				WithButton(button).
-				WithButtons(buttons).
-				WithClickCount(int64(clickCount)).
-				Do(ctx)
-		}),
-	)
+	action := chromedp.ActionFunc(func(ctx context.Context) error {
+		return input.DispatchMouseEvent(mouseType, event.X, event.Y).
+			WithButton(button).
+			WithButtons(buttons).
+			WithClickCount(int64(clickCount)).
+			Do(ctx)
+	})
+	if budget > 0 {
+		return dispatchInputWithAckBudget(dispatchCtx, budget, action)
+	}
+	return true, chromedp.Run(dispatchCtx, action)
 }
 
 // keyVirtualCodeMap 将 key 名映射到 Windows Virtual Key Code。
