@@ -36,6 +36,13 @@ type StructuralState struct {
 	ReadyState   string       `json:"ready_state"`
 	Text         string       `json:"text"`           // compact A11y text
 	Refs         []RefSummary `json:"refs,omitempty"`
+	// DocumentTestIDs: document-wide testid presence (assertion evidence; not
+	// an action capability). Nil = unproven, never "proven absent".
+	DocumentTestIDs []string `json:"document_testids,omitempty"`
+	// DocumentText: rendered visible document text (innerText + visible form
+	// values). text_contains falls back to it for static content (headings,
+	// paragraphs); when present and lacking the target, the miss is proven.
+	DocumentText string `json:"document_text,omitempty"`
 }
 
 // RefSummary — 精简的元素引用

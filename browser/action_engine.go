@@ -1169,7 +1169,7 @@ func (e *actionEngine) executeWithInteractionMode(ctx context.Context, action st
 
 	var resolvedRef string
 	if !noSelectorOps[parsed.Op] && parsed.Ref != "" {
-		ref, err := e.resolveSemanticSelectorForMode(parsed.Ref, sessionMode, elementMode)
+		ref, err := e.resolveSemanticSelectorForModeOp(parsed.Ref, sessionMode, elementMode, parsed.Op)
 		if err != nil {
 			return nil, e.failedBeforeDispatch(err)
 		}
@@ -1179,7 +1179,7 @@ func (e *actionEngine) executeWithInteractionMode(ctx context.Context, action st
 	}
 	var resolvedScrollTarget string
 	if parsed.Op == "scroll" && parsed.ScrollTarget != "" {
-		resolvedScrollTarget, err = e.resolveSemanticSelectorForMode(parsed.ScrollTarget, sessionMode, elementMode)
+		resolvedScrollTarget, err = e.resolveSemanticSelectorForModeOp(parsed.ScrollTarget, sessionMode, elementMode, "scrollinto")
 		if err != nil {
 			return nil, e.failedBeforeDispatch(err)
 		}
@@ -1450,6 +1450,8 @@ func evalAwaitPromise(p *runtime.EvaluateParams) *runtime.EvaluateParams {
 	return p.WithAwaitPromise(true)
 }
 
+var scrollIntoViewOps = map[string]bool{"scrollinto": true, "scrollto": true}
+
 // resolveSemanticSelector 将语义选择器解析为内部可执行的 ref 或 CSS 选择器字符串。
 // 不支持 session ref（@rN），请使用 resolveSemanticSelectorWithSession。
 func (e *actionEngine) resolveSemanticSelector(selector string) (string, error) {
@@ -1463,6 +1465,12 @@ func (e *actionEngine) resolveSemanticSelectorWithSession(selector string, sessi
 }
 
 func (e *actionEngine) resolveSemanticSelectorForMode(selector string, sessionMode, elementMode bool) (string, error) {
+	return e.resolveSemanticSelectorForModeOp(selector, sessionMode, elementMode, "")
+}
+
+// resolveSemanticSelectorForModeOp threads the action op so view-only gestures
+// (scrollinto/scrollto) may use the DOM fallback even in see-to-click mode.
+func (e *actionEngine) resolveSemanticSelectorForModeOp(selector string, sessionMode, elementMode bool, op string) (string, error) {
 	sel, err := ParseSelector(selector)
 	if err != nil {
 		return "", fmt.Errorf("%w: %v", ErrActFailed, err)
@@ -1486,14 +1494,22 @@ func (e *actionEngine) resolveSemanticSelectorForMode(selector string, sessionMo
 		return e.resolveElementModeSelector(sel)
 	}
 
+	currentOp := op
 	switch sel.SType {
 	case SelectorTestID:
 		meta, ok := e.snapEngine.LookupByTestID(sel.TestID)
 		if ok && (meta.BackendNodeID != 0 || e.seeToClick) {
 			return meta.Ref, nil
 		}
+		// scrollinto/scrollto are view-only gestures (no authority mutation):
+		// an a11y-clipped target may still be scrolled into view by its DOM
+		// selector. The fresh observation after the scroll is what grants the
+		// element into the visible set — the fallback mints no capability.
+		if e.seeToClick && scrollIntoViewOps[currentOp] {
+			return `[data-testid="` + sel.TestID + `"]`, nil
+		}
 		if e.seeToClick {
-			return "", fmt.Errorf("%w: #%s is not an actionable element from the most recent visible observation — scroll and observe again", ErrRefNotFound, sel.TestID)
+			return "", e.failedBeforeDispatch(fmt.Errorf("%w: #%s is not an actionable element from the most recent visible observation — scroll and observe again", ErrRefNotFound, sel.TestID))
 		}
 		// 回退到 CSS 选择器
 		return `[data-testid="` + sel.TestID + `"]`, nil
@@ -3218,9 +3234,25 @@ func (e *actionEngine) executeStrictHumanPress(ctx context.Context, ref, key str
 		})
 	}
 	if mods, baseKey, hasMod := parseKeyCombo(key); hasMod {
+		// Browser-chrome chords act on the browser, not the DOM: Ctrl/Cmd+R is
+		// the human reload gesture. A raw CDP key event never reaches Chrome's
+		// UI accelerators, so it must be executed as a real navigation reload.
+		if isReloadChord(mods, baseKey) {
+			return chromedp.Run(ctx, chromedp.Evaluate(`location.reload()`, nil))
+		}
 		return dispatchModifierCombo(ctx, mods, baseKey)
 	}
 	return chromedp.Run(ctx, chromedp.KeyEvent(mapKeyName(key)))
+}
+
+// isReloadChord reports whether a modifier combo is the browser reload
+// gesture (Ctrl+R / Cmd+R; F5 has no modifier and stays a DOM key).
+func isReloadChord(mods input.Modifier, baseKey string) bool {
+	key := strings.ToLower(strings.TrimSpace(baseKey))
+	if key != "r" {
+		return false
+	}
+	return mods&(input.ModifierCtrl|input.ModifierMeta) != 0
 }
 
 // executeType 执行文本输入操作，密码字段拒绝 [TC-09-U-07, TC-09-U-08]。
@@ -3720,6 +3752,12 @@ func (e *actionEngine) executePress(ctx context.Context, ref string, key string)
 	// and never sets ctrlKey/metaKey, so "press Control+b" used to insert a
 	// literal 'b'. We bypass that path entirely for combos.
 	if mods, baseKey, hasMod := parseKeyCombo(key); hasMod {
+		// Browser-chrome chords act on the browser, not the DOM: Ctrl/Cmd+R is
+		// the human reload gesture — raw CDP key events never reach Chrome's UI
+		// accelerators, so execute it as a real navigation reload.
+		if isReloadChord(mods, baseKey) {
+			return chromedp.Run(ctx, chromedp.Evaluate(`location.reload()`, nil))
+		}
 		return dispatchModifierCombo(ctx, mods, baseKey)
 	}
 

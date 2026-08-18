@@ -187,6 +187,9 @@ func (e *snapshotEngine) GetSnapshot(ctx context.Context) (*Snapshot, error) {
 	// 步骤 3: 过滤 + DFS Refs 分配
 	refs := extractInteractableRefs(axNodes)
 
+	// 步骤 3.5: 文档级在场证据（testid 清单 + 渲染文本）——断言层证据，与动作普查分离
+	presence, _ := probeDocumentPresence(ctx)
+
 	// 步骤 4: 检查 Refs 数量，< 3 时走 fallback [IR-07, TC-09-U-03]。
 	// explore 的可见集允许只有 1-2 个控件（空状态/确认页很常见），且还需先
 	// 给 DOM-only 控件一次 enrichment 机会，因此仅旧交互模型在这里 fallback。
@@ -277,7 +280,47 @@ func (e *snapshotEngine) GetSnapshot(ctx context.Context) (*Snapshot, error) {
 		VisibleInteractableCount:   visibleInteractableCount,
 		OffscreenInteractableCount: documentInteractableCount - visibleInteractableCount,
 		Census:                     census,
+		DocumentTestIDs:            presence.TestIDs,
+		DocumentText:               presence.Text,
 	}, nil
+}
+
+type documentPresenceProbe struct {
+	TestIDs []string `json:"testids"`
+	Text    string   `json:"text"`
+}
+
+// probeDocumentPresence enumerates every data-testid in the document and the
+// rendered visible text (innerText, capped at 256KiB). Failure leaves presence
+// facts empty and the assertion layer fails closed, never a false witness.
+func probeDocumentPresence(ctx context.Context) (documentPresenceProbe, error) {
+	var probe documentPresenceProbe
+	probeCtx, cancel := context.WithTimeout(ctx, a11yProbeTimeout)
+	defer cancel()
+	err := chromedp.Run(probeCtx, chromedp.Evaluate(`(() => {
+		const seen = new Set();
+		document.querySelectorAll('[data-testid]').forEach((el) => {
+			const v = el.getAttribute('data-testid');
+			if (v) seen.add(v);
+		});
+		// innerText excludes form control values; editors hold canonical content
+		// in textarea/input values, which are equally rendered human-visible text.
+		const formText = [...document.querySelectorAll('input, textarea')]
+			.filter((el) => {
+				const r = el.getBoundingClientRect();
+				const cs = getComputedStyle(el);
+				return r.width > 0 && r.height > 0 && cs.visibility !== 'hidden' && cs.display !== 'none';
+			})
+			.map((el) => el.value || '')
+			.filter(Boolean)
+			.join('\n');
+		const text = (((document.body && document.body.innerText) || '') + '\n' + formText);
+		return { testids: [...seen], text: text.slice(0, 262144) };
+	})()`, &probe))
+	if err != nil {
+		return documentPresenceProbe{}, err
+	}
+	return probe, nil
 }
 
 // domFallback 当 A11y Refs < 3 时的 DOM fallback [TC-09-U-03]。

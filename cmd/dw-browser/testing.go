@@ -197,9 +197,15 @@ func isNLGoal(action string) bool {
 	case "wait", "noop", "none", "back", "forward":
 		return false
 	}
+	// 与引擎动词表同源：ParseAction 的结构化动作（带参形态）+ runner 快路径。
+	// 漏一个动词 = 确定性 spec 被误判成 NL 目标，preflight 直接拒跑。
 	for _, p := range []string{
-		"click ", "fill ", "press ", "scroll ", "scrollto ", "scrollinto ", "select ",
-		"navigate ", "wait ", "type ", "hover ",
+		"click ", "clickat ", "clickxy ", "dblclickat ", "dragat ", "rclickat ",
+		"fill ", "fillsecret ", "type ", "typetext ", "press ", "keyboard ",
+		"hover ", "hoverat ", "focus ", "check ", "uncheck ", "select ",
+		"scroll ", "scrollto ", "scrollinto ", "wheelat ", "swipeat ",
+		"tap ", "tapat ", "tapxy ", "native ", "hide ", "show ", "zoom ",
+		"navigate ", "wait ",
 	} {
 		if strings.HasPrefix(lower, p) {
 			return false
@@ -1365,6 +1371,21 @@ func runJourney(args []string) {
 		browserOpts := browserOptionsFromFlags(flags)
 		bc := newBrowserCore(profileID, browserOpts...)
 		applyInteractionScenario(bc, flags.scenario)
+		// Mirror dw-browser open: persona device metrics (dpr/mobile emulation)
+		// must be replayed before the first navigation, and browser-chrome sim
+		// enabled, or the journey browser diverges from open on the same persona
+		// (a11y tree, svh/innerHeight facts, keyboard simulation availability).
+		replayViewportProfile(bc, resolveSessionPresetID(flags), flags.viewportW, flags.viewportH, flags.personaTouch, "journey")
+		if bcc, ok := bc.(browser.BrowserChromeCapable); ok {
+			if bcc.EnableBrowserChromeSim() {
+				vfCtx, vfCancel := context.WithTimeout(context.Background(), 30*time.Second)
+				err := bcc.ApplyViewportFacts(vfCtx, false, true)
+				vfCancel()
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "dw-browser journey: establish viewport facts: %v\n", err)
+				}
+			}
+		}
 
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 		defer cancel()
@@ -1463,6 +1484,58 @@ func runJourney(args []string) {
 // § ActionExecutor 实现 — session 模式
 // ============================================================
 
+// actWithPreDispatchRetry executes attempt and, only while the engine proves
+// the failure died before dispatch (typed validation rejections: stale refs
+// after reload/navigation, targets below the fold), scrolls the named remedy
+// into view, settles for the a11y rebuild, refreshes the observation, and
+// retries. Post-dispatch and unknown-stage failures are never replayed.
+func actWithPreDispatchRetry(
+	ctx context.Context,
+	action string,
+	attempt func() error,
+	impl browser.BrowserCore,
+	snap func() error,
+) error {
+	err := attempt()
+	for retries := 0; err != nil && actionFailedBeforeDispatch(impl) && retries < 5; retries++ {
+		if scrollAction := scrollRecoveryAction(action); scrollAction != "" {
+			// The see-to-click rejection names the remedy: scroll, then observe
+			// again. scrollinto is a view-only gesture; the fresh observation
+			// grants the target into the visible set on its own merits.
+			_, _ = impl.Act(ctx, scrollAction, false)
+		}
+		// Chrome recomputes the a11y tree lazily after a programmatic scroll:
+		// an immediate snapshot can still carry the pre-scroll offscreen tree.
+		time.Sleep(600 * time.Millisecond)
+		if snap != nil {
+			if snapErr := snap(); snapErr != nil {
+				break
+			}
+		}
+		err = attempt()
+	}
+	return err
+}
+
+// scrollRecoveryAction derives the explicit scroll gesture from an action's
+// selector, when the action is a pointable op on a #testid/#id target.
+func scrollRecoveryAction(action string) string {
+	fields := strings.Fields(action)
+	if len(fields) < 2 {
+		return ""
+	}
+	switch fields[0] {
+	case "click", "fill", "type", "hover", "focus", "check", "uncheck", "press", "select":
+	default:
+		return ""
+	}
+	target := fields[1]
+	if strings.HasPrefix(target, "#") && len(target) > 1 && !strings.ContainsAny(target, `'"`) {
+		return "scrollinto " + target
+	}
+	return ""
+}
+
 // cliActionExecutor 连接已有 session 的 ActionExecutor 实现。
 type cliActionExecutor struct {
 	sessionID   string
@@ -1508,10 +1581,15 @@ func (e *cliActionExecutor) executeWithMode(ctx context.Context, action string, 
 		return e.executeNLGoal(ctx, trimmed, mode)
 	}
 
-	return e.executeStructuredAction(ctx, action, mode)
+	return actWithPreDispatchRetry(ctx, action, func() error {
+		return e.executeStructuredActionOnce(ctx, action, mode)
+	}, e.impl, func() error {
+		_, snapErr := e.impl.Snap(ctx)
+		return snapErr
+	})
 }
 
-func (e *cliActionExecutor) executeStructuredAction(ctx context.Context, action string, mode browser.InteractionMode) error {
+func (e *cliActionExecutor) executeStructuredActionOnce(ctx context.Context, action string, mode browser.InteractionMode) error {
 	if mode == browser.InteractionModeElement {
 		capable, ok := e.impl.(browser.SessionInteractionModeActCapable)
 		if !ok {
@@ -1553,7 +1631,7 @@ func (e *cliActionExecutor) executeNLGoal(ctx context.Context, goal string, mode
 		case "wait", "noop", "none":
 			// The real synchronization is represented by step.Wait.
 		default:
-			if err := e.executeStructuredAction(ctx, step.Action, mode); err != nil {
+			if err := e.executeStructuredActionOnce(ctx, step.Action, mode); err != nil {
 				return fmt.Errorf("nl-exec %q → step %q: %w", goal, step.Description, err)
 			}
 		}
@@ -1651,10 +1729,15 @@ func (e *oneshotActionExecutor) executeWithMode(ctx context.Context, action stri
 		return e.executeNLGoal(ctx, trimmed, mode)
 	}
 
-	return e.executeStructuredAction(ctx, action, mode)
+	return actWithPreDispatchRetry(ctx, action, func() error {
+		return e.executeStructuredActionOnce(ctx, action, mode)
+	}, e.impl, func() error {
+		_, snapErr := e.impl.Snap(ctx)
+		return snapErr
+	})
 }
 
-func (e *oneshotActionExecutor) executeStructuredAction(ctx context.Context, action string, mode browser.InteractionMode) error {
+func (e *oneshotActionExecutor) executeStructuredActionOnce(ctx context.Context, action string, mode browser.InteractionMode) error {
 	if mode == browser.InteractionModeElement {
 		capable, ok := e.impl.(browser.InteractionModeActCapable)
 		if !ok {
@@ -1685,7 +1768,7 @@ func (e *oneshotActionExecutor) executeNLGoal(ctx context.Context, goal string, 
 		case "wait", "noop", "none":
 			// The real synchronization is represented by step.Wait.
 		default:
-			if err := e.executeStructuredAction(ctx, step.Action, mode); err != nil {
+			if err := e.executeStructuredActionOnce(ctx, step.Action, mode); err != nil {
 				return fmt.Errorf("nl-exec %q → step %q: %w", goal, step.Description, err)
 			}
 		}

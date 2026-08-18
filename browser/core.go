@@ -95,6 +95,15 @@ type Snapshot struct {
 	VisibleInteractableCount   int
 	OffscreenInteractableCount int
 	Census                     []CensusEntry
+	// DocumentTestIDs is the document-wide data-testid presence inventory,
+	// always populated on the a11y path. Assertion authority (exists/gone on
+	// testids) consults it, so non-interactable testid elements (sections,
+	// cards) are provable without forcing them into the action census.
+	DocumentTestIDs []string
+	// DocumentText is the rendered visible document text (innerText + visible
+	// form values), capped at 256KiB. text_contains consults it after the a11y
+	// compact text: presence there is honest; absence there is a proven miss.
+	DocumentText string
 }
 
 // CensusEntry is a non-actionable document inventory item. Keeping it as a

@@ -134,13 +134,15 @@ func structuralFromSnap(snap *browser.Snapshot) *StructuralState {
 		})
 	}
 	return &StructuralState{
-		SnapshotType: snap.SnapshotType,
-		RefsCount:    len(snap.Refs),
-		TextHash:     textHash(snap.Text),
-		LoadState:    snap.LoadState,
-		ReadyState:   snap.ReadyState,
-		Text:         snap.Text,
-		Refs:         refs,
+		SnapshotType:    snap.SnapshotType,
+		RefsCount:       len(snap.Refs),
+		TextHash:        textHash(snap.Text),
+		LoadState:       snap.LoadState,
+		ReadyState:      snap.ReadyState,
+		Text:            snap.Text,
+		Refs:            refs,
+		DocumentTestIDs: snap.DocumentTestIDs,
+		DocumentText:    snap.DocumentText,
 	}
 }
 

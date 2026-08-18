@@ -331,6 +331,15 @@ func evalExists(obs *Observation, args string) (bool, string) {
 			return true, fmt.Sprintf("found element matching %s", args)
 		}
 	}
+	// Document-presence fallback: a testid on a non-interactable element
+	// (section/card) is proven by the document inventory, not the action census.
+	if testid, ok := filters["testid"]; ok && testid != "" {
+		for _, present := range obs.Structural.DocumentTestIDs {
+			if present == testid {
+				return true, fmt.Sprintf("document testid presence contains %q", testid)
+			}
+		}
+	}
 	return false, fmt.Sprintf("no element matching %s", args)
 }
 
@@ -351,6 +360,19 @@ func evalGone(obs *Observation, args string) (bool, string) {
 	for _, ref := range obs.Structural.Refs {
 		if refMatches(ref, filters) {
 			return false, fmt.Sprintf("element still present: %s", args)
+		}
+	}
+	// gone() on a testid needs the document inventory: absence from the action
+	// census alone never proves absence from the document. An unpopulated
+	// inventory means unproven, not gone.
+	if testid, ok := filters["testid"]; ok && testid != "" {
+		if obs.Structural.DocumentTestIDs == nil {
+			return false, fmt.Sprintf("BLOCKED: document testid inventory missing; cannot prove %q gone", testid)
+		}
+		for _, present := range obs.Structural.DocumentTestIDs {
+			if present == testid {
+				return false, fmt.Sprintf("document testid presence still contains %q", testid)
+			}
 		}
 	}
 	return true, fmt.Sprintf("element gone: %s", args)
@@ -410,9 +432,15 @@ func evalTextContains(obs *Observation, args string) (bool, string) {
 	}
 	target := stripQuotes(args)
 	if strings.Contains(obs.Structural.Text, target) {
-		return true, fmt.Sprintf("text contains %q", target)
+		return true, fmt.Sprintf("A11y text contains %q", target)
 	}
-	return false, fmt.Sprintf("text does not contain %q", target)
+	if obs.Structural.DocumentText != "" {
+		if strings.Contains(obs.Structural.DocumentText, target) {
+			return true, fmt.Sprintf("rendered document text contains %q", target)
+		}
+		return false, fmt.Sprintf("complete rendered document text has no witness containing %q", target)
+	}
+	return false, fmt.Sprintf("BLOCKED: incomplete structural text has no witness containing %q", target)
 }
 
 // evalURLMatches 检查当前页面 URL 是否包含 pattern。
