@@ -201,3 +201,50 @@ func TestActionEngineNativeSelectWithoutPicker(t *testing.T) {
 		t.Fatalf("select events = %v, want bubbling input/change from the first ArrowDown", events)
 	}
 }
+
+// 视口坐标出口的**对称性**: click/hover/wheel 早就有免 selector 的视口版, 双击与拖拽却只有
+// 需要 selector 的 dblclickat/dragat —— canvas 类 UI 上元素不进 a11y 树时那两个根本用不了,
+// 于是"双击图元改名""从连接点拖出一条线"这两类核心手势无法用真实鼠标驱动。
+// (2026-08-20 实测于 deepwork-teamworkbench album 画布, 合成 pointer 事件驱不动 vue-flow 连线握手。)
+func TestParseViewportDoubleClickAndDrag(t *testing.T) {
+	dbl, err := ParseAction("dblclick 927,437")
+	if err != nil {
+		t.Fatalf("dblclick x,y should parse: %v", err)
+	}
+	if dbl.Op != "dblclickxy" || dbl.Ref != "" || dbl.CoordX != 927 || dbl.CoordY != 437 {
+		t.Fatalf("unexpected dblclick parse: %+v", dbl)
+	}
+
+	drag, err := ParseAction("drag 100,200 300,400")
+	if err != nil {
+		t.Fatalf("drag x1,y1 x2,y2 should parse: %v", err)
+	}
+	if drag.Op != "dragxy" || drag.Ref != "" {
+		t.Fatalf("unexpected drag op: %+v", drag)
+	}
+	if drag.CoordX != 100 || drag.CoordY != 200 || drag.CoordX2 != 300 || drag.CoordY2 != 400 {
+		t.Fatalf("unexpected drag coords: %+v", drag)
+	}
+
+	// 缺第二个点必须报错, 不能静默当成元素内相对拖拽。
+	if _, err := ParseAction("drag 100,200"); err == nil {
+		t.Fatal("drag with a single point should fail loudly")
+	}
+
+	// 带 selector 的旧形式保持不变 (不是坐标对 → 不抢这条语法)。
+	if a, err := ParseAction("dragat css=#chart 20% 50% 80% 50%"); err != nil || a.Op != "dragat" || a.Ref == "" {
+		t.Fatalf("dragat with selector must stay intact: %+v err=%v", a, err)
+	}
+}
+
+// 新动词必须被算作"会派发真实输入" —— 否则不抢前台/输入临界区, 事件可能发到后台 target。
+func TestViewportGestureOpsDispatchInput(t *testing.T) {
+	for _, op := range []string{"dblclickxy", "dragxy"} {
+		if !inputDispatchOps[op] {
+			t.Fatalf("op %q must be in inputDispatchOps", op)
+		}
+		if !IsMutatingOp(op) {
+			t.Fatalf("op %q must be classified as a write", op)
+		}
+	}
+}

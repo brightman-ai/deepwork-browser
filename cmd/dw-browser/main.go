@@ -33,7 +33,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-const version = "0.11.4"
+const version = "0.11.5"
 
 // ActionEngine returns its own explicit error at 15s. The CLI watchdog is a
 // slightly wider process-level fence covering every BrowserCore implementation.
@@ -1274,6 +1274,8 @@ func printUsage() {
 	p("                                   click/fill 输入框后自动弹起=真机语义, 键盘区点击拒绝)")
 	p("  坐标动作 (canvas 图表无子 DOM, 用坐标命中图元):")
 	p("    click <x>,<y>                  视口 CSS px 绝对坐标点击(截图像素需先除以 dpr)")
+	p("    dblclick <x>,<y>               视口 CSS px 真实双击 (canvas 上「双击改名」这类手势)")
+	p("    drag <x1>,<y1> <x2>,<y2>       视口 CSS px 真实拖拽 (从连接点拖出连线/拖动图元)")
 	p("    tapxy <xf> <yf>                视口比例坐标真实点击 (不进 a11y 树的控件最通用解)")
 	p("    typetext <text>                向当前焦点插文本 (配合 tapxy 聚焦自定义 input)")
 	p("    clickat/dblclickat/rclickat css=#chart <x%> <y%>   元素内相对坐标点击/双击/右键")
@@ -2514,7 +2516,7 @@ func isPointerAction(action string) bool {
 		return false
 	}
 	switch strings.ToLower(fields[0]) {
-	case "click", "clickat", "dblclickat", "tap", "tapat", "tapxy":
+	case "click", "clickat", "dblclick", "dblclickat", "drag", "tap", "tapat", "tapxy":
 		return true
 	default:
 		return false
