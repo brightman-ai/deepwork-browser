@@ -240,7 +240,7 @@ func (e *actionEngine) autoSyncKeyboard(ctx context.Context) {
 
 // ParsedAction 是解析后的操作结构。
 type ParsedAction struct {
-	Op      string  // "click" | "clickxy" | "clickat" | "hoverat" | "dragat" | "tap" | "tapat" | "type" | "scroll" | "hover" | "select"
+	Op      string  // "click" | "clickxy" | "dblclickxy" | "dragxy" | "clickat" | "hoverat" | "dragat" | "tap" | "tapat" | "type" | "scroll" | "hover" | "select"
 	Ref     string  // Element Ref（如 "e3"）或语义选择器（如 "#testid", "button:'name'"）
 	Value   string  // type/select 的值
 	CoordX  float64 // 有 Ref: 元素内相对 X(0..1)；无 Ref: 视口 CSS px
@@ -607,6 +607,45 @@ func ParseAction(action string) (*ParsedAction, error) {
 		}
 	}
 
+	// Vision-native absolute double-click / drag: 与 `click x,y` 同一套截图派生的视口 CSS 像素。
+	//
+	// 为什么必须有: 坐标动作是 canvas 类 UI 的唯一通路 (元素不进 a11y 树时 clickat/dragat 那种
+	// "selector 提供坐标原点"的形式根本用不了)。而这套坐标出口原先是**不对称**的 ——
+	// click/hover/wheel/tap 都有免 selector 的视口版, 唯独双击与拖拽只有需要 selector 的
+	// dblclickat/dragat。后果: 画布上"双击图元改名"和"从连接点拖出一条线"这两类最核心的手势
+	// 无法用真实鼠标驱动, 只能退回合成事件 (而合成 pointer 事件驱不动 vue-flow 之类的连线握手)。
+	// 2026-08-20 实测于 deepwork-teamworkbench album 画布。
+	if op == "dblclick" && len(parts) >= 2 {
+		if x, y, matched, err := parseViewportCoordinatePair(parts[1]); matched {
+			if err != nil {
+				return nil, err
+			}
+			if len(parts) != 2 {
+				return nil, fmt.Errorf("%w: dblclick x,y accepts no additional arguments", ErrActFailed)
+			}
+			return &ParsedAction{Op: "dblclickxy", CoordX: x, CoordY: y}, nil
+		}
+	}
+	if op == "drag" && len(parts) >= 3 {
+		x1, y1, matched1, err1 := parseViewportCoordinatePair(parts[1])
+		if matched1 {
+			if err1 != nil {
+				return nil, err1
+			}
+			x2, y2, matched2, err2 := parseViewportCoordinatePair(parts[2])
+			if !matched2 {
+				return nil, fmt.Errorf("%w: drag requires a second x,y point (viewport CSS px)", ErrActFailed)
+			}
+			if err2 != nil {
+				return nil, err2
+			}
+			if len(parts) != 3 {
+				return nil, fmt.Errorf("%w: drag x1,y1 x2,y2 accepts no additional arguments", ErrActFailed)
+			}
+			return &ParsedAction{Op: "dragxy", CoordX: x1, CoordY: y1, CoordX2: x2, CoordY2: y2}, nil
+		}
+	}
+
 	// Vision-native absolute hover/wheel: the first argument is the same
 	// screenshot-derived CSS-pixel x,y pair accepted by click. These forms do
 	// not need an artificial selector merely to provide a coordinate origin.
@@ -919,7 +958,7 @@ func validatePressKeySyntax(key string) error {
 	switch canonical {
 	case "Enter", "Tab", "Space", "Escape", "Backspace", "Delete",
 		"ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight",
-		"Home", "End", "PageUp", "PageDown":
+		"Home", "End", "PageUp", "PageDown", "Insert":
 		return nil
 	}
 	if _, ok := keyVirtualCodeMap[strings.ToUpper(canonical)]; ok && strings.HasPrefix(strings.ToUpper(canonical), "F") {
@@ -1165,7 +1204,7 @@ func (e *actionEngine) executeWithInteractionMode(ctx context.Context, action st
 	// page-level 操作不需要选择器
 	// tapxy 是绝对视口坐标点击，刻意不解析 ref（绕过 a11y/locator）。
 	// typetext 向当前聚焦元素插入文本，同样刻意不解析 ref。
-	noSelectorOps := map[string]bool{"scroll": true, "back": true, "forward": true, "clickxy": true, "tapxy": true, "typetext": true, "zoom": true, "keyboard": true}
+	noSelectorOps := map[string]bool{"scroll": true, "back": true, "forward": true, "clickxy": true, "dblclickxy": true, "dragxy": true, "tapxy": true, "typetext": true, "zoom": true, "keyboard": true}
 
 	var resolvedRef string
 	if !noSelectorOps[parsed.Op] && parsed.Ref != "" {
@@ -1272,6 +1311,14 @@ func (e *actionEngine) dispatchParsedAction(
 		}
 	case "clickxy":
 		if err := e.executeClickXY(ctx, parsed.CoordX, parsed.CoordY, seeToClick); err != nil {
+			return err
+		}
+	case "dblclickxy":
+		if err := e.executeDoubleClickXY(ctx, parsed.CoordX, parsed.CoordY); err != nil {
+			return err
+		}
+	case "dragxy":
+		if err := e.executeDragXY(ctx, parsed.CoordX, parsed.CoordY, parsed.CoordX2, parsed.CoordY2); err != nil {
 			return err
 		}
 	case "clickat":
@@ -2426,11 +2473,11 @@ func (e *actionEngine) enterInputDispatchWindow(ctx context.Context) (release fu
 // 不派发指针或键盘事件，不需要前台，也不该为它们抢浏览器级临界区。
 var inputDispatchOps = map[string]bool{
 	"click": true, "clickxy": true, "clickat": true,
-	"dblclickat": true, "rclickat": true,
+	"dblclickat": true, "dblclickxy": true, "rclickat": true,
 	"tap": true, "tapat": true, "tapxy": true,
 	"hover": true, "hoverat": true,
 	"wheelat": true, "scroll": true,
-	"drag": true, "dragat": true, "swipeat": true,
+	"drag": true, "dragat": true, "dragxy": true, "swipeat": true,
 	"press": true, "fill": true, "fillsecret": true,
 	"type": true, "typetext": true, "select": true,
 	"check": true, "uncheck": true, "focus": true,
@@ -2756,6 +2803,43 @@ func (e *actionEngine) executeClickXY(ctx context.Context, x, y float64, seeToCl
 		return e.dispatchHumanMouseClick(ctx, x, y)
 	}
 	return dispatchMouseClickAt(ctx, x, y)
+}
+
+// executeDoubleClickXY 对视口 CSS 像素坐标执行真实鼠标左键**双击**。
+// 与 executeClickXY 同一套前置: 视口越界拒发、guardPoint、命中回报 (坐标动作绕过 a11y
+// 模型但不绕过证据)。clickCount=2 由 CDP 携带, 页面收到的是真正的 dblclick。
+func (e *actionEngine) executeDoubleClickXY(ctx context.Context, x, y float64) error {
+	if err := e.guardViewportPoint(ctx, "double-click", x, y); err != nil {
+		return err
+	}
+	e.recordCoordinateHit(ctx, x, y)
+	return dispatchMouseClick(ctx, x, y, input.Left, 2)
+}
+
+// executeDragXY 在视口 CSS 像素坐标之间执行真实鼠标拖拽 (press → 插值 move → release)。
+// 元素内相对版是 executeDragAt; 这里是免 selector 的视口版 —— canvas 上"从某个像素拖到
+// 某个像素"是唯一可行的表达 (拖拽起点常常是个不进 a11y 树的把手)。
+func (e *actionEngine) executeDragXY(ctx context.Context, x1, y1, x2, y2 float64) error {
+	if err := e.guardViewportPoint(ctx, "drag start", x1, y1); err != nil {
+		return err
+	}
+	if err := e.guardViewportPoint(ctx, "drag end", x2, y2); err != nil {
+		return err
+	}
+	e.recordCoordinateHit(ctx, x1, y1)
+	return dispatchMouseDrag(ctx, x1, y1, x2, y2, mouseDragInterpolationSteps)
+}
+
+// guardViewportPoint 复用 clickxy 的前置校验: 越界拒发 + 遮罩/门控守卫。
+func (e *actionEngine) guardViewportPoint(ctx context.Context, what string, x, y float64) error {
+	w, h, err := e.viewportSize(ctx)
+	if err != nil {
+		return err
+	}
+	if x < 0 || y < 0 || x >= w || y >= h {
+		return e.failedBeforeDispatch(fmt.Errorf("%w: %s point (%.1f,%.1f) is outside the %.1fx%.1f CSS-pixel viewport", ErrActFailed, what, x, y, w, h))
+	}
+	return e.guardPoint(ctx, x, y)
 }
 
 // executeTapXY 对视口比例坐标 (xfrac, yfrac ∈ 0..1) 执行真实鼠标左键单击。
@@ -3241,6 +3325,10 @@ func (e *actionEngine) executeStrictHumanPress(ctx context.Context, ref, key str
 			return chromedp.Run(ctx, chromedp.Evaluate(`location.reload()`, nil))
 		}
 		return dispatchModifierCombo(ctx, mods, baseKey)
+	}
+	// 功能键/方向键/导航键: rune 通道发不出正确的 key (见 needsPreciseKeyDispatch)。
+	if canonical := canonicalKeyName(key); needsPreciseKeyDispatch(canonical) {
+		return dispatchPlainKey(ctx, canonical)
 	}
 	return chromedp.Run(ctx, chromedp.KeyEvent(mapKeyName(key)))
 }
@@ -3761,10 +3849,49 @@ func (e *actionEngine) executePress(ctx context.Context, ref string, key string)
 		return dispatchModifierCombo(ctx, mods, baseKey)
 	}
 
+	// 功能键/方向键/导航键走精确派发 —— 同一条 PUA 码点毛病对单键同样成立
+	// (见 needsPreciseKeyDispatch 头注)。
+	if canonical := canonicalKeyName(key); needsPreciseKeyDispatch(canonical) {
+		return dispatchPlainKey(ctx, canonical)
+	}
+
 	// Map key name to chromedp SendKeys string (single key / plain text path —
 	// behavior unchanged).
 	keyStr := mapKeyName(key)
 	return chromedp.Run(ctx, chromedp.KeyEvent(keyStr))
+}
+
+// needsPreciseKeyDispatch 报告某个规范化键名是否**必须**走 CDP 的显式 key/code/virtualKeyCode
+// 派发, 而不能走 chromedp.KeyEvent 的 rune 通道。
+//
+// 根因与修饰符那条链同源 (见 executePress 里的注释): mapKeyName 给功能键/方向键/导航键映射的是
+// **Selenium 私有区码点** (ArrowUp=\ue012 等), 而底层跑的是 chromedp —— 它的键表里没有这些码点,
+// 于是发出去的 KeyboardEvent 的 key 是 "Unidentified"。实测 (2026-08-20, probe 页 window keydown
+// 记录器): Enter/Escape/Delete/Backspace/Tab/字母 全部正确 (它们映射到的是**真实控制字符**
+// \r \u001b \u007f \u0008 \t, chromedp 认得), 而 F1–F12、Arrow*、Home/End/PageUp/PageDown、
+// Insert **全部落成 Unidentified** —— 页面上任何 `e.key === 'F2'` / `'ArrowRight'` 的处理器都收不到。
+//
+// 作者当初为修饰符组合发现过同一个毛病并绕开了, 但单键这条对称路径漏了。这里只接管**确实坏掉的**
+// 那批键: 已经正常工作的 (Enter/Tab/Space/Escape/Backspace/Delete) 一律不动 —— 它们依赖 rune 通道
+// 附带的 char 事件产生默认编辑行为 (Space toggle checkbox、Enter 在 textarea 里换行), 改道有回归风险。
+func needsPreciseKeyDispatch(canonical string) bool {
+	switch canonical {
+	case "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight",
+		"Home", "End", "PageUp", "PageDown", "Insert":
+		return true
+	}
+	upper := strings.ToUpper(canonical)
+	if len(upper) >= 2 && upper[0] == 'F' {
+		if _, isFn := keyVirtualCodeMap[upper]; isFn {
+			return true
+		}
+	}
+	return false
+}
+
+// dispatchPlainKey 以 mods=0 走与修饰符组合完全相同的精确派发路径。
+func dispatchPlainKey(ctx context.Context, canonical string) error {
+	return dispatchModifierCombo(ctx, 0, canonical)
 }
 
 // parseKeyCombo 解析含修饰符的按键串（如 "Control+b", "Ctrl+Shift+1"）。

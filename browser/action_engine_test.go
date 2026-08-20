@@ -114,3 +114,62 @@ func TestCodeForKey(t *testing.T) {
 		}
 	}
 }
+
+// 2026-08-20: 功能键/方向键/导航键曾被 mapKeyName 映射成 Selenium 私有区码点 (\ue0xx),
+// 而底层 chromedp 的键表不认它们 → 页面收到的 KeyboardEvent.key 是 "Unidentified"。
+// 实测证据: probe 页 window keydown 记录器下, Enter/Escape/Delete/Backspace/Tab/字母 全对,
+// F1–F12 / Arrow* / Home / End / PageDown / Insert 全部 Unidentified。
+// 这批必须走 CDP 显式 key/code/virtualKeyCode 派发; 已经正常的那批不许改道 (它们依赖 rune
+// 通道的 char 事件产生默认编辑行为: Space toggle checkbox、Enter 在 textarea 里换行)。
+func TestNeedsPreciseKeyDispatchCoversBrokenKeysOnly(t *testing.T) {
+	broken := []string{
+		"ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight",
+		"Home", "End", "PageUp", "PageDown", "Insert",
+		"F1", "F2", "F5", "F12",
+	}
+	for _, k := range broken {
+		if !needsPreciseKeyDispatch(canonicalKeyName(k)) {
+			t.Fatalf("needsPreciseKeyDispatch(%q) = false, 该键走 rune 通道会发出 Unidentified", k)
+		}
+	}
+	// 这批当前是好的 —— 走的是真实控制字符, 改道会丢 char 事件 (默认编辑行为)。
+	working := []string{"Enter", "Tab", "Space", "Escape", "Backspace", "Delete", "a", "1"}
+	for _, k := range working {
+		if needsPreciseKeyDispatch(canonicalKeyName(k)) {
+			t.Fatalf("needsPreciseKeyDispatch(%q) = true, 不该接管正常工作的键", k)
+		}
+	}
+}
+
+// 反向验证这批键的 CDP 三元组确实齐备 —— 缺 vk 时 Chrome 对方向键/功能键的默认行为会不完整。
+func TestPreciseDispatchKeysHaveFullCDPTriple(t *testing.T) {
+	for _, k := range []string{"ArrowRight", "Home", "PageDown", "Insert", "F2"} {
+		canonical := canonicalKeyName(k)
+		if got := keyEventKeyName(canonical); got != canonical {
+			t.Fatalf("keyEventKeyName(%q) = %q, want %q", canonical, got, canonical)
+		}
+		if got := codeForKey(canonical); got != canonical {
+			t.Fatalf("codeForKey(%q) = %q, want %q", canonical, got, canonical)
+		}
+		if vk := getVirtualKeyCode(canonical); vk == 0 {
+			t.Fatalf("getVirtualKeyCode(%q) = 0, CDP 会缺 windowsVirtualKeyCode", canonical)
+		}
+	}
+}
+
+// 校验层与执行层必须认同一份"支持哪些单键"。曾经 Insert 在 needsPreciseKeyDispatch/VK 表里
+// 都有, 却被 validatePressKeySyntax 拒掉 —— 两张表各说各话, 症状是动作在派发前就失败。
+func TestPressValidationAcceptsEveryPreciseDispatchKey(t *testing.T) {
+	for _, k := range []string{
+		"ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight",
+		"Home", "End", "PageUp", "PageDown", "Insert",
+		"F1", "F2", "F5", "F12",
+	} {
+		if !needsPreciseKeyDispatch(canonicalKeyName(k)) {
+			t.Fatalf("%q 应走精确派发", k)
+		}
+		if err := validatePressKeySyntax(k); err != nil {
+			t.Fatalf("validatePressKeySyntax(%q) rejected a key the executor supports: %v", k, err)
+		}
+	}
+}
