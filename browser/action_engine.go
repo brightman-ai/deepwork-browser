@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"log"
 	"math"
+	"net/url"
+	"regexp"
 	goruntime "runtime"
 	"strconv"
 	"strings"
@@ -905,6 +907,14 @@ func ParseAction(action string) (*ParsedAction, error) {
 		}
 		return &ParsedAction{Op: "forward"}, nil
 
+	case "navigate", "goto":
+		// journey DSL 一直有 navigate，act 却只有 back/forward——改 URL 只能
+		// close+open 重来。补齐同名操作，Value 携带绝对 URL。
+		if len(parts) != 2 {
+			return nil, fmt.Errorf("%w: navigate requires exactly one URL", ErrActFailed)
+		}
+		return &ParsedAction{Op: "navigate", Value: strings.Trim(parts[1], `'"`)}, nil
+
 	default:
 		return nil, fmt.Errorf("%w: unknown operation %q", ErrActFailed, op)
 	}
@@ -1204,7 +1214,7 @@ func (e *actionEngine) executeWithInteractionMode(ctx context.Context, action st
 	// page-level 操作不需要选择器
 	// tapxy 是绝对视口坐标点击，刻意不解析 ref（绕过 a11y/locator）。
 	// typetext 向当前聚焦元素插入文本，同样刻意不解析 ref。
-	noSelectorOps := map[string]bool{"scroll": true, "back": true, "forward": true, "clickxy": true, "dblclickxy": true, "dragxy": true, "tapxy": true, "typetext": true, "zoom": true, "keyboard": true}
+	noSelectorOps := map[string]bool{"scroll": true, "back": true, "forward": true, "navigate": true, "clickxy": true, "dblclickxy": true, "dragxy": true, "tapxy": true, "typetext": true, "zoom": true, "keyboard": true}
 
 	var resolvedRef string
 	if !noSelectorOps[parsed.Op] && parsed.Ref != "" {
@@ -1431,6 +1441,10 @@ func (e *actionEngine) dispatchParsedAction(
 		}
 	case "forward":
 		if err := e.executeForward(ctx); err != nil {
+			return err
+		}
+	case "navigate":
+		if err := e.executeNavigate(ctx, parsed.Value); err != nil {
 			return err
 		}
 	case "focus":
@@ -3104,6 +3118,7 @@ type strictEditableState struct {
 	Editable       bool   `json:"editable"`
 	Password       bool   `json:"password"`
 	Tag            string `json:"tag"`
+	InputType      string `json:"input_type"`
 	Value          string `json:"value"`
 	Prefix         string `json:"prefix"`
 	Suffix         string `json:"suffix"`
@@ -3140,7 +3155,7 @@ var strictEditableStateFunction = `function() {
 	const value = editable ? String(el.value ?? '') : '';
 	const selectionKnown = editable && Number.isInteger(el.selectionStart) && Number.isInteger(el.selectionEnd);
 	return {
-		focused, editable, password, tag, value, selection_known: selectionKnown,
+		focused, editable, password, tag, input_type: type, value, selection_known: selectionKnown,
 		prefix: selectionKnown ? value.slice(0, el.selectionStart) : value,
 		suffix: selectionKnown ? value.slice(el.selectionEnd) : ''
 	};
@@ -3265,6 +3280,14 @@ func (e *actionEngine) executeStrictHumanText(ctx context.Context, ref, value st
 	if state.Password && !allowPassword {
 		return ErrPasswordField
 	}
+	// Temporal inputs (date/time/month/week/datetime-local) are segmented
+	// browser chrome, not a text buffer: Input.insertText never lands, and
+	// digit-keystroke order depends on the UI locale. Same verdict as native
+	// <select>: real-click focus + native value set + synthetic events,
+	// reported honestly as synthetic.
+	if kind := temporalInputKind(state.Tag, state.InputType); kind != "" {
+		return e.executeStrictHumanTemporal(ctx, meta, ref, kind, value)
+	}
 
 	want := state.Prefix + value + state.Suffix
 	path := []string{"mouse_click", "active_element_verified"}
@@ -3287,6 +3310,120 @@ func (e *actionEngine) executeStrictHumanText(ctx context.Context, ref, value st
 	path = append(path, "Input.insertText_per_character", "value_verified")
 	e.updateActionFidelity(func(report *ActionFidelityReport) {
 		report.HumanPath = path
+	})
+	return nil
+}
+
+// temporalInputKind reports the temporal input family ("" = not temporal).
+func temporalInputKind(tag, inputType string) string {
+	if tag != "INPUT" {
+		return ""
+	}
+	switch inputType {
+	case "date", "time", "month", "week", "datetime-local":
+		return inputType
+	}
+	return ""
+}
+
+var temporalValuePatterns = map[string]*regexp.Regexp{
+	"date":           regexp.MustCompile(`^\d{4}-\d{2}-\d{2}$`),
+	"time":           regexp.MustCompile(`^\d{2}:\d{2}(:\d{2})?$`),
+	"month":          regexp.MustCompile(`^\d{4}-\d{2}$`),
+	"week":           regexp.MustCompile(`^\d{4}-W\d{2}$`),
+	"datetime-local": regexp.MustCompile(`^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2})?$`),
+}
+
+// normalizeTemporalValue accepts the control's canonical form, plus the
+// digits-only spelling for date (20260828) and month (202608) — what a human
+// would type — and returns the canonical value= form.
+func normalizeTemporalValue(kind, raw string) (string, error) {
+	v := strings.TrimSpace(raw)
+	if kind == "date" && regexp.MustCompile(`^\d{8}$`).MatchString(v) {
+		v = v[0:4] + "-" + v[4:6] + "-" + v[6:8]
+	}
+	if kind == "month" && regexp.MustCompile(`^\d{6}$`).MatchString(v) {
+		v = v[0:4] + "-" + v[4:6]
+	}
+	if kind == "time" && regexp.MustCompile(`^\d{4}$`).MatchString(v) {
+		v = v[0:2] + ":" + v[2:4]
+	}
+	pattern, ok := temporalValuePatterns[kind]
+	if !ok || !pattern.MatchString(v) {
+		return "", fmt.Errorf("%w: %s input expects e.g. %q, got %q", ErrActFailed, kind, temporalValueExample(kind), raw)
+	}
+	return v, nil
+}
+
+func temporalValueExample(kind string) string {
+	switch kind {
+	case "date":
+		return "2026-08-28"
+	case "time":
+		return "18:30"
+	case "month":
+		return "2026-08"
+	case "week":
+		return "2026-W35"
+	case "datetime-local":
+		return "2026-08-28T18:30"
+	}
+	return ""
+}
+
+// executeStrictHumanTemporal fills a temporal input through the native value
+// setter (prototype setter, so framework value-tracking like Vue's v-model
+// still sees the input event) and verifies the canonical value round-trips.
+// Focus was already acquired by a real click in executeStrictHumanText.
+func (e *actionEngine) executeStrictHumanTemporal(ctx context.Context, meta *ElementRef, ref, kind, raw string) error {
+	want, err := normalizeTemporalValue(kind, raw)
+	if err != nil {
+		return err
+	}
+	encoded, err := json.Marshal(want)
+	if err != nil {
+		return fmt.Errorf("%w: temporal value encode: %v", ErrActFailed, err)
+	}
+	fn := fmt.Sprintf(`function() {
+		const v = %s;
+		const desc = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value');
+		desc.set.call(this, v);
+		this.dispatchEvent(new Event('input', {bubbles: true}));
+		this.dispatchEvent(new Event('change', {bubbles: true}));
+		return String(this.value ?? '');
+	}`, string(encoded))
+	var got string
+	err = chromedp.Run(ctx, chromedp.ActionFunc(func(execCtx context.Context) error {
+		obj, err := resolveElementObjectForMeta(execCtx, meta)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = runtime.ReleaseObject(obj.ObjectID).Do(execCtx) }()
+		result, exc, err := runtime.CallFunctionOn(fn).
+			WithObjectID(obj.ObjectID).
+			WithReturnByValue(true).
+			Do(execCtx)
+		if err != nil {
+			return err
+		}
+		if exc != nil {
+			return fmt.Errorf("temporal value set failed: %s", exc.Text)
+		}
+		if result == nil || len(result.Value) == 0 {
+			return fmt.Errorf("temporal value set returned no value")
+		}
+		return json.Unmarshal(result.Value, &got)
+	}))
+	if err != nil {
+		return fmt.Errorf("%w: fill %s %q: %v", ErrActFailed, kind, ref, err)
+	}
+	if got != want {
+		// The control rejected the value (min/max/step) — report what stuck.
+		return fmt.Errorf("%w: %s input rejected %q (value now %q)", ErrActFailed, kind, want, got)
+	}
+	e.updateActionFidelity(func(report *ActionFidelityReport) {
+		report.Synthetic = true
+		report.SyntheticNote = "temporal <input type=" + kind + "> uses native value set plus synthetic input/change events (segment keystroke order is locale-dependent); real-click focus was verified, but this is not evidence a human can operate the picker"
 	})
 	return nil
 }
@@ -4110,6 +4247,24 @@ func (e *actionEngine) executeBack(ctx context.Context) error {
 // executeForward 导航前进。
 func (e *actionEngine) executeForward(ctx context.Context) error {
 	return chromedp.Run(ctx, chromedp.Evaluate("setTimeout(() => history.forward(), 0)", nil))
+}
+
+// executeNavigate 直接导航到绝对 http(s) URL。同 back/forward 的 setTimeout(0)
+// 手法：让 Evaluate 的 CDP 响应先返回，再触发导航，避免页面 unload 销毁 JS
+// context 导致 context destroyed。相对路径拒绝——SPA 内跳转应该点真实链接，
+// act navigate 的语义是"地址栏输入"。
+func (e *actionEngine) executeNavigate(ctx context.Context, rawURL string) error {
+	trimmed := strings.TrimSpace(rawURL)
+	parsedURL, err := url.Parse(trimmed)
+	if err != nil || (parsedURL.Scheme != "http" && parsedURL.Scheme != "https") || parsedURL.Host == "" {
+		return fmt.Errorf("%w: navigate needs an absolute http(s) URL, got %q", ErrActFailed, rawURL)
+	}
+	encoded, err := json.Marshal(trimmed)
+	if err != nil {
+		return fmt.Errorf("%w: navigate URL encode: %v", ErrActFailed, err)
+	}
+	return chromedp.Run(ctx, chromedp.Evaluate(
+		fmt.Sprintf("setTimeout(() => { location.href = %s; }, 0)", string(encoded)), nil))
 }
 
 // executeFocusSelector 聚焦元素。

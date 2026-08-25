@@ -902,6 +902,7 @@ func extractInteractableRefs(nodes []*accessibility.Node) []ElementRef {
 					NameFull:      name,
 					NameShort:     nameShort,
 					Placeholder:   placeholder,
+					Value:         getAXValue(node),
 					Interactable:  true,
 					ModalRank:     modalRank,
 				})
@@ -948,6 +949,7 @@ func extractInteractableRefs(nodes []*accessibility.Node) []ElementRef {
 				NameFull:      name,
 				NameShort:     nameShort,
 				Placeholder:   placeholder,
+				Value:         getAXValue(node),
 				Interactable:  true,
 			})
 		}
@@ -1024,6 +1026,14 @@ func getAccessibleName(node *accessibility.Node) string {
 }
 
 // getPlaceholder 获取输入框的 placeholder。
+// getAXValue 取 AX value（输入控件的当前值）。空值/无值统一返回 ""。
+func getAXValue(node *accessibility.Node) string {
+	if node.Value == nil || node.Value.Value == nil {
+		return ""
+	}
+	return unquoteJSONString(node.Value.Value.String())
+}
+
 func getPlaceholder(node *accessibility.Node) string {
 	for _, prop := range node.Properties {
 		if prop != nil && prop.Name == "placeholder" && prop.Value != nil {

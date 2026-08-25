@@ -33,7 +33,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-const version = "0.11.5"
+const version = "0.11.6"
 
 // ActionEngine returns its own explicit error at 15s. The CLI watchdog is a
 // slightly wider process-level fence covering every BrowserCore implementation.
@@ -1356,7 +1356,7 @@ func printCommandUsage(command string) {
 		fmt.Println("  dw-browser act --id <id> \"press Enter\" --await --snap   # --await 等页面稳定后再快照")
 		fmt.Println()
 		fmt.Println("常用操作:")
-		fmt.Println("  click @rN | click x,y | fill/type/press/hover/select/back/forward/focus/check/uncheck")
+		fmt.Println("  click @rN | click x,y | fill/type/press/hover/select/back/forward/navigate <url>/focus/check/uncheck")
 		fmt.Println("  scroll down|up [N] | scroll @rN down|up [N] | scrollto @rN (scroll 后重新 observe)")
 		fmt.Println("  hoverat x,y | wheelat x,y down|up [N]              # 视口 CSS px, 无需 selector")
 		fmt.Println("  元素内坐标动作(canvas): clickat/dblclickat/rclickat/hoverat/wheelat/dragat/tapat/swipeat")
@@ -2132,6 +2132,9 @@ func leanElement(ref browser.ElementRef) map[string]interface{} {
 	}
 	if ref.MatchCount > 1 {
 		el["match"] = ref.MatchCount
+	}
+	if ref.Value != "" {
+		el["value"] = clampRunes(ref.Value, nameFullDisplayRunes)
 	}
 	// [BUG-MODAL-FIRST] 被活跃模态遮挡 → 点了会静默失败，必须明说
 	if ref.BlockedByModal {

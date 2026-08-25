@@ -171,6 +171,7 @@ type ElementRef struct {
 	Placeholder        string      // input placeholder
 	TestID             string      // data-testid 属性值
 	Interactable       bool        // 是否可交互（button/input/link/select...）
+	Value              string      // AX value（输入控件当前值；date/select 等分段控件也有）——探针盲区修复：没有它，agent 只能靠截图猜输入框里到底有没有值
 	NameFull           string      // 完整 accessible name（不截断）
 	NameShort          string      // 截断后的 name（≤50 字符，用于显示）
 	RecommendedLocator string      // 推荐的 locator（供 Agent 直接使用）
