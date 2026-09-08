@@ -323,11 +323,22 @@ var elementVisibilityProbeFunction = `function() {
 	const area = Math.max(0, r.width) * Math.max(0, r.height);
 	const visibleArea = Math.max(0, right-left) * Math.max(0, bottom-top);
 	const areaRatio = area > 0 ? visibleArea / area : 0;
-	let styleVisible = area > 0;
+	// visibility 与 pointer-events 是**继承**属性: 元素自身的计算值已经是"继承 +
+	// 子树覆盖"之后的最终值, 而子树确实可以把祖先的 hidden / none 重新打开 ——
+	// .rd-scrim{pointer-events:none} 套 .rd-panel{pointer-events:auto} 正是浮层
+	// 让底下的页面照常可点、面板自己收回点击的标准写法。拿这两个属性去走祖先链,
+	// 等于把一整棵真能点的子树判成不可见: 现场是一个 body 级 portal 抽屉里 33 个
+	// 控件一个 @rN 都不给、全计入 offscreen, Witness 只剩坐标可点
+	// [BUG-PORTAL-PANEL-JUDGED-INVISIBLE]。
+	const own = window.getComputedStyle(el);
+	let styleVisible = area > 0 &&
+		own.visibility !== 'hidden' && own.visibility !== 'collapse' &&
+		own.pointerEvents !== 'none';
+	// 余下几条子树撤不掉, 仍必须沿祖先链看: display:none 整棵不生成盒, opacity 是
+	// 组透明度, inert / aria-hidden 按规范对整棵子树生效(子孙写 false 也不解除)。
 	for (let n = el; styleVisible && n && n.nodeType === 1; ) {
 		const s = window.getComputedStyle(n);
-		if (s.display === 'none' || s.visibility === 'hidden' || s.visibility === 'collapse' ||
-			parseFloat(s.opacity || '1') <= 0.01 || s.pointerEvents === 'none' ||
+		if (s.display === 'none' || parseFloat(s.opacity || '1') <= 0.01 ||
 			n.hasAttribute('inert') || n.getAttribute('aria-hidden') === 'true') {
 			styleVisible = false;
 		}

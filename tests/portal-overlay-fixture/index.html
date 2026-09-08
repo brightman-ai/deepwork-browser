@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>body-level portal overlay fixture</title>
+  <style>
+    body { margin: 0; font: 16px sans-serif; }
+
+    /* 真实产品里的抽屉长这样 (deepwork-terminal ResourceDrawer.vue):
+       罩层铺满视口但 pointer-events:none —— 让下面的终端照常可点;
+       面板自己把 pointer-events 收回来。这是浮层的标准写法, 面板里的
+       每一个控件都是真能点的 [BUG-PORTAL-PANEL-JUDGED-INVISIBLE]。 */
+    .rd-scrim { position: fixed; inset: 0; background: transparent; pointer-events: none; }
+    .rd-scrim .rd-panel {
+      pointer-events: auto;
+      position: absolute; top: 0; right: 0; width: 340px; height: 100%;
+      box-sizing: border-box; padding: 12px; background: #16141c; color: #eee;
+    }
+    .rd-panel > * { display: block; width: 280px; height: 40px; margin-bottom: 8px; }
+
+    /* 阴性对照 —— 修复后仍必须落选, 否则就是"把检查删了"而不是"把检查改对"。 */
+    .ghost  { pointer-events: none; }              /* 子树没有收回 → 真的点不到 */
+    .faded  { opacity: 0; }                        /* 组透明度, 子元素撤不掉 */
+    .veil   { visibility: hidden; }                /* 但子元素可以撤掉 ↓ */
+    .veil > .unveiled { visibility: visible; }     /* 浏览器真的渲染且可点 */
+
+    #page-button { position: fixed; left: 20px; top: 20px; width: 200px; height: 48px; }
+  </style>
+</head>
+<body>
+  <button id="page-button" data-testid="page-button" aria-label="Page target">Page target</button>
+
+  <!-- body 级 portal: Vue 的 <Teleport to="body"> 就把子树挂在这个位置 -->
+  <div class="rd-scrim">
+    <div class="rd-panel">
+      <input data-testid="panel-search" aria-label="Search files" placeholder="Search files">
+      <button data-testid="panel-row" aria-label="Tree row">report.xlsx</button>
+      <button data-testid="panel-fullscreen" aria-label="Fullscreen">Fullscreen</button>
+
+      <div class="ghost"><button data-testid="ghost-button" aria-label="Ghost">Ghost</button></div>
+      <div class="faded"><button data-testid="faded-button" aria-label="Faded">Faded</button></div>
+      <div aria-hidden="true"><button data-testid="aria-hidden-button" aria-label="Hidden">Hidden</button></div>
+      <div inert><button data-testid="inert-button" aria-label="Inert">Inert</button></div>
+      <div class="veil"><button class="unveiled" data-testid="unveiled-button" aria-label="Unveiled">Unveiled</button></div>
+    </div>
+  </div>
+
+  <script>
+    // 真相记录: 谁真的收到了 click。用来把"工具说能点"与"页面确实收到"对上账。
+    window.__lastClickedTestID = '';
+    document.addEventListener('click', event => {
+      const el = event.target && event.target.closest ? event.target.closest('[data-testid]') : null;
+      window.__lastClickedTestID = (el && el.getAttribute('data-testid')) || '';
+    }, true);
+  </script>
+</body>
+</html>
