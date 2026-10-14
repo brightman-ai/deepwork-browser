@@ -67,18 +67,18 @@ func TestMatchNativeSelectOptionPriorityAndDiagnostics(t *testing.T) {
 	})
 }
 
-func TestParseActionAbsoluteHoverAndWheel(t *testing.T) {
-	hover, err := ParseAction("hoverat 414,314")
+func TestTypedRequestAbsoluteHoverAndWheel(t *testing.T) {
+	hover, err := (Action{Verb: "hover", Target: fixtureViewport(414, 314)}).executionRequest()
 	if err != nil {
-		t.Fatalf("ParseAction hoverat: %v", err)
+		t.Fatalf("TypedRequest hoverat: %v", err)
 	}
 	if hover.Op != "hoverat" || hover.Ref != "" || hover.CoordX != 414 || hover.CoordY != 314 {
 		t.Fatalf("hoverat parsed as %+v", hover)
 	}
 
-	wheel, err := ParseAction("wheelat 1200,800 down 6")
+	wheel, err := (Action{Verb: "scroll", Target: fixtureViewport(1200, 800), Direction: "down", Steps: 6}).executionRequest()
 	if err != nil {
-		t.Fatalf("ParseAction wheelat: %v", err)
+		t.Fatalf("TypedRequest wheelat: %v", err)
 	}
 	if wheel.Op != "wheelat" || wheel.Ref != "" || wheel.CoordX != 1200 || wheel.CoordY != 800 {
 		t.Fatalf("wheelat parsed as %+v", wheel)
@@ -87,9 +87,9 @@ func TestParseActionAbsoluteHoverAndWheel(t *testing.T) {
 		t.Fatalf("wheelat direction/delta = %+v", wheel)
 	}
 
-	legacy, err := ParseAction("wheelat css=#chart 50% 50% -240")
+	legacy, err := (Action{Verb: "scroll", Target: fixtureRelative("css=#chart", 50, 50), DeltaY: -240}).executionRequest()
 	if err != nil {
-		t.Fatalf("ParseAction selector-relative wheelat: %v", err)
+		t.Fatalf("TypedRequest selector-relative wheelat: %v", err)
 	}
 	if legacy.Ref != "css=#chart" || legacy.CoordX != 0.5 || legacy.CoordY != 0.5 || legacy.DeltaY != -240 {
 		t.Fatalf("selector-relative wheelat regressed: %+v", legacy)
@@ -119,36 +119,53 @@ func TestActionEngineNativeSelectWithoutPicker(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
-	defer cancel()
-	core, err := NewBrowserCore(ctx, fmt.Sprintf("select-coordinate-%d", time.Now().UnixNano()), WithMode(BrowserModeHeadless))
+	// Constructor/navigation/first capture follow the launcher's 120s startup
+	// contract. They must not consume the existing 45s action phase below.
+	setupCtx, setupCancel := context.WithTimeout(context.Background(), 150*time.Second)
+	defer setupCancel()
+	lifetime, finishSetup := fixtureRuntimeLifetime(t, setupCtx)
+	core, err := NewBrowserCore(lifetime, fmt.Sprintf("select-coordinate-%d", time.Now().UnixNano()), WithMode(BrowserModeHeadless))
 	if err != nil {
 		t.Fatalf("NewBrowserCore: %v", err)
 	}
 	defer func() { _ = core.Close(context.Background()) }()
+	core.(ScenarioInteractionCapable).SetInteractionScenario(ScenarioAppTestBaseline)
 	core.SetPolicy(SessionPolicy{RemoteWrites: RemoteWriteAllow}, "")
 
-	if _, err := core.Navigate(ctx, srv.URL); err != nil {
+	if _, err := core.Navigate(setupCtx, srv.URL); err != nil {
 		t.Fatalf("Navigate: %v", err)
 	}
-	if _, err := core.Snap(ctx); err != nil {
+	initial, err := core.Snap(setupCtx)
+	if err != nil {
 		t.Fatalf("Snap: %v", err)
 	}
+	requireFixtureCapture(t, initial)
+	finishSetup()
+	setupCancel()
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
 
-	assertWithin := func(action string, wantErr string, max time.Duration) {
+	assertWithin := func(action Action, wantErr string, max time.Duration) {
 		t.Helper()
+		capture, err := core.Snap(ctx)
+		if err != nil {
+			t.Fatalf("capture before %+v: %v", action, err)
+		}
+		requireFixtureCapture(t, capture)
 		started := time.Now()
-		_, actErr := core.Act(ctx, action, false)
+		// This functional baseline exercises explicit element auto-focus/select
+		// behavior. Visual strict input is covered by the separate native proofs.
+		_, _, actErr := core.ExecuteAction(ctx, action, false, false, InteractionModeElement)
 		elapsed := time.Since(started)
-		t.Logf("act %q elapsed=%s err=%v", action, elapsed, actErr)
+		t.Logf("act %+v elapsed=%s err=%v", action, elapsed, actErr)
 		if elapsed > max {
-			t.Fatalf("%s took %s, want <= %s", action, elapsed, max)
+			t.Fatalf("%+v took %s, want <= %s", action, elapsed, max)
 		}
 		if wantErr == "" && actErr != nil {
-			t.Fatalf("%s: %v", action, actErr)
+			t.Fatalf("%+v: %v", action, actErr)
 		}
 		if wantErr != "" && (actErr == nil || !strings.Contains(actErr.Error(), wantErr)) {
-			t.Fatalf("%s error = %v, want substring %q", action, actErr, wantErr)
+			t.Fatalf("%+v error = %v, want substring %q", action, actErr, wantErr)
 		}
 	}
 	assertValue := func(want string) {
@@ -172,26 +189,26 @@ func TestActionEngineNativeSelectWithoutPicker(t *testing.T) {
 		}
 	}
 
-	assertWithin("focus button:'Overview'", "", 2*time.Second)
-	assertWithin("focus combobox:'Project'", "", 2*time.Second)
+	assertWithin(Action{Verb: "focus", Target: fixtureLocator("role=button[name*=\"Overview\"]")}, "", 2*time.Second)
+	assertWithin(Action{Verb: "focus", Target: fixtureLocator("role=combobox[name*=\"Project\"]")}, "", 2*time.Second)
 	assertFocused("#project")
-	assertWithin("focus button:'Overview'", "", 2*time.Second)
-	assertWithin("press combobox:'Project' ArrowDown", "", 2*time.Second)
+	assertWithin(Action{Verb: "focus", Target: fixtureLocator("role=button[name*=\"Overview\"]")}, "", 2*time.Second)
+	assertWithin(Action{Verb: "press", Target: fixtureLocator("role=combobox[name*=\"Project\"]"), Key: "ArrowDown"}, "", 2*time.Second)
 	assertFocused("#project")
 	assertValue("/home/ubuntu/code/stwork/TencentDB-Agent-Memory")
-	assertWithin("press combobox:'Project' Enter", "blocked to avoid opening the browser picker", 2*time.Second)
+	assertWithin(Action{Verb: "press", Target: fixtureLocator("role=combobox[name*=\"Project\"]"), Key: "Enter"}, "blocked to avoid opening the browser picker", 2*time.Second)
 
 	if err := core.EvalJS(ctx, `(() => { document.querySelector('#project').selectedIndex = 0; return true; })()`, new(bool)); err != nil {
 		t.Fatalf("reset select: %v", err)
 	}
-	assertWithin("select combobox:'Project' 'TencentDB-Agent-Memory'", "", 2*time.Second)
+	assertWithin(Action{Verb: "select", Target: fixtureLocator("role=combobox[name*=\"Project\"]"), Value: "TencentDB-Agent-Memory"}, "", 2*time.Second)
 	assertValue("/home/ubuntu/code/stwork/TencentDB-Agent-Memory")
-	assertWithin("select combobox:'Project' 'gamma'", "", 2*time.Second)
+	assertWithin(Action{Verb: "select", Target: fixtureLocator("role=combobox[name*=\"Project\"]"), Value: "gamma"}, "", 2*time.Second)
 	assertValue("gamma")
-	assertWithin("select combobox:'Project' 'Gamma'", "", 2*time.Second)
+	assertWithin(Action{Verb: "select", Target: fixtureLocator("role=combobox[name*=\"Project\"]"), Value: "Gamma"}, "", 2*time.Second)
 	assertValue("gamma")
-	assertWithin("select combobox:'Project' 'Al'", `"Alpha Pipeline"→"alpha"`, 2*time.Second)
-	assertWithin("select combobox:'Project' 'Missing'", `"TencentDB-Agent-Memory"→"/home/ubuntu/code/stwork/TencentDB-Agent-Memory"`, 2*time.Second)
+	assertWithin(Action{Verb: "select", Target: fixtureLocator("role=combobox[name*=\"Project\"]"), Value: "Al"}, `"Alpha Pipeline"→"alpha"`, 2*time.Second)
+	assertWithin(Action{Verb: "select", Target: fixtureLocator("role=combobox[name*=\"Project\"]"), Value: "Missing"}, `"TencentDB-Agent-Memory"→"/home/ubuntu/code/stwork/TencentDB-Agent-Memory"`, 2*time.Second)
 
 	var events []string
 	if err := core.EvalJS(ctx, `window.actionEvents`, &events); err != nil {
@@ -206,18 +223,17 @@ func TestActionEngineNativeSelectWithoutPicker(t *testing.T) {
 // 需要 selector 的 dblclickat/dragat —— canvas 类 UI 上元素不进 a11y 树时那两个根本用不了,
 // 于是"双击图元改名""从连接点拖出一条线"这两类核心手势无法用真实鼠标驱动。
 // (2026-08-20 实测于 deepwork-teamworkbench album 画布, 合成 pointer 事件驱不动 vue-flow 连线握手。)
-func TestParseViewportDoubleClickAndDrag(t *testing.T) {
-	dbl, err := ParseAction("dblclick 927,437")
+func TestTypedViewportDoubleClickAndDrag(t *testing.T) {
+	dbl, err := (Action{Verb: "click", Count: 2, Target: fixtureViewport(927, 437)}).executionRequest()
 	if err != nil {
-		t.Fatalf("dblclick x,y should parse: %v", err)
+		t.Fatalf("viewport double click should validate: %v", err)
 	}
 	if dbl.Op != "dblclickxy" || dbl.Ref != "" || dbl.CoordX != 927 || dbl.CoordY != 437 {
-		t.Fatalf("unexpected dblclick parse: %+v", dbl)
+		t.Fatalf("unexpected double click request: %+v", dbl)
 	}
-
-	drag, err := ParseAction("drag 100,200 300,400")
+	drag, err := (Action{Verb: "drag", Target: fixtureViewport(100, 200), End: &Point{X: 300, Y: 400, Unit: "css-px", Frame: "viewport", ObservationID: "fixture"}}).executionRequest()
 	if err != nil {
-		t.Fatalf("drag x1,y1 x2,y2 should parse: %v", err)
+		t.Fatalf("viewport drag should validate: %v", err)
 	}
 	if drag.Op != "dragxy" || drag.Ref != "" {
 		t.Fatalf("unexpected drag op: %+v", drag)
@@ -225,15 +241,12 @@ func TestParseViewportDoubleClickAndDrag(t *testing.T) {
 	if drag.CoordX != 100 || drag.CoordY != 200 || drag.CoordX2 != 300 || drag.CoordY2 != 400 {
 		t.Fatalf("unexpected drag coords: %+v", drag)
 	}
-
-	// 缺第二个点必须报错, 不能静默当成元素内相对拖拽。
-	if _, err := ParseAction("drag 100,200"); err == nil {
+	if err := (Action{Verb: "drag", Target: fixtureViewport(100, 200)}).Validate(); err == nil {
 		t.Fatal("drag with a single point should fail loudly")
 	}
-
-	// 带 selector 的旧形式保持不变 (不是坐标对 → 不抢这条语法)。
-	if a, err := ParseAction("dragat css=#chart 20% 50% 80% 50%"); err != nil || a.Op != "dragat" || a.Ref == "" {
-		t.Fatalf("dragat with selector must stay intact: %+v err=%v", a, err)
+	a, err := (Action{Verb: "drag", Target: fixtureRelative("css=#chart", 20, 50), End: fixtureEnd(80, 50)}).executionRequest()
+	if err != nil || a.Op != "dragat" || a.Ref == "" {
+		t.Fatalf("relative drag must stay intact: %+v err=%v", a, err)
 	}
 }
 

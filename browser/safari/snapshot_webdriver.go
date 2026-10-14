@@ -63,19 +63,22 @@ func (b *WebDriverSnapshotBuilder) Build(ctx context.Context, wdc *WebDriverClie
 		refs = append(refs, browser.ElementRef{
 			Ref: refStr,
 			Locator: browser.NodeLocator{
-				Engine:    browser.EngineSafari,
-				AXPath:    "", // WebDriver 无 AX path
-				StableKey: stableKey,
+				Engine:             browser.EngineSafari,
+				WebDriverElementID: info.ID,
+				AXPath:             "", // WebDriver 无 AX path
+				StableKey:          stableKey,
 				// 使用 Ordinal 存储序号以便定位回溯
 				Ordinal: counter,
 			},
-			Role:         role,
-			Name:         name,
-			NameFull:     name,
-			NameShort:    nameShort,
-			Placeholder:  info.Placeholder,
-			TestID:       info.TestID,
-			Interactable: true,
+			Role:            role,
+			Name:            name,
+			NameFull:        name,
+			NameShort:       nameShort,
+			Placeholder:     info.Placeholder,
+			TestID:          info.TestID,
+			Interactable:    true,
+			VisibilityKnown: true, VisibleInViewport: true, Observed: false,
+			BBox: browser.Rect{X: info.Rect.X, Y: info.Rect.Y, Width: info.Rect.Width, Height: info.Rect.Height},
 		})
 	}
 

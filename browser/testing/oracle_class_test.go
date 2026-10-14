@@ -2,6 +2,7 @@ package testing
 
 import (
 	"os"
+	"strings"
 	"testing"
 )
 
@@ -35,14 +36,14 @@ func TestUsingClassConflict(t *testing.T) {
 
 // TestEvaluateWithUsingOracleReject verifies REJECT-by-default: a structural
 // predicate labeled --using visual is BLOCKED, and DW_BROWSER_ORACLE_WARN_ONLY=1
-// downgrades to a non-blocking warning.
+// cannot disable the hard rejection.
 func TestEvaluateWithUsingOracleReject(t *testing.T) {
 	e := &AssertionEngine{}
 	obs := &Observation{}
 
 	// Default: hard reject → StatusBlocked with REJECT reason.
 	os.Unsetenv("DW_BROWSER_ORACLE_WARN_ONLY")
-	res := e.EvaluateWithUsing(obs, "visible(#foo)", []string{"visual"})
+	res := e.EvaluateWithUsing(obs, "visible(testid='foo')", []string{"visual"})
 	if res.Status != StatusBlocked {
 		t.Fatalf("default oracle-class: expected StatusBlocked, got %s (reason=%q)", res.Status, res.Reason)
 	}
@@ -50,11 +51,11 @@ func TestEvaluateWithUsingOracleReject(t *testing.T) {
 		t.Fatalf("expected OracleWarning to be annotated, got empty")
 	}
 
-	// WARN_ONLY escape: not blocked by the oracle-class rule; warning annotated.
+	// A stale compatibility environment variable cannot disable the hard guard.
 	t.Setenv("DW_BROWSER_ORACLE_WARN_ONLY", "1")
-	res2 := e.EvaluateWithUsing(obs, "visible(#foo)", []string{"visual"})
-	if res2.Status == StatusBlocked && res2.Reason != "" && len(res2.Reason) >= 6 && res2.Reason[:6] == "REJECT" {
-		t.Fatalf("WARN_ONLY: expected no oracle-class REJECT, got blocked: %q", res2.Reason)
+	res2 := e.EvaluateWithUsing(obs, "visible(testid='foo')", []string{"visual"})
+	if res2.Status != StatusBlocked || !strings.HasPrefix(res2.Reason, "REJECT") {
+		t.Fatalf("stale WARN_ONLY must remain REJECT, got %s: %q", res2.Status, res2.Reason)
 	}
 	if res2.OracleWarning == "" {
 		t.Fatalf("WARN_ONLY: expected OracleWarning annotation, got empty")

@@ -75,6 +75,8 @@ type JavaScriptDialogEvent struct {
 // TargetTracker 管理所有已知的 page Target，自动跟随活跃 Target 的 Screencast。
 type TargetTracker struct {
 	mu                    sync.RWMutex
+	inputKey              string
+	inputLockWait         time.Duration
 	refreshMu             sync.Mutex      // 序列化并发 RefreshTargets 调用，防止 CDP GetTargets 请求洪泛
 	browserCtx            context.Context // 原始 browser context（创建子 context 的 parent）
 	primaryID             target.ID       // browserCtx 对应的 primary target；对外必须呈现真实 CDP target.ID
@@ -846,6 +848,23 @@ func (tt *TargetTracker) registerKnownTarget(targetID target.ID, url string) (*t
 // Use for programmatic-nav liveview switches where we want the screencast to
 // follow the AI navigation without disrupting the user's desktop.
 func (tt *TargetTracker) activateBrowserTargetNoFront(targetID target.ID, reason string) error {
+	lock, err := tt.acquireInputLock()
+	if err != nil {
+		return err
+	}
+	defer lock.Release()
+	tt.mu.RLock()
+	guard := tt.foregroundGuard
+	tt.mu.RUnlock()
+	if guard != nil {
+		if err := guard(targetID, reason); err != nil {
+			return fmt.Errorf("foreground guard failed: %w", err)
+		}
+	}
+	return tt.activateBrowserTargetNoFrontLocked(targetID, reason)
+}
+
+func (tt *TargetTracker) activateBrowserTargetNoFrontLocked(targetID target.ID, reason string) error {
 	if targetID == "" {
 		return nil
 	}
@@ -874,6 +893,12 @@ func (tt *TargetTracker) activateBrowserTargetNoFront(targetID target.ID, reason
 }
 
 func (tt *TargetTracker) activateBrowserTarget(targetID target.ID, reason string) error {
+	lock, err := tt.acquireInputLock()
+	if err != nil {
+		return err
+	}
+	defer lock.Release()
+
 	if targetID == "" {
 		return nil
 	}
@@ -887,9 +912,6 @@ func (tt *TargetTracker) activateBrowserTarget(targetID target.ID, reason string
 	// noFrontMode: headed Chrome on CGVirtualDisplay must NEVER receive BringToFront.
 	// Any [NSWindow makeKeyAndOrderFront:] from BringToFront causes Chrome to escape
 	// the virtual display and appear on the user's main Space.
-	if noFront {
-		return tt.activateBrowserTargetNoFront(targetID, reason)
-	}
 	if foregroundGuard != nil {
 		if err := foregroundGuard(targetID, reason); err != nil {
 			logger.Warn(targetLogContext(), "browser target foreground guard failed",
@@ -898,6 +920,9 @@ func (tt *TargetTracker) activateBrowserTarget(targetID target.ID, reason string
 				"error", err)
 			return fmt.Errorf("foreground guard failed: %w", err)
 		}
+	}
+	if noFront {
+		return tt.activateBrowserTargetNoFrontLocked(targetID, reason)
 	}
 	cdpCtx := chromedp.FromContext(tt.browserCtx)
 	if cdpCtx == nil || cdpCtx.Browser == nil {
@@ -1656,6 +1681,12 @@ func (tt *TargetTracker) CloseTarget(targetID string) error {
 	// 事件或本地 tracker 收敛为完成条件，不再反向调用 Target.getTargets 轮询。
 	closeResult := make(chan error, 1)
 	go func() {
+		lock, err := tt.acquireInputLock()
+		if err != nil {
+			closeResult <- err
+			return
+		}
+		defer lock.Release()
 		if closeTarget != nil {
 			closeResult <- closeTarget(tid)
 			return
@@ -1709,7 +1740,12 @@ func (tt *TargetTracker) CreateTab(url string) (string, error) {
 	logger.Info(targetLogContext(), "create tab requested", "url", url)
 
 	// Target.createTarget 是 Browser Target Graph 操作，返回即得到 Chrome SSoT targetID。
+	lock, err := tt.acquireInputLock()
+	if err != nil {
+		return "", err
+	}
 	tid, err := targetGraphCreatePage(tt.browserCtx, url, TargetCreateWaitTimeout)
+	lock.Release()
 	if err != nil {
 		return "", fmt.Errorf("create target: %w", err)
 	}
@@ -1766,4 +1802,32 @@ func (tt *TargetTracker) SetupListeners(browserCtx context.Context) {
 	_ = runCDPWithSoftTimeout(tt.browserCtx, TargetPageListenerTimeout, chromedp.ActionFunc(func(ctx context.Context) error {
 		return page.Enable().Do(ctx)
 	}))
+}
+
+// SetBrowserInputKey binds target graph changes to the same runtime critical
+// section used by AI and Human input. Listener callbacks only queue events;
+// blocking acquisition occurs in the existing owned event worker.
+func (tt *TargetTracker) SetBrowserInputKey(wsURL string, chromePID int) {
+	tt.bindBrowserInputKey(BrowserInputKey(wsURL, chromePID))
+}
+
+func (tt *TargetTracker) bindBrowserInputKey(key string) {
+	tt.mu.Lock()
+	defer tt.mu.Unlock()
+	tt.inputKey = key
+	tt.inputLockWait = DefaultBrowserInputLockWait
+}
+
+func (tt *TargetTracker) acquireInputLock() (*BrowserInputLock, error) {
+	tt.mu.RLock()
+	key, wait := tt.inputKey, tt.inputLockWait
+	tt.mu.RUnlock()
+	return AcquireBrowserInputLock(key, wait)
+}
+
+// BrowserInputKey returns the canonical runtime key also used by Human input.
+func (tt *TargetTracker) BrowserInputKey() string {
+	tt.mu.RLock()
+	defer tt.mu.RUnlock()
+	return tt.inputKey
 }

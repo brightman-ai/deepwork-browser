@@ -69,7 +69,7 @@ func TestCoordinateClickReportsWhoActuallyReceivedTheInput(t *testing.T) {
 	}
 
 	// (a) 点在被遮罩盖住的按钮中心 → 命中的是遮罩, 不是按钮。
-	if _, err := session.ActWithSessionMode(ctx, "click 120,230", false); err != nil {
+	if _, err := executeFixtureAction(ctx, session, Action{Verb: "click", Target: fixtureViewport(120, 230)}, false, true); err != nil {
 		t.Fatalf("click 120,230: %v", err)
 	}
 	hit := core.(ActionFidelityCapable).LastActionFidelity().Hit
@@ -89,7 +89,10 @@ func TestCoordinateClickReportsWhoActuallyReceivedTheInput(t *testing.T) {
 	}
 
 	// (b) 正对照: 点在自由按钮上 → 回报的就是该按钮本身。
-	if _, err := session.ActWithSessionMode(ctx, "click 120,50", false); err != nil {
+	if _, err := session.SnapWithSessionMode(ctx, 2); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := executeFixtureAction(ctx, session, Action{Verb: "click", Target: fixtureViewport(120, 50)}, false, true); err != nil {
 		t.Fatalf("click 120,50: %v", err)
 	}
 	hit = core.(ActionFidelityCapable).LastActionFidelity().Hit
@@ -127,18 +130,24 @@ func TestCoordinateHoverAndTapXYAlsoReportHit(t *testing.T) {
 		t.Fatalf("viewport %.0fx%.0f", viewportW, viewportH)
 	}
 
-	for _, tc := range []struct{ action, wantSelector string }{
+	for i, tc := range []struct {
+		action       Action
+		wantSelector string
+	}{
 		// 悬停在被盖住的按钮中心 → 命中遮罩
-		{action: "hoverat 120,230", wantSelector: "#cover"},
+		{action: Action{Verb: "hover", Target: fixtureViewport(120, 230)}, wantSelector: "#cover"},
 		// 比例坐标点击自由按钮 → 命中按钮本体
-		{action: fmt.Sprintf("tapxy %.6f %.6f", 120/viewportW, 50/viewportH), wantSelector: "#free"},
+		{action: Action{Verb: "tap", Target: fixtureViewport(120, 50)}, wantSelector: "#free"},
 	} {
-		if _, err := session.ActWithSessionMode(ctx, tc.action, false); err != nil {
-			t.Fatalf("%s: %v", tc.action, err)
+		if _, err := session.SnapWithSessionMode(ctx, i+2); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := executeFixtureAction(ctx, session, tc.action, false, true); err != nil {
+			t.Fatalf("%+v: %v", tc.action, err)
 		}
 		hit := core.(ActionFidelityCapable).LastActionFidelity().Hit
 		if hit == nil || hit.Selector != tc.wantSelector {
-			t.Fatalf("%s hit=%+v, want selector %s", tc.action, hit, tc.wantSelector)
+			t.Fatalf("%+v hit=%+v, want selector %s", tc.action, hit, tc.wantSelector)
 		}
 	}
 }
@@ -215,8 +224,7 @@ func TestValidationFailureIsMarkedPreDispatchAndKeepsRefsUsable(t *testing.T) {
 	impl.RestoreRefsFromSession(SessionRefsFromSnapshot(snap, true))
 
 	// fill 一个不存在的 ref: 解析期就失败, 一个字节的输入都没发出去。
-	_, err := actEngine.ExecuteWithInteractionMode(context.Background(),
-		"fill @r99 'hello'", false, true, InteractionModeVisual)
+	_, err := executeFixtureEngine(context.Background(), actEngine, Action{Verb: "fill", Target: fixtureRef("@ofixture-r99"), Text: "hello"}, false, true, InteractionModeVisual)
 	if err == nil {
 		t.Fatal("fill @r99 unexpectedly succeeded")
 	}
@@ -231,13 +239,13 @@ func TestValidationFailureIsMarkedPreDispatchAndKeepsRefsUsable(t *testing.T) {
 	}
 
 	// 解析错、无匹配的语义定位器同样是校验期失败。
-	for _, action := range []string{"click", "click button:'不存在的东西xyz'"} {
-		_, err := actEngine.ExecuteWithInteractionMode(context.Background(), action, false, true, InteractionModeVisual)
+	for _, action := range []Action{{Verb: "click"}, {Verb: "click", Target: fixtureLocator("role=button[name*=\"不存在的东西xyz\"]")}} {
+		_, err := executeFixtureEngine(context.Background(), actEngine, action, false, true, InteractionModeVisual)
 		if err == nil {
-			t.Fatalf("%q unexpectedly succeeded", action)
+			t.Fatalf("%+v unexpectedly succeeded", action)
 		}
 		if actEngine.lastActionFidelity().Dispatched {
-			t.Fatalf("%q 是校验期失败, 却被记成已派发", action)
+			t.Fatalf("%+v 是校验期失败, 却被记成已派发", action)
 		}
 	}
 	if _, err := actEngine.resolveSemanticSelectorForMode("@r1", true, false); err != nil {

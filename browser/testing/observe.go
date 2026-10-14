@@ -1,8 +1,12 @@
 package testing
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"fmt"
+	"image"
+	_ "image/jpeg"
+	"image/png"
 	"os"
 	"path/filepath"
 	"time"
@@ -32,36 +36,79 @@ func BuildObservation(
 	telemetry *TelemetryState,
 ) *Observation {
 	obs := &Observation{
-		Schema:    "dw.observe.v1",
+		Schema:    "dw.observe.v2",
+		State:     "ready",
+		ID:        NewObservationID(),
+		Channels:  map[string]ChannelState{"structural": {Status: "not-requested"}, "visual": {Status: "not-requested"}, "behavior": {Status: "not-requested"}, "console": {Status: "not-requested"}, "network": {Status: "not-requested"}},
 		SessionID: sessionID,
 		Timestamp: time.Now(),
 	}
 
+	if snap != nil {
+		if snap.ObservationID != "" {
+			obs.ID = snap.ObservationID
+			obs.runtimeCapture = true
+		}
+		obs.RuntimeRunID = snap.RuntimeRunID
+		obs.TargetID = snap.TargetID
+		obs.DocumentID = snap.DocumentID
+	}
+	obs.OperationID = obs.ID
+
 	// — structural 层 —
 	if snap != nil {
 		obs.Structural = structuralFromSnap(snap)
+		obs.Channels["structural"] = ChannelState{Status: "captured"}
+		if snap.Progressive {
+			obs.State = "pending"
+			obs.Channels["structural"] = ChannelState{Status: "unavailable", Reason: snap.ProgressReason}
+		}
 		obs.Page = PageState{
-			URL:   snap.URL,
-			Title: snap.PageTitle,
-			// ViewportW/ViewportH: browser.Snapshot does not carry viewport dimensions.
-			// Callers that need viewport info should obtain it from browser.SessionInfo
-			// (ViewportW/ViewportH fields) and set obs.Page.ViewportW/H directly after
-			// calling BuildObservation.
+			URL:       snap.URL,
+			Title:     snap.PageTitle,
+			ViewportW: int(snap.Viewport.Width),
+			ViewportH: int(snap.Viewport.Height),
+			Geometry:  snap.Viewport,
 		}
 	}
 
 	// — visual 层 —
-	if len(screenshotData) > 0 && screenshotPath != "" {
-		if err := writeScreenshot(screenshotPath, screenshotData); err == nil {
-			obs.Visual = &VisualState{
-				ScreenshotPath: screenshotPath,
+	if screenshotPath != "" {
+		obs.Channels["visual"] = ChannelState{Status: "unavailable", Reason: "screenshot missing or write failed"}
+		obs.State = "unavailable"
+		if decoded, _, err := image.Decode(bytes.NewReader(screenshotData)); err == nil {
+			var encoded bytes.Buffer
+			if err := png.Encode(&encoded, decoded); err != nil {
+				obs.Channels["visual"] = ChannelState{Status: "unavailable", Reason: err.Error()}
+				return obs
 			}
+			if err := writeScreenshot(screenshotPath, encoded.Bytes()); err == nil {
+				obs.Visual = &VisualState{
+					ScreenshotPath: screenshotPath,
+				}
+				obs.Channels["visual"] = ChannelState{Status: "captured"}
+				if snap == nil || !snap.Progressive {
+					obs.State = "ready"
+				} else {
+					obs.State = "pending"
+				}
+			} else {
+				obs.Channels["visual"] = ChannelState{Status: "unavailable", Reason: err.Error()}
+			}
+		} else {
+			obs.Channels["visual"] = ChannelState{Status: "unavailable", Reason: err.Error()}
 		}
 	}
 
 	// — behavior 层 —
 	if behavior != nil {
 		obs.Behavior = behavior
+		if snap != nil {
+			obs.Behavior.URL = snap.URL
+			obs.Behavior.Title = snap.PageTitle
+			obs.Behavior.LoadState = snap.LoadState
+		}
+		obs.Channels["behavior"] = ChannelState{Status: "captured"}
 		// behavior 提供的 URL/Title 比 snap 更实时（来自 SessionAuthority）
 		if obs.Page.URL == "" {
 			obs.Page.URL = behavior.URL
@@ -74,6 +121,16 @@ func BuildObservation(
 	// — telemetry 层 —
 	if telemetry != nil {
 		obs.Telemetry = telemetry
+		if telemetry.ConsoleErrors != nil {
+			obs.Channels["console"] = ChannelState{Status: "captured"}
+		} else {
+			obs.Channels["console"] = ChannelState{Status: "unavailable", Reason: "collector did not supply console evidence"}
+		}
+		if telemetry.NetworkFailures != nil {
+			obs.Channels["network"] = ChannelState{Status: "captured"}
+		} else {
+			obs.Channels["network"] = ChannelState{Status: "unavailable", Reason: "collector did not supply network evidence"}
+		}
 	}
 
 	return obs
@@ -127,22 +184,36 @@ func structuralFromSnap(snap *browser.Snapshot) *StructuralState {
 	refs := make([]RefSummary, 0, len(snap.Refs))
 	for _, r := range snap.Refs {
 		refs = append(refs, RefSummary{
-			Ref:    r.Ref,
-			Role:   r.Role,
-			Name:   r.NameShort,
-			TestID: r.TestID,
+			Ref:            r.Ref,
+			AllowedActions: browser.AllowedActionsForElement(r, browser.Scenario("")),
+			Role:           r.Role,
+			Name:           r.NameShort,
+			Value:          r.Value,
+			TestID:         r.TestID,
+			NameFull:       r.NameFull, Locator: r.RecommendedLocator, BBox: r.BBox, VisibilityKnown: r.VisibilityKnown, Visible: r.VisibleInViewport, Observed: r.Observed, ModalRank: r.ModalRank, Blocked: r.BlockedByModal,
 		})
 	}
 	return &StructuralState{
-		SnapshotType:    snap.SnapshotType,
-		RefsCount:       len(snap.Refs),
-		TextHash:        textHash(snap.Text),
-		LoadState:       snap.LoadState,
-		ReadyState:      snap.ReadyState,
-		Text:            snap.Text,
-		Refs:            refs,
-		DocumentTestIDs: snap.DocumentTestIDs,
-		DocumentText:    snap.DocumentText,
+		SnapshotType:         snap.SnapshotType,
+		RefsCount:            len(snap.Refs),
+		TextHash:             textHash(snap.Text),
+		LoadState:            snap.LoadState,
+		ReadyState:           snap.ReadyState,
+		Text:                 snap.Text,
+		Refs:                 refs,
+		DocumentTestIDs:      snap.DocumentTestIDs,
+		DocumentText:         snap.DocumentText,
+		DocumentTextComplete: snap.DocumentTextComplete,
+	}
+}
+
+// BindActionHints projects core-captured target facts under the owning scenario.
+func (obs *Observation) BindActionHints(snap *browser.Snapshot, scenario browser.Scenario) {
+	if obs == nil || obs.Structural == nil || snap == nil || len(obs.Structural.Refs) != len(snap.Refs) {
+		return
+	}
+	for index, ref := range snap.Refs {
+		obs.Structural.Refs[index].AllowedActions = browser.AllowedActionsForElement(ref, scenario)
 	}
 }
 
@@ -159,3 +230,5 @@ func writeScreenshot(path string, data []byte) error {
 	}
 	return os.WriteFile(path, data, 0o644)
 }
+
+func NewObservationID() string { return browser.NewObservationID() }

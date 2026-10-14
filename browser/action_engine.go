@@ -2,11 +2,13 @@ package browser
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"math"
-	"net/url"
 	"regexp"
 	goruntime "runtime"
 	"strconv"
@@ -60,11 +62,21 @@ type actionEngine struct {
 	// pid)。两个会话可能共享同一个浏览器实例(mux-host 多 tab),输入派发窗口要按它
 	// 取第二把锁。空 = 构造不出键,输入临界区退化为不加锁(见 AcquireBrowserInputLock)。
 	browserInputKey string
+	authorityCheck  func(context.Context, bool, string) error
+	operationID     string
 }
 
 // setBrowserInputKey 由 browserCoreImpl 在构造完成后注入。单写者:构造期写,执行期只读。
 func (e *actionEngine) setBrowserInputKey(wsURL string, chromePID int) {
-	e.browserInputKey = BrowserInputKey(wsURL, chromePID)
+	e.bindBrowserInputKey(BrowserInputKey(wsURL, chromePID))
+}
+
+func (e *actionEngine) bindBrowserInputKey(key string) {
+	e.browserInputKey = key
+	if e.browserInputKey != "" {
+		digest := sha256.Sum256([]byte(e.browserInputKey))
+		e.snapEngine.runtimeRunID = hex.EncodeToString(digest[:])
+	}
 }
 
 // newActionEngine 创建 ActionEngine 实例。
@@ -127,12 +139,14 @@ func (e *actionEngine) lastActionFidelity() ActionFidelityReport {
 func (e *actionEngine) restoreHumanFocus(state HumanFocusState) {
 	e.fidelityMu.Lock()
 	e.humanFocusBackendNodeID = state.BackendNodeID
+	e.snapEngine.humanFocusBackendID.Store(state.BackendNodeID)
 	e.fidelityMu.Unlock()
 }
 
 func (e *actionEngine) recordHumanFocus(backendNodeID int64) {
 	e.fidelityMu.Lock()
 	e.humanFocusBackendNodeID = backendNodeID
+	e.snapEngine.humanFocusBackendID.Store(backendNodeID)
 	e.lastReport.FocusUpdated = true
 	e.lastReport.FocusedBackend = backendNodeID
 	e.fidelityMu.Unlock()
@@ -240,17 +254,18 @@ func (e *actionEngine) autoSyncKeyboard(ctx context.Context) {
 	e.restoreKeyboard(editable)
 }
 
-// ParsedAction 是解析后的操作结构。
-type ParsedAction struct {
-	Op      string  // "click" | "clickxy" | "dblclickxy" | "dragxy" | "clickat" | "hoverat" | "dragat" | "tap" | "tapat" | "type" | "scroll" | "hover" | "select"
-	Ref     string  // Element Ref（如 "e3"）或语义选择器（如 "#testid", "button:'name'"）
-	Value   string  // type/select 的值
-	CoordX  float64 // 有 Ref: 元素内相对 X(0..1)；无 Ref: 视口 CSS px
-	CoordY  float64 // 有 Ref: 元素内相对 Y(0..1)；无 Ref: 视口 CSS px
-	CoordX2 float64 // dragat/swipeat 终点相对 X 坐标（0..1）
-	CoordY2 float64 // dragat/swipeat 终点相对 Y 坐标（0..1）
-	DeltaX  float64 // wheelat 横向滚轮位移（带符号像素）
-	DeltaY  float64 // wheelat 纵向滚轮位移（带符号像素）
+// actionRequest contains validated dispatch fields derived from Action.
+type actionRequest struct {
+	ObservationID string
+	Op            string  // "click" | "clickxy" | "clickat" | "hoverat" | "dragat" | "tap" | "tapat" | "type" | "scroll" | "hover" | "select"
+	Ref           string  // Element Ref（如 "e3"）或语义选择器（如 "#testid", "button:'name'"）
+	Value         string  // type/select 的值
+	CoordX        float64 // 有 Ref: 元素内相对 X(0..1)；无 Ref: 视口 CSS px
+	CoordY        float64 // 有 Ref: 元素内相对 Y(0..1)；无 Ref: 视口 CSS px
+	CoordX2       float64 // dragat/swipeat 终点相对 X 坐标（0..1）
+	CoordY2       float64 // dragat/swipeat 终点相对 Y 坐标（0..1）
+	DeltaX        float64 // wheelat 横向滚轮位移（带符号像素）
+	DeltaY        float64 // wheelat 纵向滚轮位移（带符号像素）
 	// ScrollTarget is empty for viewport scrolling; otherwise the pointer is
 	// moved to this element before wheel input. Steps=0 means the human default
 	// of approximately one viewport.
@@ -315,6 +330,9 @@ func ParseSelector(selector string) (*ParsedSelector, error) {
 		return nil, fmt.Errorf("%w: empty selector", ErrActFailed)
 	}
 
+	if strings.HasPrefix(selector, "@o") {
+		return &ParsedSelector{SType: SelectorSessionRef, Raw: selector}, nil
+	}
 	// 1. @rN — session ref
 	if strings.HasPrefix(selector, "@r") {
 		nStr := selector[2:]
@@ -430,24 +448,49 @@ func parseCanonicalSelector(selector string) (*ParsedSelector, error) {
 			break
 		}
 		if filterStr[0] != '[' {
-			break
+			return nil, fmt.Errorf("%w: trailing canonical selector data", ErrActFailed)
 		}
-		end := strings.IndexByte(filterStr, ']')
+		end := -1
+		quote := byte(0)
+		escaped := false
+		for index := 1; index < len(filterStr); index++ {
+			char := filterStr[index]
+			if escaped {
+				escaped = false
+				continue
+			}
+			if char == '\\' && quote != 0 {
+				escaped = true
+				continue
+			}
+			if quote != 0 {
+				if char == quote {
+					quote = 0
+				}
+				continue
+			}
+			if char == '"' || char == '\'' {
+				quote = char
+				continue
+			}
+			if char == ']' {
+				end = index
+				break
+			}
+		}
 		if end < 0 {
-			break
+			return nil, fmt.Errorf("%w: unterminated canonical filter", ErrActFailed)
 		}
+
 		inner := filterStr[1:end]
 		filterStr = filterStr[end+1:]
 
 		// Parse inner: field op "value" or field=N (for nth)
 		inner = strings.TrimSpace(inner)
 		if strings.HasPrefix(inner, "nth=") {
-			nStr := inner[4:]
-			n := 0
-			for _, c := range nStr {
-				if c >= '0' && c <= '9' {
-					n = n*10 + int(c-'0')
-				}
+			n, err := strconv.Atoi(strings.TrimSpace(inner[4:]))
+			if err != nil || n <= 0 {
+				return nil, fmt.Errorf("%w: nth must be a positive integer", ErrActFailed)
 			}
 			ps.Nth = n
 			continue
@@ -461,12 +504,22 @@ func parseCanonicalSelector(selector string) (*ParsedSelector, error) {
 				field = strings.TrimSpace(inner[:idx])
 				op = candidate
 				val = strings.TrimSpace(inner[idx+len(candidate):])
-				val = strings.Trim(val, `"'`)
+				if strings.HasPrefix(val, "\"") {
+					decoded, err := strconv.Unquote(val)
+					if err != nil {
+						return nil, fmt.Errorf("%w: invalid quoted filter value", ErrActFailed)
+					}
+					val = decoded
+				} else if len(val) >= 2 && val[0] == '\'' && val[len(val)-1] == '\'' {
+					val = strings.ReplaceAll(strings.ReplaceAll(val[1:len(val)-1], "\\'", "'"), "\\\\", "\\")
+				} else {
+					return nil, fmt.Errorf("%w: canonical filter value must be quoted", ErrActFailed)
+				}
 				break
 			}
 		}
-		if field == "" {
-			continue
+		if field != "name" && field != "testid" && field != "placeholder" {
+			return nil, fmt.Errorf("%w: unsupported canonical filter field", ErrActFailed)
 		}
 
 		// Shorthand: if field is "name", populate top-level Name/NameOp
@@ -519,439 +572,6 @@ func isLegacyRef(s string) bool {
 	return true
 }
 
-// ParseAction 解析操作语法字符串 [TC-09-U-05, TC-09-U-06]。
-//
-// 支持操作:
-//   - "click #testid" | "click button:'名称'"
-//   - "click 320,240" — 视口 CSS 像素坐标真实鼠标点击
-//   - 坐标指针动作族（canvas 类 UI：echarts/Univer/地图/白板，无子 DOM，靠真实坐标命中）:
-//   - "clickat #canvas 92% 8%" — 真实鼠标左键单击（点选柱/扇区/数据点）
-//   - "dblclickat css=#cell 30% 40%" — 真实鼠标双击（Univer 单元格进入编辑 / 缩放复位）
-//   - "rclickat css=#chart 30% 40%" — 真实鼠标右键（上下文菜单）
-//   - "hoverat css=#chart 50% 50%" — 真实鼠标悬停（echarts tooltip/十字线）
-//   - "hoverat 414,314" — 视口 CSS 像素绝对坐标悬停（无需 selector）
-//   - "dragat css=#chart 20% 50% 80% 50%" — 真实鼠标拖拽（echarts dataZoom/brush 框选）
-//   - "wheelat css=#chart 50% 50% -240" — 真实滚轮（echarts dataZoom:'inside'、Univer/地图缩放）
-//   - "wheelat 1200,800 down 6" — 在视口绝对坐标向下滚 6 格（无需 selector）
-//   - "tap button:'接管'" | "tapat #browser-liveview 92% 8%" — 真实触控点击
-//   - "swipeat css=#chart 80% 50% 20% 50%" — 真实触控滑动（移动端 canvas 平移）
-//     注意: #x 默认按 data-testid 解析；echarts/Univer 容器多为 id/class，需用 css= 前缀
-//   - "fill #input 'text'" — 清空后输入
-//   - "type textbox:'名称' 'hello'"
-//   - "press Enter" | "press Ctrl+A" | "press #btn Ctrl+K"
-//   - "hover button:'名称'"
-//   - "scroll down" | "scroll up 3" | "scroll @r4 down 3"
-//   - "select combobox:'状态' 'opt2'"
-//   - "back" | "forward"
-//   - "focus #selector"
-//   - "scrollinto #selector" | "scrollto @r4"
-//   - "check #selector" | "uncheck #selector"
-func ParseAction(action string) (*ParsedAction, error) {
-	action = strings.TrimSpace(action)
-	if action == "" {
-		return nil, fmt.Errorf("%w: empty action", ErrActFailed)
-	}
-
-	parts := splitActionParts(action)
-	if len(parts) == 0 {
-		return nil, fmt.Errorf("%w: empty action", ErrActFailed)
-	}
-
-	op := strings.ToLower(parts[0])
-
-	// 绝对视口坐标真实点击 — 完全绕过 a11y/locator 模型，直接对视口像素发真实鼠标事件。
-	// 服务自定义 Vue/canvas UI: 大量可见控件（自定义 button、原生 select、div 点击区）
-	// 不进 a11y 树，css= 选择器引擎解析超时，clickat 又需已被 a11y 找到的 ref 作原点。
-	// 两种等价语法:
-	//   - "tapxy <xfrac> <yfrac>"            (无 ref，对视口比例点击)
-	//   - "clickat viewport <xfrac> <yfrac>" (与 clickat 同形，parts[1]=="viewport" 触发)
-	if op == "tapxy" || (op == "clickat" && len(parts) >= 2 && strings.ToLower(parts[1]) == "viewport") {
-		coordParts := parts[1:] // tapxy: x y
-		if op == "clickat" {
-			coordParts = parts[2:] // clickat viewport x y
-		}
-		if len(coordParts) != 2 {
-			return nil, fmt.Errorf("%w: %s requires exactly xfrac and yfrac (0..1 or 0%%..100%%)", ErrActFailed, op)
-		}
-		x, err := parseNormalizedCoordinate(coordParts[0])
-		if err != nil {
-			return nil, err
-		}
-		y, err := parseNormalizedCoordinate(coordParts[1])
-		if err != nil {
-			return nil, err
-		}
-		return &ParsedAction{Op: "tapxy", CoordX: x, CoordY: y}, nil
-	}
-
-	// 向当前聚焦元素插入文本 — 完全绕过 a11y/locator 模型，不解析任何 ref/selector。
-	// 服务自定义 Vue/canvas input: 配合 tapxy 先聚焦不进 a11y 树的输入框，再用本动作
-	//   "typetext <text>" 直接对聚焦元素发 CDP Input.insertText（一次性插入，不走键盘逐字）。
-	// <text> 取整个剩余字符串（允许含空格/点/特殊字符），不做引号剥离。
-	if op == "typetext" {
-		text := strings.TrimSpace(strings.TrimPrefix(action, parts[0]))
-		if text == "" {
-			return nil, fmt.Errorf("%w: typetext requires text argument", ErrActFailed)
-		}
-		return &ParsedAction{Op: "typetext", Value: text}, nil
-	}
-
-	// Vision-native absolute click: coordinates are viewport CSS pixels, not
-	// normalized fractions. Only a pair of numeric values claims this syntax so
-	// CSS selector lists such as "button.primary,a.cta" remain CSS selectors.
-	if op == "click" {
-		rest := strings.TrimSpace(strings.TrimPrefix(action, parts[0]))
-		if x, y, matched, err := parseViewportCoordinatePair(rest); matched {
-			if err != nil {
-				return nil, err
-			}
-			return &ParsedAction{Op: "clickxy", CoordX: x, CoordY: y}, nil
-		}
-	}
-
-	// Vision-native absolute double-click / drag: 与 `click x,y` 同一套截图派生的视口 CSS 像素。
-	//
-	// 为什么必须有: 坐标动作是 canvas 类 UI 的唯一通路 (元素不进 a11y 树时 clickat/dragat 那种
-	// "selector 提供坐标原点"的形式根本用不了)。而这套坐标出口原先是**不对称**的 ——
-	// click/hover/wheel/tap 都有免 selector 的视口版, 唯独双击与拖拽只有需要 selector 的
-	// dblclickat/dragat。后果: 画布上"双击图元改名"和"从连接点拖出一条线"这两类最核心的手势
-	// 无法用真实鼠标驱动, 只能退回合成事件 (而合成 pointer 事件驱不动 vue-flow 之类的连线握手)。
-	// 2026-08-20 实测于 deepwork-teamworkbench album 画布。
-	if op == "dblclick" && len(parts) >= 2 {
-		if x, y, matched, err := parseViewportCoordinatePair(parts[1]); matched {
-			if err != nil {
-				return nil, err
-			}
-			if len(parts) != 2 {
-				return nil, fmt.Errorf("%w: dblclick x,y accepts no additional arguments", ErrActFailed)
-			}
-			return &ParsedAction{Op: "dblclickxy", CoordX: x, CoordY: y}, nil
-		}
-	}
-	if op == "drag" && len(parts) >= 3 {
-		x1, y1, matched1, err1 := parseViewportCoordinatePair(parts[1])
-		if matched1 {
-			if err1 != nil {
-				return nil, err1
-			}
-			x2, y2, matched2, err2 := parseViewportCoordinatePair(parts[2])
-			if !matched2 {
-				return nil, fmt.Errorf("%w: drag requires a second x,y point (viewport CSS px)", ErrActFailed)
-			}
-			if err2 != nil {
-				return nil, err2
-			}
-			if len(parts) != 3 {
-				return nil, fmt.Errorf("%w: drag x1,y1 x2,y2 accepts no additional arguments", ErrActFailed)
-			}
-			return &ParsedAction{Op: "dragxy", CoordX: x1, CoordY: y1, CoordX2: x2, CoordY2: y2}, nil
-		}
-	}
-
-	// Vision-native absolute hover/wheel: the first argument is the same
-	// screenshot-derived CSS-pixel x,y pair accepted by click. These forms do
-	// not need an artificial selector merely to provide a coordinate origin.
-	if op == "hoverat" && len(parts) >= 2 {
-		if x, y, matched, err := parseViewportCoordinatePair(parts[1]); matched {
-			if err != nil {
-				return nil, err
-			}
-			if len(parts) != 2 {
-				return nil, fmt.Errorf("%w: hoverat x,y accepts no additional arguments", ErrActFailed)
-			}
-			return &ParsedAction{Op: "hoverat", CoordX: x, CoordY: y}, nil
-		}
-	}
-	if op == "wheelat" && len(parts) >= 2 {
-		if x, y, matched, err := parseViewportCoordinatePair(parts[1]); matched {
-			if err != nil {
-				return nil, err
-			}
-			if len(parts) < 3 {
-				return nil, fmt.Errorf("%w: wheelat x,y requires down|up [steps] or deltaY [deltaX]", ErrActFailed)
-			}
-			direction := strings.ToLower(parts[2])
-			if direction == "down" || direction == "up" {
-				steps, err := parseScrollSteps(parts, 3)
-				if err != nil {
-					return nil, err
-				}
-				if steps == 0 {
-					steps = 1
-				}
-				deltaY := humanWheelStepCSSPixels
-				if direction == "up" {
-					deltaY = -deltaY
-				}
-				return &ParsedAction{
-					Op: "wheelat", CoordX: x, CoordY: y,
-					DeltaY: deltaY, Direction: direction, Steps: steps,
-				}, nil
-			}
-			if len(parts) > 4 {
-				return nil, fmt.Errorf("%w: wheelat x,y delta form accepts deltaY and optional deltaX", ErrActFailed)
-			}
-			deltaY, err := parseDelta(parts[2])
-			if err != nil {
-				return nil, err
-			}
-			deltaX := 0.0
-			if len(parts) == 4 {
-				deltaX, err = parseDelta(parts[3])
-				if err != nil {
-					return nil, err
-				}
-			}
-			return &ParsedAction{Op: "wheelat", CoordX: x, CoordY: y, DeltaX: deltaX, DeltaY: deltaY, Steps: 1}, nil
-		}
-	}
-
-	switch op {
-	case "click", "tap", "hover", "focus", "scrollinto", "scrollto", "check", "uncheck":
-		if len(parts) != 2 {
-			return nil, fmt.Errorf("%w: %s requires exactly one selector argument", ErrActFailed, op)
-		}
-		return &ParsedAction{Op: op, Ref: parts[1]}, nil
-
-	// 坐标指针动作族 — 单点 (ref x y): 鼠标单/双/右击、悬停、触控点击。
-	// 按"形状/参数个数"而非逐个动词分支，新增同形动作零成本。
-	case "clickat", "dblclickat", "rclickat", "hoverat", "tapat":
-		if len(parts) != 4 {
-			return nil, fmt.Errorf("%w: %s requires exactly selector, x, and y", ErrActFailed, op)
-		}
-		x, err := parseNormalizedCoordinate(parts[2])
-		if err != nil {
-			return nil, err
-		}
-		y, err := parseNormalizedCoordinate(parts[3])
-		if err != nil {
-			return nil, err
-		}
-		return &ParsedAction{Op: op, Ref: parts[1], CoordX: x, CoordY: y}, nil
-
-	// 坐标指针动作族 — 两点 (ref x1 y1 x2 y2): 鼠标拖拽、触控滑动。
-	case "dragat", "swipeat":
-		if len(parts) != 6 {
-			return nil, fmt.Errorf("%w: %s requires exactly selector, x1, y1, x2, and y2", ErrActFailed, op)
-		}
-		x1, err := parseNormalizedCoordinate(parts[2])
-		if err != nil {
-			return nil, err
-		}
-		y1, err := parseNormalizedCoordinate(parts[3])
-		if err != nil {
-			return nil, err
-		}
-		x2, err := parseNormalizedCoordinate(parts[4])
-		if err != nil {
-			return nil, err
-		}
-		y2, err := parseNormalizedCoordinate(parts[5])
-		if err != nil {
-			return nil, err
-		}
-		return &ParsedAction{Op: op, Ref: parts[1], CoordX: x1, CoordY: y1, CoordX2: x2, CoordY2: y2}, nil
-
-	// 滚轮 (ref x y deltaY [deltaX]): deltaY 必填，deltaX 可选默认 0。
-	case "wheelat":
-		if len(parts) != 5 && len(parts) != 6 {
-			return nil, fmt.Errorf("%w: wheelat requires exactly selector, x, y, deltaY, and optional deltaX", ErrActFailed)
-		}
-		x, err := parseNormalizedCoordinate(parts[2])
-		if err != nil {
-			return nil, err
-		}
-		y, err := parseNormalizedCoordinate(parts[3])
-		if err != nil {
-			return nil, err
-		}
-		dy, err := parseDelta(parts[4])
-		if err != nil {
-			return nil, err
-		}
-		dx := 0.0
-		if len(parts) == 6 {
-			dx, err = parseDelta(parts[5])
-			if err != nil {
-				return nil, err
-			}
-		}
-		return &ParsedAction{Op: "wheelat", Ref: parts[1], CoordX: x, CoordY: y, DeltaX: dx, DeltaY: dy}, nil
-
-	// 页面缩放态（browser chrome 仿真的视口状态空间维度之一）：
-	//   "zoom 2" / "zoom 1.5" — 模拟捏合/聚焦放大后的视觉视口（CDP Emulation.setPageScaleFactor）
-	//   "zoom reset"          — 回到 1.0
-	// Safari 语义：页面缩放不改变布局视口，chrome 层（底栏）恒定不动。
-	case "zoom":
-		if len(parts) != 2 {
-			return nil, fmt.Errorf("%w: zoom requires exactly factor (1..5) or 'reset'", ErrActFailed)
-		}
-		return &ParsedAction{Op: "zoom", Value: strings.ToLower(parts[1])}, nil
-
-	// 软键盘态（REQ-BC-12）：显式切换；click/tap/fill 后另有焦点自动同步。
-	//   "keyboard show" / "keyboard hide"
-	case "keyboard":
-		if len(parts) != 2 {
-			return nil, fmt.Errorf("%w: keyboard requires exactly 'show' or 'hide'", ErrActFailed)
-		}
-		value := strings.ToLower(parts[1])
-		if value != "show" && value != "hide" {
-			return nil, fmt.Errorf("%w: keyboard expects 'show' or 'hide', got %q", ErrActFailed, parts[1])
-		}
-		return &ParsedAction{Op: "keyboard", Value: value}, nil
-
-	case "fill":
-		if len(parts) < 3 {
-			return nil, fmt.Errorf("%w: fill requires selector and value", ErrActFailed)
-		}
-		value, quoted := extractQuotedValue(action, parts[1])
-		if !quoted {
-			if err := checkWithKeywordMisuse("fill", parts); err != nil {
-				return nil, err
-			}
-			value = strings.Join(parts[2:], " ")
-		}
-		return &ParsedAction{Op: "fill", Ref: parts[1], Value: value}, nil
-
-	case "type":
-		if len(parts) < 3 {
-			return nil, fmt.Errorf("%w: type requires selector and value", ErrActFailed)
-		}
-		// 提取引号内的值（支持多词）
-		value, quoted := extractQuotedValue(action, parts[1])
-		if !quoted {
-			if err := checkWithKeywordMisuse("type", parts); err != nil {
-				return nil, err
-			}
-			value = strings.Join(parts[2:], " ")
-		}
-		return &ParsedAction{Op: "type", Ref: parts[1], Value: value}, nil
-
-	case "fillsecret":
-		// fillsecret <selector> '<value>' — 对 password/敏感字段的显式 opt-in 安全填充。
-		// 默认 fill/type 仍拒绝 password [IR-03]；只有调用方明确用 fillsecret 才经安全 CDP
-		// Input.insertText 通道注入（可信输入事件，穿透 Vue/React 受控输入）。值不回显、不入结果。
-		if len(parts) < 3 {
-			return nil, fmt.Errorf("%w: fillsecret requires selector and value", ErrActFailed)
-		}
-		value, quoted := extractQuotedValue(action, parts[1])
-		if !quoted {
-			if err := checkWithKeywordMisuse("fillsecret", parts); err != nil {
-				return nil, err
-			}
-			value = strings.Join(parts[2:], " ")
-		}
-		return &ParsedAction{Op: "fillsecret", Ref: parts[1], Value: value}, nil
-
-	case "press":
-		// press <key>  OR  press <selector> <key>
-		if len(parts) != 2 && len(parts) != 3 {
-			return nil, fmt.Errorf("%w: press requires exactly key or selector + key", ErrActFailed)
-		}
-		key := parts[len(parts)-1]
-		if err := validatePressKeySyntax(key); err != nil {
-			return nil, err
-		}
-		if len(parts) == 2 {
-			// press <key> — page-level
-			return &ParsedAction{Op: "press", Ref: "", Value: key}, nil
-		}
-		// press <selector> <key>
-		return &ParsedAction{Op: "press", Ref: parts[1], Value: key}, nil
-
-	case "scroll":
-		if len(parts) < 2 {
-			return nil, fmt.Errorf("%w: scroll requires direction or selector + direction", ErrActFailed)
-		}
-		if dir := strings.ToLower(parts[1]); dir == "down" || dir == "up" {
-			steps, err := parseScrollSteps(parts, 2)
-			if err != nil {
-				return nil, err
-			}
-			// Keep Ref=direction for compatibility with the original parser
-			// contract; Direction is the unambiguous execution field.
-			return &ParsedAction{Op: "scroll", Ref: dir, Direction: dir, Steps: steps}, nil
-		}
-		if len(parts) < 3 {
-			return nil, fmt.Errorf("%w: scroll %q requires up|down", ErrActFailed, parts[1])
-		}
-		dir := strings.ToLower(parts[2])
-		if dir != "down" && dir != "up" {
-			return nil, fmt.Errorf("%w: scroll direction must be up or down, got %q", ErrActFailed, parts[2])
-		}
-		steps, err := parseScrollSteps(parts, 3)
-		if err != nil {
-			return nil, err
-		}
-		return &ParsedAction{Op: "scroll", ScrollTarget: parts[1], Direction: dir, Steps: steps}, nil
-
-	case "select":
-		if len(parts) < 3 {
-			return nil, fmt.Errorf("%w: select requires selector and value", ErrActFailed)
-		}
-		value, quoted := extractQuotedValue(action, parts[1])
-		if !quoted {
-			value = strings.Join(parts[2:], " ")
-		}
-		return &ParsedAction{Op: "select", Ref: parts[1], Value: value}, nil
-
-	case "back":
-		if len(parts) != 1 {
-			return nil, fmt.Errorf("%w: back accepts no arguments", ErrActFailed)
-		}
-		return &ParsedAction{Op: "back"}, nil
-
-	case "forward":
-		if len(parts) != 1 {
-			return nil, fmt.Errorf("%w: forward accepts no arguments", ErrActFailed)
-		}
-		return &ParsedAction{Op: "forward"}, nil
-
-	case "navigate", "goto":
-		// journey DSL 一直有 navigate，act 却只有 back/forward——改 URL 只能
-		// close+open 重来。补齐同名操作，Value 携带绝对 URL。
-		if len(parts) != 2 {
-			return nil, fmt.Errorf("%w: navigate requires exactly one URL", ErrActFailed)
-		}
-		return &ParsedAction{Op: "navigate", Value: strings.Trim(parts[1], `'"`)}, nil
-
-	default:
-		return nil, fmt.Errorf("%w: unknown operation %q", ErrActFailed, op)
-	}
-}
-
-func parseViewportCoordinatePair(raw string) (x, y float64, matched bool, err error) {
-	left, right, ok := strings.Cut(strings.TrimSpace(raw), ",")
-	if !ok || strings.Contains(right, ",") {
-		return 0, 0, false, nil
-	}
-	left = strings.TrimSpace(left)
-	right = strings.TrimSpace(right)
-	x, xErr := strconv.ParseFloat(left, 64)
-	y, yErr := strconv.ParseFloat(right, 64)
-	if xErr != nil && yErr != nil {
-		return 0, 0, false, nil
-	}
-	if xErr != nil || yErr != nil || math.IsNaN(x) || math.IsNaN(y) || math.IsInf(x, 0) || math.IsInf(y, 0) {
-		return 0, 0, true, fmt.Errorf("%w: viewport coordinates must be finite CSS pixels in x,y form, got %q", ErrActFailed, raw)
-	}
-	return x, y, true, nil
-}
-
-func parseScrollSteps(parts []string, index int) (int, error) {
-	if len(parts) <= index {
-		return 0, nil
-	}
-	if len(parts) > index+1 {
-		return 0, fmt.Errorf("%w: scroll accepts at most one step count", ErrActFailed)
-	}
-	steps, err := strconv.Atoi(parts[index])
-	if err != nil || steps <= 0 || steps > 100 {
-		return 0, fmt.Errorf("%w: scroll steps must be an integer in 1..100, got %q", ErrActFailed, parts[index])
-	}
-	return steps, nil
-}
-
 func validatePressKeySyntax(key string) error {
 	base := key
 	if strings.Contains(key, "+") {
@@ -975,143 +595,6 @@ func validatePressKeySyntax(key string) error {
 		return nil
 	}
 	return fmt.Errorf("%w: press key %q is not a supported single key or modifier chord", ErrActFailed, key)
-}
-
-// parseDelta 解析滚轮位移量（带符号像素，如 -240 / 120），不做 0..1 归一。
-func parseDelta(raw string) (float64, error) {
-	raw = strings.TrimSpace(raw)
-	v, err := strconv.ParseFloat(raw, 64)
-	if err != nil {
-		return 0, fmt.Errorf("%w: invalid wheel delta %q", ErrActFailed, raw)
-	}
-	return v, nil
-}
-
-func parseNormalizedCoordinate(raw string) (float64, error) {
-	raw = strings.TrimSpace(raw)
-	if raw == "" {
-		return 0, fmt.Errorf("%w: empty coordinate", ErrActFailed)
-	}
-
-	if strings.HasSuffix(raw, "%") {
-		v, err := strconv.ParseFloat(strings.TrimSuffix(raw, "%"), 64)
-		if err != nil {
-			return 0, fmt.Errorf("%w: invalid percentage coordinate %q", ErrActFailed, raw)
-		}
-		if v < 0 || v > 100 {
-			return 0, fmt.Errorf("%w: percentage coordinate %q out of range 0%%..100%%", ErrActFailed, raw)
-		}
-		return v / 100.0, nil
-	}
-
-	v, err := strconv.ParseFloat(raw, 64)
-	if err != nil {
-		return 0, fmt.Errorf("%w: invalid coordinate %q", ErrActFailed, raw)
-	}
-	if v < 0 || v > 1 {
-		return 0, fmt.Errorf("%w: coordinate %q out of range 0..1 (use 92%% or 0.92)", ErrActFailed, raw)
-	}
-	return v, nil
-}
-
-// splitActionParts 分割 action 字符串，保留引号内内容（支持 role:'name' 不被空格分割）。
-// 例: "click button:'open dialog'" → ["click", "button:'open dialog'"]
-//
-//	"type textbox:'名称' 'hello'" → ["type", "textbox:'名称'", "'hello'"]
-func splitActionParts(action string) []string {
-	var parts []string
-	var cur strings.Builder
-	inSingle := false
-	inDouble := false
-
-	for i := 0; i < len(action); i++ {
-		c := action[i]
-		switch {
-		case c == '\'' && !inDouble:
-			inSingle = !inSingle
-			cur.WriteByte(c)
-		case c == '"' && !inSingle:
-			inDouble = !inDouble
-			cur.WriteByte(c)
-		case c == ' ' && !inSingle && !inDouble:
-			if cur.Len() > 0 {
-				parts = append(parts, cur.String())
-				cur.Reset()
-			}
-		default:
-			cur.WriteByte(c)
-		}
-	}
-	if cur.Len() > 0 {
-		parts = append(parts, cur.String())
-	}
-	return parts
-}
-
-// extractQuotedValue 从操作字符串中提取引号内的值。
-// 第二个返回值表示“是否真的提供了引号包裹的参数”，
-// 用于区分 fill #x ” 与未加引号的 fallback 解析。
-func extractQuotedValue(action string, afterRef string) (string, bool) {
-	// 找到 ref 之后的内容
-	idx := strings.Index(action, afterRef)
-	if idx < 0 {
-		return "", false
-	}
-	rest := strings.TrimSpace(action[idx+len(afterRef):])
-
-	// 处理单引号或双引号
-	for _, quote := range []byte{'\'', '"'} {
-		if len(rest) > 0 && rest[0] == quote {
-			end := strings.LastIndexByte(rest, quote)
-			if end > 0 {
-				return rest[1:end], true
-			}
-		}
-	}
-	return "", false
-}
-
-// checkWithKeywordMisuse 拦截 `fill <loc> with 'v'` 这类不存在的 `with` 语法 [BUG-FILL-WITH]。
-//
-// 真因: DSL 合法支持不带引号的多词值（fill @r1 hello world → "hello world"），于是
-// `fill @r1 with 'hello'` 会被静默当成字面值 "with 'hello'" 填进输入框 —— act 返回
-// success:true、退出码 0，agent 完全无从察觉。实测已复现（输入框里真是 with 'hello'）。
-//
-// 判据取"极不可能是真实意图"的窄形状: 值以裸词 with 开头 + 其后是完整引号串。
-// 逃生舱: 真要填这个字面量就整体加引号 —— fill @r1 "with 'hello'" 走 quoted 路径，不受影响。
-func checkWithKeywordMisuse(op string, parts []string) error {
-	if len(parts) < 4 || !strings.EqualFold(parts[2], "with") {
-		return nil
-	}
-	tail := strings.TrimSpace(strings.Join(parts[3:], " "))
-	if len(tail) < 2 {
-		return nil
-	}
-	q := tail[0]
-	if (q != '\'' && q != '"') || tail[len(tail)-1] != q {
-		return nil
-	}
-	inner := tail[1 : len(tail)-1]
-	literal := strings.Join(parts[2:], " ") // 误用时会被填进去的整串, 如: with 'hello'
-	return fmt.Errorf("%w: %s 不支持 `with` 语法 (整串 %q 会被当成字面值填进去)。正确写法: %s %s %s%s%s；"+
-		"若确实要填字面量 %q，请整体加引号: %s %s %q",
-		ErrActFailed, op, literal,
-		op, parts[1], string(q), inner, string(q),
-		literal, op, parts[1], literal)
-}
-
-// Execute 执行操作 [TC-09-U-05~08, TC-09-U-27, TC-09-U-28]。
-// observe=false 时返回 nil Snapshot [TC-09-U-28]。
-// 语义选择器（TH-0405-p7c）: #testid / role:'name' / role
-// 位置编码 e{N} 被拒绝并返回引导性错误。
-// sessionMode=true 时允许 @rN ref。
-func (e *actionEngine) Execute(ctx context.Context, action string, observe bool) (*Snapshot, error) {
-	return e.ExecuteWithSessionMode(ctx, action, observe, false)
-}
-
-// ExecuteWithSessionMode 执行操作，支持 session 模式（允许 @rN ref）。
-func (e *actionEngine) ExecuteWithSessionMode(ctx context.Context, action string, observe bool, sessionMode bool) (*Snapshot, error) {
-	return e.ExecuteWithInteractionMode(ctx, action, observe, sessionMode, InteractionModeVisual)
 }
 
 const actionExecutionTimeout = 15 * time.Second
@@ -1182,43 +665,27 @@ func runActionWithTimeout(
 	}
 }
 
-// ExecuteWithInteractionMode executes one action with a step-local fidelity
-// choice. It never mutates the scenario/global posture.
-func (e *actionEngine) ExecuteWithInteractionMode(ctx context.Context, action string, observe bool, sessionMode bool, mode InteractionMode) (*Snapshot, error) {
-	return runActionWithTimeout(ctx, actionExecutionTimeout, action, func(actionCtx context.Context) (*Snapshot, error) {
-		return e.executeWithInteractionMode(actionCtx, action, observe, sessionMode, mode)
-	})
-}
-
-func (e *actionEngine) executeWithInteractionMode(ctx context.Context, action string, observe bool, sessionMode bool, mode InteractionMode) (*Snapshot, error) {
+func (e *actionEngine) executeRequestWithInteractionMode(ctx context.Context, parsed *actionRequest, observe, sessionMode bool, mode InteractionMode) (*Snapshot, error) {
 	e.beginActionFidelity()
-	// — 校验期 —— 以下每一步都跑在任何输入派发之前。失败 = 页面绝无可能被改动，
-	// 因此标记 pre-dispatch，调用方据此保留上一份 observation 的 @rN 句柄
-	// [BUG-ACT-FAILURE-REVOKES-OBSERVATION]。
 	normalizedMode, err := NormalizeInteractionMode(string(mode))
 	if err != nil {
-		return nil, e.failedBeforeDispatch(fmt.Errorf("%w: %v", ErrActFailed, err))
+		return nil, e.failedBeforeDispatch(err)
 	}
 	elementMode := normalizedMode == InteractionModeElement
 	if elementMode && e.interactionPolicy.StrictHuman() {
 		return nil, e.failedBeforeDispatch(fmt.Errorf("%w: mode element is unavailable in strict-human scenario", ErrActFailed))
 	}
 	seeToClick := e.seeToClick && !elementMode
-	strictHuman := e.interactionPolicy.StrictHuman()
-
-	parsed, err := ParseAction(action)
-	if err != nil {
-		return nil, e.failedBeforeDispatch(err)
-	}
+	strictHuman := e.interactionPolicy.StrictHuman() || (e.interactionPolicy.Fidelity == InteractionFidelityDual && !elementMode)
 
 	// page-level 操作不需要选择器
 	// tapxy 是绝对视口坐标点击，刻意不解析 ref（绕过 a11y/locator）。
 	// typetext 向当前聚焦元素插入文本，同样刻意不解析 ref。
-	noSelectorOps := map[string]bool{"scroll": true, "back": true, "forward": true, "navigate": true, "clickxy": true, "dblclickxy": true, "dragxy": true, "tapxy": true, "typetext": true, "zoom": true, "keyboard": true}
+	noSelectorOps := map[string]bool{"scroll": true, "back": true, "forward": true, "clickxy": true, "dblclickxy": true, "dragxy": true, "tapxy": true, "typetext": true, "zoom": true, "keyboard": true, "navigate": true, "reload": true}
 
 	var resolvedRef string
 	if !noSelectorOps[parsed.Op] && parsed.Ref != "" {
-		ref, err := e.resolveSemanticSelectorForModeOp(parsed.Ref, sessionMode, elementMode, parsed.Op)
+		ref, err := e.resolveActionTarget(ctx, parsed.Ref, sessionMode, elementMode, parsed.Op)
 		if err != nil {
 			return nil, e.failedBeforeDispatch(err)
 		}
@@ -1226,11 +693,24 @@ func (e *actionEngine) executeWithInteractionMode(ctx context.Context, action st
 	} else {
 		resolvedRef = parsed.Ref
 	}
-	var resolvedScrollTarget string
-	if parsed.Op == "scroll" && parsed.ScrollTarget != "" {
-		resolvedScrollTarget, err = e.resolveSemanticSelectorForModeOp(parsed.ScrollTarget, sessionMode, elementMode, "scrollinto")
+	if parsed.ObservationID == "" && strings.HasPrefix(resolvedRef, "@o") {
+		id, err := observationIDFromRef(resolvedRef)
 		if err != nil {
 			return nil, e.failedBeforeDispatch(err)
+		}
+		parsed.ObservationID = id
+	}
+	var resolvedScrollTarget string
+	if parsed.Op == "scroll" && parsed.ScrollTarget != "" {
+		resolvedScrollTarget, err = e.resolveActionTarget(ctx, parsed.ScrollTarget, sessionMode, elementMode, "scrollinto")
+		if err != nil {
+			return nil, e.failedBeforeDispatch(err)
+		}
+		if parsed.ObservationID == "" && strings.HasPrefix(resolvedScrollTarget, "@o") {
+			parsed.ObservationID, err = observationIDFromRef(resolvedScrollTarget)
+			if err != nil {
+				return nil, e.failedBeforeDispatch(err)
+			}
 		}
 	}
 
@@ -1239,20 +719,20 @@ func (e *actionEngine) executeWithInteractionMode(ctx context.Context, action st
 	// 校验期到此为止，下面开始真的碰页面。前台确保(bringToFront)与浏览器级输入
 	// 临界区都收口在这一处：每个输入动作只经过一次，滚轮路径原来那两处调用已经
 	// 撤掉。窗口在 switch 结束时关闭 —— DOM settle / 快照不占前台归属。
-	var releaseInputWindow = func() {}
-	if inputDispatchOps[parsed.Op] {
-		release, brought, contention, windowErr := e.enterInputDispatchWindow(ctx)
-		if windowErr != nil {
-			// 前台没摆正 = 输入必然被后台 target 吞掉，页面绝无可能被改动。
+
+	releaseInputWindow, brought, contention, windowErr := e.enterInputDispatchWindowForRequest(ctx, actionRequiresObservation(parsed, elementMode, e.seeToClick), parsed.ObservationID, inputDispatchOps[parsed.Op])
+	if windowErr != nil {
+		var staged *ActionStageError
+		if errors.As(windowErr, &staged) {
 			return nil, e.failedBeforeDispatch(windowErr)
 		}
-		releaseInputWindow = release
-		if brought || contention != "" {
-			e.updateActionFidelity(func(report *ActionFidelityReport) {
-				report.BroughtToFront = brought
-				report.InputContention = contention
-			})
-		}
+		return nil, e.failedBeforeDispatch(&ActionStageError{Phase: "activation", State: "not-dispatched", Cause: windowErr})
+	}
+	if brought || contention != "" {
+		e.updateActionFidelity(func(report *ActionFidelityReport) {
+			report.BroughtToFront = brought
+			report.InputContention = contention
+		})
 	}
 
 	// 直接使用调用方 context（不派生子 context）。
@@ -1261,8 +741,9 @@ func (e *actionEngine) executeWithInteractionMode(ctx context.Context, action st
 	// 诊断证据: EvalJS(browserCtx) 370µs OK, Run(WithTimeout(browserCtx, 5s)) 5s 超时。
 	dispatchErr := func() error {
 		defer releaseInputWindow()
-		return e.dispatchParsedAction(ctx, parsed, resolvedRef, resolvedScrollTarget, seeToClick, elementMode, strictHuman)
+		return e.dispatchActionRequest(ctx, parsed, resolvedRef, resolvedScrollTarget, seeToClick, elementMode, strictHuman)
 	}()
+	e.snapEngine.revokeObservationAuthority()
 	if dispatchErr != nil {
 		return nil, dispatchErr
 	}
@@ -1296,17 +777,17 @@ func (e *actionEngine) executeWithInteractionMode(ctx context.Context, action st
 	}
 
 	if sessionMode {
-		return e.snapEngine.GetSnapshotWithSessionMode(ctx, 0)
+		return e.snapEngine.captureSnapshot(ctx)
 	}
-	return e.snapEngine.GetSnapshot(ctx)
+	return e.snapEngine.captureSnapshot(ctx)
 }
 
-// dispatchParsedAction 是动作动词的分派表。它被单独切出来，是为了让"输入派发窗口"
+// dispatchActionRequest 是动作动词的分派表。它被单独切出来，是为了让"输入派发窗口"
 // 有一个精确的边界：窗口在进入这里之前打开、在离开时立刻关闭，覆盖且只覆盖
 // bringToFront→dispatch→等 ack 这一段。
-func (e *actionEngine) dispatchParsedAction(
+func (e *actionEngine) dispatchActionRequest(
 	ctx context.Context,
-	parsed *ParsedAction,
+	parsed *actionRequest,
 	resolvedRef string,
 	resolvedScrollTarget string,
 	seeToClick bool,
@@ -1315,6 +796,10 @@ func (e *actionEngine) dispatchParsedAction(
 ) error {
 	var err error
 	switch parsed.Op {
+	case "navigate":
+		return chromedp.Run(ctx, chromedp.Navigate(parsed.Value))
+	case "reload":
+		return chromedp.Run(ctx, chromedp.Reload())
 	case "click":
 		if err := e.executeClick(ctx, resolvedRef, seeToClick, elementMode); err != nil {
 			return err
@@ -1340,7 +825,7 @@ func (e *actionEngine) dispatchParsedAction(
 			return err
 		}
 	case "typetext":
-		if err := e.executeTypeText(ctx, parsed.Value); err != nil {
+		if err := e.executeTypeText(ctx, parsed.Value, strictHuman); err != nil {
 			return err
 		}
 	case "zoom":
@@ -1384,6 +869,17 @@ func (e *actionEngine) dispatchParsedAction(
 			return err
 		}
 	case "fill":
+		state, stateErr := e.editableStateForActionTarget(ctx, resolvedRef)
+		if stateErr != nil {
+			return e.failedBeforeDispatch(stateErr)
+		}
+		if kind := temporalInputKind(state.Tag, state.InputType); kind != "" {
+			if !elementMode || e.interactionPolicy.Fidelity != InteractionFidelityDual {
+				return e.failedBeforeDispatch(fmt.Errorf("%w: temporal input requires explicit element mode in baseline; no deletion dispatched", ErrActFailed))
+			}
+			return e.executeElementTemporal(ctx, &ElementRef{Ref: resolvedRef}, resolvedRef, kind, parsed.Value)
+		}
+
 		if strictHuman {
 			err = e.executeStrictHumanText(ctx, resolvedRef, parsed.Value, true, false)
 		} else {
@@ -1393,15 +889,25 @@ func (e *actionEngine) dispatchParsedAction(
 			return err
 		}
 	case "fillsecret":
-		if strictHuman {
-			err = e.executeStrictHumanText(ctx, resolvedRef, parsed.Value, true, true)
-		} else {
-			err = e.executeFillSecret(ctx, resolvedRef, parsed.Value)
+		state, stateErr := e.editableStateForActionTarget(ctx, resolvedRef)
+		if stateErr != nil {
+			return e.failedBeforeDispatch(stateErr)
 		}
+		if err := validateMaskedSensitiveDestination(state); err != nil {
+			return e.failedBeforeDispatch(err)
+		}
+		err = e.executeStrictHumanText(ctx, resolvedRef, parsed.Value, true, true)
 		if err != nil {
 			return err
 		}
 	case "type":
+		state, stateErr := e.editableStateForActionTarget(ctx, resolvedRef)
+		if stateErr != nil {
+			return e.failedBeforeDispatch(stateErr)
+		}
+		if temporalInputKind(state.Tag, state.InputType) != "" {
+			return e.failedBeforeDispatch(fmt.Errorf("%w: temporal insertion unavailable; use explicit baseline element fill", ErrActFailed))
+		}
 		if strictHuman {
 			err = e.executeStrictHumanText(ctx, resolvedRef, parsed.Value, false, false)
 		} else {
@@ -1441,10 +947,6 @@ func (e *actionEngine) dispatchParsedAction(
 		}
 	case "forward":
 		if err := e.executeForward(ctx); err != nil {
-			return err
-		}
-	case "navigate":
-		if err := e.executeNavigate(ctx, parsed.Value); err != nil {
 			return err
 		}
 	case "focus":
@@ -1543,9 +1045,12 @@ func (e *actionEngine) resolveSemanticSelectorForModeOp(selector string, session
 			return "", ErrInvalidRefInOneShot
 		}
 		// @rN → look up in refTable using @rN key
-		refKey := fmt.Sprintf("@r%d", sel.SessionRef)
+		refKey := sel.Raw
 		if _, ok := e.snapEngine.LookupRef(refKey); !ok {
 			return "", fmt.Errorf("%w: %s not found in current observation (run observe --id <id> first)", ErrRefNotFound, refKey)
+		}
+		if meta, ok := e.snapEngine.LookupRefMeta(refKey); !ok || !meta.Observed || !meta.VisibleInViewport {
+			return "", fmt.Errorf("%w: ref is no longer authorized; observe before input", ErrRefNotFound)
 		}
 		// Return as internal ref string so executeClick etc. can use it
 		return refKey, nil
@@ -1822,13 +1327,11 @@ func matchOp(haystack, op, needle string) bool {
 // buildAmbiguousError 构建歧义错误信息，附带候选项和消歧建议。
 func buildAmbiguousError(locator string, matches []*ElementRef) error {
 	suggestions := make([]string, 0, len(matches))
-	for i, m := range matches {
-		if m.TestID != "" {
-			suggestions = append(suggestions, fmt.Sprintf("  - #%s", m.TestID))
-		} else if m.RecommendedLocator != "" {
+	for _, m := range matches {
+		if m.RecommendedLocator != "" {
 			suggestions = append(suggestions, fmt.Sprintf("  - %s", m.RecommendedLocator))
 		} else {
-			suggestions = append(suggestions, fmt.Sprintf("  - role=%s[name=\"%s\"][nth=%d]", m.Role, m.Name, i+1))
+			suggestions = append(suggestions, fmt.Sprintf("  - %s", m.Ref))
 		}
 	}
 	msg := fmt.Sprintf("%s:\n  locator: %s\n  matches: %d\n  suggestions:\n%s",
@@ -1845,7 +1348,7 @@ func isCSSSelector(ref string) bool {
 		return false
 	}
 	// Session refs 格式: @r1, @r2, ...
-	if strings.HasPrefix(ref, "@r") {
+	if strings.HasPrefix(ref, "@") {
 		return false
 	}
 	// Element refs 格式: e1, e2, ..., e999
@@ -2418,7 +1921,7 @@ func ensureTargetFrontmost(ctx context.Context) (bool, error) {
 	}
 	if !acked {
 		return false, fmt.Errorf("%w: bring target to front did not return within %s;"+
-			" a background target swallows pointer/keyboard input, so dispatching now would hang silently",
+			" target activation is unconfirmed and no input was dispatched",
 			ErrActFailed, targetActivationBudget)
 	}
 	return true, nil
@@ -2462,12 +1965,32 @@ func currentTargetID(ctx context.Context) string {
 // bringToFront→dispatch→ack 这一段，毫秒级。DOM settle、快照这些不占前台归属的
 // 步骤刻意留在临界区之外，否则两个操作者会在对方的 5s settle 上排队。
 func (e *actionEngine) enterInputDispatchWindow(ctx context.Context) (release func(), brought bool, contention string, err error) {
+	return e.enterInputDispatchWindowForRequest(ctx, true, "", true)
+}
+
+func (e *actionEngine) enterInputDispatchWindowForRequest(ctx context.Context, needsGeometry bool, captureID string, activate bool) (release func(), brought bool, contention string, err error) {
 	lock, lockErr := AcquireBrowserInputLock(e.browserInputKey, DefaultBrowserInputLockWait)
 	if lockErr != nil {
 		return func() {}, false, "", fmt.Errorf("%w: %v", ErrActFailed, lockErr)
 	}
 	release = func() { lock.Release() }
+	if e.authorityCheck != nil {
+		if err := e.authorityCheck(ctx, needsGeometry, captureID); err != nil {
+			release()
+			return func() {}, false, "", &ActionStageError{Phase: "authority", State: "not-dispatched", Cause: err}
+		}
+	}
 
+	if e.authorityCheck == nil && needsGeometry {
+		if err := e.snapEngine.validateObservationAuthority(ctx, captureID); err != nil {
+			release()
+			return func() {}, false, "", err
+		}
+	}
+
+	if !activate {
+		return release, false, "", nil
+	}
 	brought, err = ensureTargetFrontmost(ctx)
 	if err != nil {
 		release()
@@ -2484,7 +2007,7 @@ func (e *actionEngine) enterInputDispatchWindow(ctx context.Context) (release fu
 
 // inputDispatchOps 是"会向页面派发真实输入"的动作集合 —— 也就是必须先确保
 // target 在前台的那些。导航/纯读类动作(back/forward/scrollinto/zoom/keyboard)
-// 不派发指针或键盘事件，不需要前台，也不该为它们抢浏览器级临界区。
+// 不派发指针或键盘事件，不需要前台；仍与所有动作共用控制权/运行时临界区。
 var inputDispatchOps = map[string]bool{
 	"click": true, "clickxy": true, "clickat": true,
 	"dblclickat": true, "dblclickxy": true, "rclickat": true,
@@ -2878,7 +2401,32 @@ func (e *actionEngine) executeTapXY(ctx context.Context, fracX, fracY float64) e
 // 不解析任何 ref/selector，直接经 CDP Input.insertText 把 text 插入当前焦点（聚焦元素）。
 // 服务自定义 Vue/canvas input —— 配合 tapxy 先聚焦不进 a11y 树、css= 无法命中的输入框，
 // 再用本动作填入文本。与逐字键盘事件不同，insertText 等价于 IME/粘贴提交，单次生效。
-func (e *actionEngine) executeTypeText(ctx context.Context, text string) error {
+func (e *actionEngine) executeTypeText(ctx context.Context, text string, physical bool) error {
+	if physical {
+		backend := e.currentHumanFocus()
+		if backend == 0 {
+			return fmt.Errorf("%w: focused type requires a verified physical focus", ErrActFailed)
+		}
+		meta := &ElementRef{BackendNodeID: backend}
+		state, err := strictEditableStateForMeta(ctx, meta)
+		if err != nil {
+			return err
+		}
+		if !state.Focused || !state.Editable || state.Disabled || state.ReadOnly {
+			return fmt.Errorf("%w: focused element is not editable", ErrActFailed)
+		}
+		if state.Password {
+			return ErrPasswordField
+		}
+		if err := insertTextPerCharacter(ctx, text); err != nil {
+			return &ActionStageError{Phase: "insert", State: "partial", Cause: err}
+		}
+		if err := waitForStrictEditableValue(ctx, meta, state.Prefix+text+state.Suffix); err != nil {
+			return &ActionStageError{Phase: "verify", State: "partial", Cause: err}
+		}
+		return nil
+	}
+
 	return chromedp.Run(ctx, chromedp.ActionFunc(func(ctx context.Context) error {
 		return input.InsertText(text).Do(ctx)
 	}))
@@ -2886,7 +2434,7 @@ func (e *actionEngine) executeTypeText(ctx context.Context, text string) error {
 
 // executeDoubleClickAt 对目标元素相对坐标执行真实鼠标左键双击（Univer 单元格编辑 / 缩放复位）。
 func (e *actionEngine) executeDoubleClickAt(ctx context.Context, ref string, relX, relY float64) error {
-	x, y, err := e.resolvePoint(ctx, ref, relX, relY)
+	x, y, err := e.resolveCoordinateActionPoint(ctx, "executeDoubleClickAt", ref, relX, relY)
 	if err != nil {
 		return err
 	}
@@ -2899,7 +2447,7 @@ func (e *actionEngine) executeDoubleClickAt(ctx context.Context, ref string, rel
 
 // executeRightClickAt 对目标元素相对坐标执行真实鼠标右键点击（上下文菜单）。
 func (e *actionEngine) executeRightClickAt(ctx context.Context, ref string, relX, relY float64) error {
-	x, y, err := e.resolvePoint(ctx, ref, relX, relY)
+	x, y, err := e.resolveCoordinateActionPoint(ctx, "executeRightClickAt", ref, relX, relY)
 	if err != nil {
 		return err
 	}
@@ -2969,7 +2517,7 @@ func (e *actionEngine) executeZoom(ctx context.Context, value string) error {
 //   - 作为 clickat 的触控对偶，支撑 iOS / Android / coarse pointer 测试
 //   - 在 liveview 宿主页上触发 BrowserPanel 的 touch* 链路，而不是退化成 mouse 事件
 func (e *actionEngine) executeTapAt(ctx context.Context, ref string, relX, relY float64) error {
-	x, y, err := e.resolvePoint(ctx, ref, relX, relY)
+	x, y, err := e.resolveCoordinateActionPoint(ctx, "executeTapAt", ref, relX, relY)
 	if err != nil {
 		return err
 	}
@@ -3017,6 +2565,17 @@ func (e *actionEngine) executeWheelAt(ctx context.Context, ref string, relX, rel
 //   - echarts dataZoom 缩放/平移、brush 框选、Univer 单元格选区只能由真实拖拽手势
 //     驱动，无法用 DOM 选择器表达；坐标按元素 box 归一，分辨率无关
 func (e *actionEngine) executeDragAt(ctx context.Context, ref string, relX1, relY1, relX2, relY2 float64) error {
+	if ref == "" {
+		x1, y1, err := e.resolveCoordinateActionPoint(ctx, "executeDragAt", ref, relX1, relY1)
+		if err != nil {
+			return err
+		}
+		x2, y2, err := e.resolveCoordinateActionPoint(ctx, "executeDragAt", ref, relX2, relY2)
+		if err != nil {
+			return err
+		}
+		return dispatchMouseDrag(ctx, x1, y1, x2, y2, mouseDragInterpolationSteps)
+	}
 	box, err := e.resolveValidBox(ctx, ref)
 	if err != nil {
 		return err
@@ -3030,6 +2589,17 @@ func (e *actionEngine) executeDragAt(ctx context.Context, ref string, relX1, rel
 
 // executeSwipeAt 在目标元素内执行真实触控滑动（dragat 的触控对偶，移动端 canvas 平移）。
 func (e *actionEngine) executeSwipeAt(ctx context.Context, ref string, relX1, relY1, relX2, relY2 float64) error {
+	if ref == "" {
+		x1, y1, err := e.resolveCoordinateActionPoint(ctx, "executeSwipeAt", ref, relX1, relY1)
+		if err != nil {
+			return err
+		}
+		x2, y2, err := e.resolveCoordinateActionPoint(ctx, "executeSwipeAt", ref, relX2, relY2)
+		if err != nil {
+			return err
+		}
+		return dispatchTouchSwipe(ctx, x1, y1, x2, y2, mouseDragInterpolationSteps)
+	}
 	box, err := e.resolveValidBox(ctx, ref)
 	if err != nil {
 		return err
@@ -3119,10 +2689,13 @@ type strictEditableState struct {
 	Password       bool   `json:"password"`
 	Tag            string `json:"tag"`
 	InputType      string `json:"input_type"`
+	TextSecurity   string `json:"text_security"`
 	Value          string `json:"value"`
 	Prefix         string `json:"prefix"`
 	Suffix         string `json:"suffix"`
 	SelectionKnown bool   `json:"selection_known"`
+	Disabled       bool   `json:"disabled"`
+	ReadOnly       bool   `json:"readonly"`
 }
 
 var strictEditableStateFunction = `function() {
@@ -3155,7 +2728,7 @@ var strictEditableStateFunction = `function() {
 	const value = editable ? String(el.value ?? '') : '';
 	const selectionKnown = editable && Number.isInteger(el.selectionStart) && Number.isInteger(el.selectionEnd);
 	return {
-		focused, editable, password, tag, input_type: type, value, selection_known: selectionKnown,
+		focused, editable, password, tag, input_type:type, text_security:String(getComputedStyle(el).webkitTextSecurity||getComputedStyle(el).getPropertyValue("-webkit-text-security")||"none"), value, disabled: !!el.disabled, readonly: !!el.readOnly, selection_known: selectionKnown,
 		prefix: selectionKnown ? value.slice(0, el.selectionStart) : value,
 		suffix: selectionKnown ? value.slice(el.selectionEnd) : ''
 	};
@@ -3218,15 +2791,17 @@ func (e *actionEngine) executeStrictHumanFocus(ctx context.Context, ref string) 
 	return nil
 }
 
-func dispatchStrictSelectAllAndBackspace(ctx context.Context) error {
+func dispatchStrictSelectAll(ctx context.Context) error {
 	modifier := input.ModifierCtrl
 	if goruntime.GOOS == "darwin" {
 		modifier = input.ModifierMeta
 	}
-	if err := dispatchModifierCombo(ctx, modifier, "a"); err != nil {
-		return err
-	}
-	return chromedp.Run(ctx, chromedp.KeyEvent(mapKeyName("Backspace")))
+	return chromedp.Run(ctx, chromedp.ActionFunc(func(c context.Context) error {
+		if err := input.DispatchKeyEvent(input.KeyDown).WithKey("a").WithCode("KeyA").WithWindowsVirtualKeyCode(65).WithModifiers(modifier).WithCommands([]string{"selectAll"}).Do(c); err != nil {
+			return err
+		}
+		return input.DispatchKeyEvent(input.KeyUp).WithKey("a").WithCode("KeyA").WithWindowsVirtualKeyCode(65).WithModifiers(modifier).Do(c)
+	}))
 }
 
 func insertTextPerCharacter(ctx context.Context, value string) error {
@@ -3264,6 +2839,14 @@ func (e *actionEngine) executeStrictHumanText(ctx context.Context, ref, value st
 	if err != nil {
 		return err
 	}
+
+	preflight, err := strictEditableStateForMeta(ctx, meta)
+	if err != nil {
+		return err
+	}
+	if err := validatePhysicalTextDestination(preflight, allowPassword); err != nil {
+		return e.failedBeforeDispatch(err)
+	}
 	if err := e.executeStrictHumanFocus(ctx, ref); err != nil {
 		return err
 	}
@@ -3274,38 +2857,37 @@ func (e *actionEngine) executeStrictHumanText(ctx context.Context, ref, value st
 	if !state.Focused {
 		return fmt.Errorf("%w: focus not acquired by real click — human cannot type here", ErrActFailed)
 	}
-	if !state.Editable {
+	if !state.Editable || state.Disabled || state.ReadOnly {
 		return fmt.Errorf("%w: target %q is not an editable INPUT/TEXTAREA", ErrActFailed, ref)
 	}
 	if state.Password && !allowPassword {
 		return ErrPasswordField
 	}
-	// Temporal inputs (date/time/month/week/datetime-local) are segmented
-	// browser chrome, not a text buffer: Input.insertText never lands, and
-	// digit-keystroke order depends on the UI locale. Same verdict as native
-	// <select>: real-click focus + native value set + synthetic events,
-	// reported honestly as synthetic.
-	if kind := temporalInputKind(state.Tag, state.InputType); kind != "" {
-		return e.executeStrictHumanTemporal(ctx, meta, ref, kind, value)
-	}
 
 	want := state.Prefix + value + state.Suffix
 	path := []string{"mouse_click", "active_element_verified"}
 	if clear {
-		if err := dispatchStrictSelectAllAndBackspace(ctx); err != nil {
+		if err := dispatchStrictSelectAll(ctx); err != nil {
 			return fmt.Errorf("%w: clear %q through keyboard: %v", ErrActFailed, ref, err)
 		}
+		selected, selectErr := strictEditableStateForMeta(ctx, meta)
+		if selectErr != nil || !selected.Focused || !selected.SelectionKnown || selected.Value != state.Value || selected.Prefix != "" || selected.Suffix != "" {
+			return &ActionStageError{Phase: "selection", State: "dispatched", Cause: fmt.Errorf("%w: full selection was not acquired; no deletion dispatched", ErrActFailed)}
+		}
+		if err := chromedp.Run(ctx, chromedp.KeyEvent(mapKeyName("Backspace"))); err != nil {
+			return &ActionStageError{Phase: "delete", State: "unknown", Cause: err}
+		}
 		if err := waitForStrictEditableValue(ctx, meta, ""); err != nil {
-			return err
+			return &ActionStageError{Phase: "delete", State: "partial", Cause: err}
 		}
 		want = value
 		path = append(path, "keyboard_select_all", "keyboard_backspace")
 	}
 	if err := insertTextPerCharacter(ctx, value); err != nil {
-		return fmt.Errorf("%w: Input.insertText %q: %v", ErrActFailed, ref, err)
+		return &ActionStageError{Phase: "insert", State: "partial", Cause: fmt.Errorf("%w: text insertion failed: %v", ErrActFailed, err)}
 	}
 	if err := waitForStrictEditableValue(ctx, meta, want); err != nil {
-		return err
+		return &ActionStageError{Phase: "verify", State: "partial", Cause: err}
 	}
 	path = append(path, "Input.insertText_per_character", "value_verified")
 	e.updateActionFidelity(func(report *ActionFidelityReport) {
@@ -3371,11 +2953,19 @@ func temporalValueExample(kind string) string {
 	return ""
 }
 
-// executeStrictHumanTemporal fills a temporal input through the native value
+// executeElementTemporal is available only to explicit element/baseline operations.
+// It fills a temporal input through the native value
 // setter (prototype setter, so framework value-tracking like Vue's v-model
 // still sees the input event) and verifies the canonical value round-trips.
 // Focus was already acquired by a real click in executeStrictHumanText.
-func (e *actionEngine) executeStrictHumanTemporal(ctx context.Context, meta *ElementRef, ref, kind, raw string) error {
+func (e *actionEngine) executeElementTemporal(ctx context.Context, meta *ElementRef, ref, kind, raw string) error {
+	state, stateErr := e.editableStateForActionTarget(ctx, ref)
+	if stateErr != nil {
+		return stateErr
+	}
+	if state.Disabled || state.ReadOnly {
+		return fmt.Errorf("%w: temporal target is not editable", ErrActFailed)
+	}
 	want, err := normalizeTemporalValue(kind, raw)
 	if err != nil {
 		return err
@@ -3393,12 +2983,7 @@ func (e *actionEngine) executeStrictHumanTemporal(ctx context.Context, meta *Ele
 		return String(this.value ?? '');
 	}`, string(encoded))
 	var got string
-	err = chromedp.Run(ctx, chromedp.ActionFunc(func(execCtx context.Context) error {
-		obj, err := resolveElementObjectForMeta(execCtx, meta)
-		if err != nil {
-			return err
-		}
-		defer func() { _ = runtime.ReleaseObject(obj.ObjectID).Do(execCtx) }()
+	err = e.withResolvedActionElement(ctx, ref, func(execCtx context.Context, obj *runtime.RemoteObject) error {
 		result, exc, err := runtime.CallFunctionOn(fn).
 			WithObjectID(obj.ObjectID).
 			WithReturnByValue(true).
@@ -3413,7 +2998,7 @@ func (e *actionEngine) executeStrictHumanTemporal(ctx context.Context, meta *Ele
 			return fmt.Errorf("temporal value set returned no value")
 		}
 		return json.Unmarshal(result.Value, &got)
-	}))
+	})
 	if err != nil {
 		return fmt.Errorf("%w: fill %s %q: %v", ErrActFailed, kind, ref, err)
 	}
@@ -3423,7 +3008,7 @@ func (e *actionEngine) executeStrictHumanTemporal(ctx context.Context, meta *Ele
 	}
 	e.updateActionFidelity(func(report *ActionFidelityReport) {
 		report.Synthetic = true
-		report.SyntheticNote = "temporal <input type=" + kind + "> uses native value set plus synthetic input/change events (segment keystroke order is locale-dependent); real-click focus was verified, but this is not evidence a human can operate the picker"
+		report.SyntheticNote = "temporal <input type=" + kind + "> uses native value set plus synthetic input/change events (segment keystroke order is locale-dependent); explicit element mode is functional evidence, not evidence a human can operate the picker"
 	})
 	return nil
 }
@@ -3514,69 +3099,6 @@ func (e *actionEngine) executeType(ctx context.Context, ref string, value string
 		return chromedp.Run(ctx,
 			chromedp.Focus([]cdp.NodeID{nodeIDs[0]}, chromedp.ByNodeID),
 			chromedp.SendKeys([]cdp.NodeID{nodeIDs[0]}, value, chromedp.ByNodeID),
-		)
-	}))
-}
-
-// executeFillSecret 安全填充：focus + 清空 + CDP Input.insertText（可信输入事件）。
-// 这是对 password/敏感字段的**显式 opt-in 安全路径** —— 默认 fill/type 仍拒绝 password
-// 字段 [IR-03]（防 AI 误入密码经明文通道），只有调用方明确选用 fillsecret 才放行。
-// 相比 fill 的 JS 合成事件（isTrusted:false），CDP Input.insertText 产生**可信输入事件**，
-// 穿透 Vue3/React 受控输入的响应式（合成 input 事件会被受控输入在重渲染时重置回旧 ref 值）。
-// 值经安全输入通道注入，不回显、不写入动作结果（IR-03 secure input channel）。
-func (e *actionEngine) executeFillSecret(ctx context.Context, ref string, value string) error {
-	if isCSSSelector(ref) {
-		// 先经 native setter 清空并触发 input（让受控 v-model 归零），再聚焦。
-		clearJS := fmt.Sprintf(`(() => {
-			const el = document.querySelector(%q);
-			if (!el) return false;
-			const tag = (el.tagName || '').toUpperCase();
-			if (tag !== 'INPUT' && tag !== 'TEXTAREA') return false;
-			el.focus();
-			const proto = tag === 'TEXTAREA'
-				? window.HTMLTextAreaElement.prototype
-				: window.HTMLInputElement.prototype;
-			const desc = Object.getOwnPropertyDescriptor(proto, 'value');
-			if (desc && desc.set) { desc.set.call(el, ''); } else { el.value = ''; }
-			el.dispatchEvent(new Event('input', { bubbles: true }));
-			return true;
-		})()`, ref)
-		var editable bool
-		if err := chromedp.Run(ctx,
-			chromedp.WaitVisible(ref, chromedp.ByQuery),
-			chromedp.Evaluate(clearJS, &editable),
-		); err != nil {
-			return err
-		}
-		if !editable {
-			return fmt.Errorf("%w: element %q not found or not an editable INPUT/TEXTAREA", ErrRefNotFound, ref)
-		}
-		// CDP Input.insertText：可信输入事件，穿透 Vue/React 受控输入与 password 保护。
-		if err := chromedp.Run(ctx, chromedp.ActionFunc(func(ctx context.Context) error {
-			return input.InsertText(value).Do(ctx)
-		})); err != nil {
-			return err
-		}
-		// 补 change 事件（lazy v-model / 校验）。
-		var changed bool
-		changeJS := fmt.Sprintf(`(() => { const el = document.querySelector(%q); if (!el) return false; el.dispatchEvent(new Event('change', { bubbles: true })); return true; })()`, ref)
-		return chromedp.Run(ctx, chromedp.Evaluate(changeJS, &changed))
-	}
-
-	nodeID, err := e.resolveBackendNodeID(ref)
-	if err != nil {
-		return err
-	}
-	return chromedp.Run(ctx, chromedp.ActionFunc(func(ctx context.Context) error {
-		nodeIDs, err := dom.PushNodesByBackendIDsToFrontend([]cdp.BackendNodeID{cdp.BackendNodeID(nodeID)}).Do(ctx)
-		if err != nil || len(nodeIDs) == 0 {
-			return fmt.Errorf("%w: node not found for ref %q", ErrRefNotFound, ref)
-		}
-		return chromedp.Run(ctx,
-			chromedp.Focus([]cdp.NodeID{nodeIDs[0]}, chromedp.ByNodeID),
-			chromedp.ActionFunc(func(ctx context.Context) error {
-				return input.InsertText(value).Do(ctx)
-			}),
 		)
 	}))
 }
@@ -4249,24 +3771,6 @@ func (e *actionEngine) executeForward(ctx context.Context) error {
 	return chromedp.Run(ctx, chromedp.Evaluate("setTimeout(() => history.forward(), 0)", nil))
 }
 
-// executeNavigate 直接导航到绝对 http(s) URL。同 back/forward 的 setTimeout(0)
-// 手法：让 Evaluate 的 CDP 响应先返回，再触发导航，避免页面 unload 销毁 JS
-// context 导致 context destroyed。相对路径拒绝——SPA 内跳转应该点真实链接，
-// act navigate 的语义是"地址栏输入"。
-func (e *actionEngine) executeNavigate(ctx context.Context, rawURL string) error {
-	trimmed := strings.TrimSpace(rawURL)
-	parsedURL, err := url.Parse(trimmed)
-	if err != nil || (parsedURL.Scheme != "http" && parsedURL.Scheme != "https") || parsedURL.Host == "" {
-		return fmt.Errorf("%w: navigate needs an absolute http(s) URL, got %q", ErrActFailed, rawURL)
-	}
-	encoded, err := json.Marshal(trimmed)
-	if err != nil {
-		return fmt.Errorf("%w: navigate URL encode: %v", ErrActFailed, err)
-	}
-	return chromedp.Run(ctx, chromedp.Evaluate(
-		fmt.Sprintf("setTimeout(() => { location.href = %s; }, 0)", string(encoded)), nil))
-}
-
 // executeFocusSelector 聚焦元素。
 func (e *actionEngine) executeFocusSelector(ctx context.Context, ref string) error {
 	return e.withResolvedActionElement(ctx, ref, func(execCtx context.Context, obj *runtime.RemoteObject) error {
@@ -4792,4 +4296,37 @@ func checkPasswordField(ctx context.Context, backendNodeID int64) (bool, error) 
 	}))
 
 	return isPassword, err
+}
+
+func validateMaskedSensitiveDestination(state strictEditableState) error {
+	if state.Tag != "INPUT" || state.InputType != "password" || state.TextSecurity == "none" || state.TextSecurity == "" {
+		return fmt.Errorf("%w: sensitive fill requires a visually masked password input; no deletion dispatched", ErrActFailed)
+	}
+	if state.Disabled || state.ReadOnly {
+		return fmt.Errorf("%w: sensitive destination is not editable", ErrActFailed)
+	}
+	return nil
+}
+func validatePhysicalTextDestination(state strictEditableState, sensitive bool) error {
+	if sensitive {
+		return validateMaskedSensitiveDestination(state)
+	}
+	if temporalInputKind(state.Tag, state.InputType) != "" {
+		return fmt.Errorf("%w: temporal input requires explicit element mode in a baseline scenario; no deletion dispatched", ErrActFailed)
+	}
+	return nil
+}
+func (e *actionEngine) editableStateForActionTarget(ctx context.Context, ref string) (strictEditableState, error) {
+	var state strictEditableState
+	err := e.withResolvedActionElement(ctx, ref, func(c context.Context, obj *runtime.RemoteObject) error {
+		result, exception, err := runtime.CallFunctionOn(strictEditableStateFunction).WithObjectID(obj.ObjectID).WithReturnByValue(true).Do(c)
+		if err != nil {
+			return err
+		}
+		if exception != nil || result == nil {
+			return fmt.Errorf("editable metadata unavailable")
+		}
+		return json.Unmarshal(result.Value, &state)
+	})
+	return state, err
 }

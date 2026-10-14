@@ -98,25 +98,26 @@ type pressedBtnInfo struct {
 
 // InputGateway 输入网关 — 替代 TakeoverController [CAP-BS09-C3 r2, DDC-I-06, DDC-I-07]
 type InputGateway struct {
-	mu             sync.Mutex
-	mode           TakeoverMode
-	owner          string                                   // 当前 owner 的 connID
-	leaseToken     string                                   // 当前 lease token（16字节随机 hex）
-	leaseExpiry    time.Time                                // lease 过期时间（= 上次续租时间 + idleTimeout）
-	idleTimeout    time.Duration                            // idle timeout（默认 5min）
-	idleTimer      *time.Timer                              // idle timer — 每次 accepted input 续租
-	graceTimeout   time.Duration                            // 断连 grace（默认 5s）
-	graceTimer     *time.Timer                              // grace timer — 断连后启动
-	pressedKeys    map[string]pressedKeyInfo                // 当前按住的键（code → {Key, Code}）
-	pressedBtns    map[string]pressedBtnInfo                // 当前按住的鼠标按钮（button → {Button, LastX, LastY}）
-	cdpCtx         context.Context                          // CDP 操作 context（可为 nil，由 SetCDPContext 延迟注入）
-	cdpCtxProvider func() context.Context                   // 当前活跃 CDP context 解析器（优先于 cdpCtx 快照）
-	onStateChange  func()                                   // 状态变化回调（通知 SessionAuthority 广播）
-	onAccepted     func(event *InputEvent)                  // 已成功 dispatch 的 takeover 用户输入回调（用于 target 归属弱证据）
-	dispatchMouse  func(context.Context, *InputEvent) error // test hook: 覆盖真实 mouse dispatch
-	dispatchKey    func(context.Context, *InputEvent) error // test hook: 覆盖真实 keyboard dispatch
-	dispatchTouch  func(context.Context, *InputEvent) error // test hook: 覆盖真实 touch dispatch
-	recordBuffer   *RecordBuffer                            // 录制缓冲 (nil = 未启用, SK-D4)
+	mu               sync.Mutex
+	mode             TakeoverMode
+	owner            string                    // 当前 owner 的 connID
+	leaseToken       string                    // 当前 lease token（16字节随机 hex）
+	leaseExpiry      time.Time                 // lease 过期时间（= 上次续租时间 + idleTimeout）
+	idleTimeout      time.Duration             // idle timeout（默认 5min）
+	idleTimer        *time.Timer               // idle timer — 每次 accepted input 续租
+	graceTimeout     time.Duration             // 断连 grace（默认 5s）
+	graceTimer       *time.Timer               // grace timer — 断连后启动
+	pressedKeys      map[string]pressedKeyInfo // 当前按住的键（code → {Key, Code}）
+	pressedBtns      map[string]pressedBtnInfo // 当前按住的鼠标按钮（button → {Button, LastX, LastY}）
+	cdpCtx           context.Context           // CDP 操作 context（可为 nil，由 SetCDPContext 延迟注入）
+	inputKeyProvider func() string
+	cdpCtxProvider   func() context.Context                   // 当前活跃 CDP context 解析器（优先于 cdpCtx 快照）
+	onStateChange    func()                                   // 状态变化回调（通知 SessionAuthority 广播）
+	onAccepted       func(event *InputEvent)                  // 已成功 dispatch 的 takeover 用户输入回调（用于 target 归属弱证据）
+	dispatchMouse    func(context.Context, *InputEvent) error // test hook: 覆盖真实 mouse dispatch
+	dispatchKey      func(context.Context, *InputEvent) error // test hook: 覆盖真实 keyboard dispatch
+	dispatchTouch    func(context.Context, *InputEvent) error // test hook: 覆盖真实 touch dispatch
+	recordBuffer     *RecordBuffer                            // 录制缓冲 (nil = 未启用, SK-D4)
 }
 
 // NewInputGateway 创建 InputGateway，初始状态为 OBSERVE。
@@ -273,6 +274,20 @@ func (g *InputGateway) HandleInput(connID string, msg *InputMessage) *InputAck {
 	}
 
 	g.mu.Unlock()
+
+	// A target-context selection and its input ACK share the runtime window
+	// with AI input and target activation; Human input keeps lease semantics.
+	lock, err := g.acquireRuntimeInputLock()
+	if err != nil {
+		return &InputAck{Type: "input-ack", Seq: msg.Seq, Status: "error", Reason: err.Error()}
+	}
+	defer lock.Release()
+	g.mu.Lock()
+	stillAuthorized := g.mode == TakeoverModeTakeover && g.owner == connID && msg.Lease == g.leaseToken && !time.Now().After(g.leaseExpiry)
+	g.mu.Unlock()
+	if !stillAuthorized {
+		return &InputAck{Type: "input-ack", Seq: msg.Seq, Status: "rejected", Reason: "lease changed while waiting for runtime input lock"}
+	}
 
 	// CDP dispatch（锁外执行，避免 CDP 阻塞持锁）
 	dispatchStart := time.Now()
@@ -567,6 +582,12 @@ func (g *InputGateway) releaseAllLocked() {
 	// 异步 CDP dispatch（锁外执行）
 	if len(keysToRelease) > 0 || len(btnsToRelease) > 0 {
 		go func() {
+			lock, err := g.acquireRuntimeInputLock()
+			if err != nil {
+				logger.Warn(inputLogContext(), "release input runtime lock failed", "error", err)
+				return
+			}
+			defer lock.Release()
 			dispatchCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 			defer cancel()
 			// Key 和 Code 分开存储，合成 keyUp 时使用正确的元数据
@@ -986,4 +1007,21 @@ func generateLeaseToken() (string, error) {
 		return "", err
 	}
 	return hex.EncodeToString(b), nil
+}
+
+func (g *InputGateway) SetBrowserInputKeyProvider(provider func() string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.inputKeyProvider = provider
+}
+
+func (g *InputGateway) acquireRuntimeInputLock() (*BrowserInputLock, error) {
+	g.mu.Lock()
+	provider := g.inputKeyProvider
+	g.mu.Unlock()
+	key := ""
+	if provider != nil {
+		key = provider()
+	}
+	return AcquireBrowserInputLock(key, DefaultBrowserInputLockWait)
 }

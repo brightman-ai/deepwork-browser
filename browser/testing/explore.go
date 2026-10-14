@@ -4,7 +4,9 @@ package testing
 import (
 	"context"
 	"fmt"
+	"github.com/brightman-ai/deepwork-browser/browser"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -64,44 +66,41 @@ func (e *Explorer) LearnBaseline(ctx context.Context, goal string) (*CandidateBa
 		ID:           fmt.Sprintf("explore-%d", time.Now().Unix()),
 	}
 
-	// Step 1: 采集稳定初态 observation
-	initObs := e.observe(ctx)
-	if initObs == nil {
-		return nil, fmt.Errorf("cannot observe initial state")
+	runner, err := NewRunner(e.executor, "evidence/"+cb.ID)
+	if err != nil {
+		return nil, err
+	}
+	runner.SetFailFast(true)
+	initObs, err := runner.observe(ctx, "explore", "initial")
+	if err != nil {
+		return nil, fmt.Errorf("initial observation: %w", err)
 	}
 	cb.URL = initObs.Page.URL
-
-	// Step 2: 识别 regions（通过 A11y refs 中的 landmark roles）
 	cb.Regions = identifyRegions(initObs)
-
-	// Step 3: 探索 + 发现不变量
-	// 3a. 记录初态中始终存在的元素（作为 invariant 候选）
 	stableRefs := findStableElements(initObs)
-
-	// 3b. 执行低风险动作（click navigation/tab/button，back 恢复）
+	actions := lowRiskActions(initObs)
+	var steps []StepSpec
+	for i, action := range actions {
+		request := action
+		steps = append(steps, StepSpec{ID: fmt.Sprintf("try-%d", i), Kind: "action", Action: &request}, StepSpec{ID: fmt.Sprintf("restore-%d", i), Kind: "action", Action: &browser.Action{Verb: "back"}})
+	}
 	actionsTried := 0
-	for _, action := range lowRiskActions(initObs) {
-		if err := e.executor.Execute(ctx, action); err != nil {
-			// 执行失败不中断，继续下一个
-			continue
+	if len(steps) > 0 {
+		result, err := runner.Run(ctx, &JourneySpec{Version: 2, ID: cb.ID, Name: goal, Journey: steps})
+		if err != nil {
+			return nil, err
 		}
-		time.Sleep(500 * time.Millisecond) // 等 settle
-
-		afterObs := e.observe(ctx)
-		if afterObs == nil {
-			// 恢复并继续
-			_ = e.executor.Execute(ctx, "back")
-			time.Sleep(300 * time.Millisecond)
-			continue
+		if result.Status != StatusPass && result.Status != StatusDelivered {
+			return nil, fmt.Errorf("exploration unknown or failed: %s (evidence %s)", result.Status, result.Evidence)
 		}
-		actionsTried++
-
-		// 检查哪些初态元素仍然存在 → 更强的 invariant 候选
-		stableRefs = intersect(stableRefs, afterObs)
-
-		// 尝试恢复（back）
-		_ = e.executor.Execute(ctx, "back")
-		time.Sleep(300 * time.Millisecond)
+		for i := range actions {
+			obs, err := LoadObservation(fmt.Sprintf("%s/steps/try-%d/after.observe.json", runner.evidence.Dir(), i))
+			if err != nil {
+				return nil, err
+			}
+			stableRefs = intersect(stableRefs, obs)
+			actionsTried++
+		}
 	}
 
 	// Step 4: 从 stable refs 生成 invariant assertions
@@ -129,14 +128,6 @@ func (e *Explorer) LearnBaseline(ctx context.Context, goal string) (*CandidateBa
 	}
 
 	return cb, nil
-}
-
-// observe 采集当前页面 observation（最佳努力，失败返回 nil）。
-func (e *Explorer) observe(ctx context.Context) *Observation {
-	snap, _ := e.executor.Snapshot(ctx)
-	behavior, _ := e.executor.GetSessionState(ctx)
-	telemetry, _ := e.executor.GetTelemetry(ctx)
-	return BuildObservation("explore", snap, nil, "", behavior, telemetry)
 }
 
 // SaveCandidate 将候选基线序列化为 YAML 写入 path。
@@ -240,9 +231,9 @@ var navigationRoles = map[string]bool{
 // lowRiskActions 生成低风险探索动作列表。
 // 从 A11y refs 中提取可点击元素，优先 navigation/tab/link/button。
 // 保守原则：不 fill 表单，不执行 delete/submit 类操作。
-func lowRiskActions(obs *Observation) []string {
+func lowRiskActions(obs *Observation) []browser.Action {
 	if obs == nil || obs.Structural == nil {
-		return []string{}
+		return []browser.Action{}
 	}
 
 	const maxActions = 8 // 限制探索动作数，避免过长
@@ -271,7 +262,7 @@ func lowRiskActions(obs *Observation) []string {
 		combined = combined[:maxActions]
 	}
 
-	actions := make([]string, 0, len(combined))
+	actions := make([]browser.Action, 0, len(combined))
 	for _, ref := range combined {
 		actions = append(actions, buildClickAction(ref))
 	}
@@ -353,15 +344,9 @@ func buildLocator(ref RefSummary) string {
 	return ""
 }
 
-// buildClickAction 生成点击动作字符串（dw-browser act 语法）。
-func buildClickAction(ref RefSummary) string {
-	if ref.Name != "" && ref.Role != "" {
-		return fmt.Sprintf("click %s:'%s'", strings.ToLower(ref.Role), ref.Name)
-	}
-	if ref.Ref != "" {
-		return fmt.Sprintf("click @%s", ref.Ref)
-	}
-	return ""
+// buildClickAction creates a durable structured locator request.
+func buildClickAction(ref RefSummary) browser.Action {
+	return browser.Action{Verb: "click", Target: browser.Target{Kind: "locator", Locator: fmt.Sprintf("role=%s[name=%s]", strings.ToLower(ref.Role), strconv.Quote(ref.Name))}}
 }
 
 // sanitizeID 将字符串转为合法 YAML ID（小写，非字母数字替换为 -，去重 -，截断 32）。

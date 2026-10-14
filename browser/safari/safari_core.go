@@ -48,8 +48,13 @@ type SafariBrowserCore struct {
 	isIOS      bool // true=iOS Simulator, false=macOS Safari
 
 	// session ref 存储
-	refs      map[string]browser.ElementRef // ref string → ElementRef
-	snapEpoch int
+	refs                  map[string]browser.ElementRef // ref string → ElementRef
+	snapEpoch             int
+	interaction           browser.InteractionPolicy
+	lastFidelity          browser.ActionFidelityReport
+	authoritySession      string
+	observationID         string
+	observationDocumentID int64
 
 	// policyMu 独立保护 policy/lastURL（镜像 Chrome 的 policyMu）：不复用 c.mu，
 	// 避免与持有 c.mu 的路径 self-deadlock，以及 per-act 门控对 c.mu 的序列化。
@@ -133,6 +138,9 @@ func NewSafariBrowserCore(ctx context.Context, opts SafariOptions) (*SafariBrows
 
 // Navigate 在 Safari 中打开 URL 并等待页面加载。
 func (c *SafariBrowserCore) Navigate(ctx context.Context, url string) (*browser.Snapshot, error) {
+	if err := browser.ValidateNavigationURL(url); err != nil {
+		return nil, err
+	}
 	if c.isIOS {
 		// iOS: simctl 触发 URL，WebDriver 确认加载
 		if err := c.simctl.OpenURL(ctx, c.deviceUDID, url); err != nil {
@@ -149,7 +157,7 @@ func (c *SafariBrowserCore) Navigate(ctx context.Context, url string) (*browser.
 		}
 	}
 	time.Sleep(wdSettleAfterAction)
-	snap, err := c.snap(ctx, false)
+	snap, err := c.captureSnapshot(ctx, false)
 	if err == nil {
 		// 更新 lastURL，保持后续 act 的 origin 分类新鲜（policy 门控依赖）。
 		if snap != nil && snap.URL != "" {
@@ -176,19 +184,7 @@ func (c *SafariBrowserCore) Navigate(ctx context.Context, url string) (*browser.
 
 // Snap 获取当前页面快照。
 func (c *SafariBrowserCore) Snap(ctx context.Context) (*browser.Snapshot, error) {
-	return c.snap(ctx, false)
-}
-
-// Act 执行操作。
-func (c *SafariBrowserCore) Act(ctx context.Context, action string, observe bool) (*browser.Snapshot, error) {
-	if err := c.executeAction(ctx, action); err != nil {
-		return nil, err
-	}
-	if !observe {
-		return nil, nil
-	}
-	time.Sleep(wdSettleAfterAction)
-	return c.snap(ctx, false)
+	return c.observeSnapshot(ctx, false)
 }
 
 // Text 提取页面文本（通过 JS，无 AX 依赖）。
@@ -310,24 +306,12 @@ func (c *SafariBrowserCore) GetTargetTracker() *browser.TargetTracker {
 // SnapWithSessionMode 获取 session 模式快照（@rN ref 格式）。
 func (c *SafariBrowserCore) SnapWithSessionMode(ctx context.Context, snapEpoch int) (*browser.Snapshot, error) {
 	c.snapEpoch++
-	return c.snap(ctx, true)
+	return c.observeSnapshot(ctx, true)
 }
 
 // SnapWithOptions 获取带选项的快照。
 func (c *SafariBrowserCore) SnapWithOptions(ctx context.Context, opts browser.SnapOptions) (*browser.Snapshot, error) {
 	return c.SnapWithSessionMode(ctx, 0)
-}
-
-// ActWithSessionMode 执行 session 模式操作。
-func (c *SafariBrowserCore) ActWithSessionMode(ctx context.Context, action string, observe bool) (*browser.Snapshot, error) {
-	if err := c.executeAction(ctx, action); err != nil {
-		return nil, err
-	}
-	if !observe {
-		return nil, nil
-	}
-	time.Sleep(wdSettleAfterAction)
-	return c.snap(ctx, true)
 }
 
 // RestoreRefsFromSession 从 session 恢复 ref 表。
@@ -370,7 +354,7 @@ func (c *SafariBrowserCore) DeviceName() string { return c.deviceName }
 // ============================================================
 
 // snap 内部 snapshot 实现，sessionMode 控制 ref 格式。
-func (c *SafariBrowserCore) snap(ctx context.Context, sessionMode bool) (*browser.Snapshot, error) {
+func (c *SafariBrowserCore) captureSnapshot(ctx context.Context, sessionMode bool) (*browser.Snapshot, error) {
 	snap, err := c.wdSnap.Build(ctx, c.wdc, sessionMode)
 	if err != nil {
 		return nil, fmt.Errorf("safari snap: %w", err)
@@ -389,121 +373,22 @@ func (c *SafariBrowserCore) updateRefs(snap *browser.Snapshot) {
 	}
 }
 
-// executeAction 解析并执行 action。
-func (c *SafariBrowserCore) executeAction(ctx context.Context, action string) error {
-	parts := strings.Fields(action)
-	if len(parts) == 0 {
-		return fmt.Errorf("%w: empty action", browser.ErrActFailed)
-	}
-	op := strings.ToLower(parts[0])
-
-	// 远程写门控：分类逻辑单源于 browser policy SSOT。用 dedicated policyMu（非 c.mu）
-	// 读 policy/lastURL，避免序列化 / 与持有 c.mu 的路径 self-deadlock。
-	// 防 fail-open：mutating 时取 *实时* URL（WebDriver /url），页面自导航到远程站也
-	// 能被捕获；取不到才回退 lastURL；两者皆空 → origin "" → 保守阻断。
-	c.policyMu.RLock()
-	pol := c.policy
-	lastURL := c.lastURL
-	c.policyMu.RUnlock()
-	if browser.IsMutatingOp(op) {
-		curURL := lastURL
-		if c.wdc != nil {
-			if live, err := c.wdc.CurrentURL(ctx); err == nil && strings.TrimSpace(live) != "" {
-				curURL = strings.TrimSpace(live)
-				c.policyMu.Lock()
-				c.lastURL = curURL
-				c.policyMu.Unlock()
-			}
-		}
-		if d := pol.EvaluateAct(op, browser.URLOrigin(curURL)); !d.Allowed {
-			return fmt.Errorf("dw-browser: %s", d.Reason)
-		}
-	}
-
-	switch op {
-	case "click":
-		if len(parts) < 2 {
-			return fmt.Errorf("%w: click requires target", browser.ErrActFailed)
-		}
-		return c.executeClick(ctx, parts[1])
-
-	case "type", "fill":
-		if len(parts) < 3 {
-			return fmt.Errorf("%w: type requires target and value", browser.ErrActFailed)
-		}
-		target := parts[1]
-		value := extractValue(action, target)
-		return c.executeType(ctx, target, value)
-
-	case "scroll":
-		if len(parts) < 2 {
-			return fmt.Errorf("%w: scroll requires direction", browser.ErrActFailed)
-		}
-		return c.executeScroll(ctx, parts[1])
-
-	case "back":
-		_, err := c.wdc.ExecuteScript(ctx, "window.history.back()")
-		return err
-
-	case "forward":
-		_, err := c.wdc.ExecuteScript(ctx, "window.history.forward()")
-		return err
-
-	default:
-		return fmt.Errorf("%w: unsupported action %q in Safari engine", browser.ErrActFailed, op)
-	}
-}
-
-// executeClick 执行点击操作。
-// 解析 target → WebDriver element → ClickElement。
-// 失败时 fallback 到 re-snap + 通过 stableKey/testid 重定位。
-func (c *SafariBrowserCore) executeClick(ctx context.Context, target string) error {
-	el, err := c.resolveElement(ctx, target)
-	if err != nil {
-		return err
-	}
-	if err := c.wdc.ClickElement(ctx, *el); err != nil {
-		// Stale element: re-snap 一次后重试
-		snap, snapErr := c.snap(ctx, false)
-		if snapErr != nil {
-			return fmt.Errorf("%w: click failed and re-snap also failed: %v", browser.ErrActFailed, err)
-		}
-		_ = snap
-		el2, err2 := c.resolveElement(ctx, target)
-		if err2 != nil {
-			return fmt.Errorf("%w: element became stale after snap: %v", browser.ErrStaleRef, err)
-		}
-		return c.wdc.ClickElement(ctx, *el2)
-	}
-	return nil
-}
-
-// executeType 执行输入操作。
-func (c *SafariBrowserCore) executeType(ctx context.Context, target, value string) error {
-	el, err := c.resolveElement(ctx, target)
-	if err != nil {
-		return fmt.Errorf("safari type: focus failed: %w", err)
-	}
-	if err := c.wdc.ClearElement(ctx, *el); err != nil {
-		// 忽略 clear 失败（非 input 元素可能不支持）
-		_ = err
-	}
-	time.Sleep(wdSettleAfterFocus)
-	return c.wdc.SendKeys(ctx, *el, value)
-}
-
 // executeScroll 执行滚动（JS window.scrollBy）。
-func (c *SafariBrowserCore) executeScroll(ctx context.Context, direction string) error {
+func (c *SafariBrowserCore) executeScroll(ctx context.Context, direction string, steps int) error {
+	if steps == 0 {
+		steps = 1
+	}
+	pixels := 300 * steps
 	var script string
 	switch strings.ToLower(direction) {
 	case "down":
-		script = "window.scrollBy(0, 300)"
+		script = fmt.Sprintf("window.scrollBy(0, %d)", pixels)
 	case "up":
-		script = "window.scrollBy(0, -300)"
+		script = fmt.Sprintf("window.scrollBy(0, -%d)", pixels)
 	case "left":
-		script = "window.scrollBy(-300, 0)"
+		script = fmt.Sprintf("window.scrollBy(-%d, 0)", pixels)
 	case "right":
-		script = "window.scrollBy(300, 0)"
+		script = fmt.Sprintf("window.scrollBy(%d, 0)", pixels)
 	default:
 		return fmt.Errorf("%w: unknown scroll direction %q", browser.ErrActFailed, direction)
 	}
@@ -524,44 +409,53 @@ func (c *SafariBrowserCore) resolveElement(ctx context.Context, target string) (
 	c.mu.Unlock()
 
 	// @rN / eN — ref 表查找 → 通过 stableKey 定位
-	isRef := strings.HasPrefix(target, "@r") ||
-		(len(target) > 1 && target[0] == 'e' && target[1] >= '0' && target[1] <= '9')
+	isRef := strings.HasPrefix(target, "@o")
 	if isRef {
 		ref, ok := refs[target]
-		if !ok {
+		if !ok || !ref.Observed {
 			return nil, fmt.Errorf("%w: ref %q not found", browser.ErrRefNotFound, target)
 		}
 		return c.elementFromRef(ctx, ref)
 	}
 
-	// #testid
-	if strings.HasPrefix(target, "#") {
-		testID := target[1:]
-		return c.wdc.FindElement(ctx, "css selector", fmt.Sprintf("[data-testid='%s']", testID))
+	if strings.HasPrefix(target, "css=") {
+		return c.wdc.FindElement(ctx, "css selector", strings.TrimPrefix(target, "css="))
 	}
-
-	// role:'name' 语义选择器
-	if idx := strings.IndexByte(target, ':'); idx > 0 {
-		role := target[:idx]
-		name := strings.Trim(target[idx+1:], "'\"")
-		// 先从 refs 表匹配
+	selector, err := browser.ParseSelector(target)
+	if err != nil {
+		return nil, err
+	}
+	if selector.SType == browser.SelectorCanonical {
 		for _, ref := range refs {
-			if ref.Role == role && strings.Contains(ref.Name, name) {
-				el, err := c.elementFromRef(ctx, ref)
-				if err == nil {
-					return el, nil
+			if ref.Role != selector.Role {
+				continue
+			}
+			match := true
+			for _, filter := range selector.Filters {
+				actual := ""
+				switch filter.Field {
+				case "name":
+					actual = ref.Name
+				case "testid":
+					actual = ref.TestID
+				case "placeholder":
+					actual = ref.Placeholder
+				default:
+					match = false
+				}
+				switch filter.Op {
+				case "=":
+					match = match && actual == filter.Value
+				case "*=":
+					match = match && strings.Contains(actual, filter.Value)
+				case "^=":
+					match = match && strings.HasPrefix(actual, filter.Value)
+				default:
+					match = false
 				}
 			}
-		}
-		return nil, fmt.Errorf("%w: %s with name containing %q not found", browser.ErrRefNotFound, role, name)
-	}
-
-	// bare role — 取第一个 interactable 匹配
-	for _, ref := range refs {
-		if ref.Role == target && ref.Interactable {
-			el, err := c.elementFromRef(ctx, ref)
-			if err == nil {
-				return el, nil
+			if match {
+				return c.elementFromRef(ctx, ref)
 			}
 		}
 	}
@@ -572,6 +466,9 @@ func (c *SafariBrowserCore) resolveElement(ctx context.Context, target string) (
 // elementFromRef 通过 ElementRef 定位 WebDriver Element。
 // 优先用 testid；fallback 用 stableKey 中的 role+name；最后用 ordinal。
 func (c *SafariBrowserCore) elementFromRef(ctx context.Context, ref browser.ElementRef) (*Element, error) {
+	if ref.Locator.WebDriverElementID != "" {
+		return &Element{ID: ref.Locator.WebDriverElementID}, nil
+	}
 	// 快速路径：testid
 	if ref.TestID != "" {
 		el, err := c.wdc.FindElement(ctx, "css selector", fmt.Sprintf("[data-testid='%s']", ref.TestID))
@@ -662,17 +559,6 @@ func stripScheme(url string) string {
 		return url[i+3:]
 	}
 	return url
-}
-
-// extractValue 从 action 字符串中提取引号内的值。
-func extractValue(action, afterTarget string) string {
-	idx := strings.Index(action, afterTarget)
-	if idx < 0 {
-		return ""
-	}
-	rest := strings.TrimSpace(action[idx+len(afterTarget):])
-	rest = strings.Trim(rest, "'\"")
-	return rest
 }
 
 // ============================================================

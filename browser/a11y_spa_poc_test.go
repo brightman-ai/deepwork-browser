@@ -149,10 +149,10 @@ func TestA11ySPA_FallbackThreshold_HA02(t *testing.T) {
 			refs := make([]ElementRef, tc.refCount)
 			for i := 0; i < tc.refCount; i++ {
 				refs[i] = ElementRef{
-					Ref:          "e" + itoa(i+1),
-					Role:         "button",
-					Name:         "Button " + itoa(i+1),
-					Interactable: true,
+					Ref:           "e" + itoa(i+1),
+					Role:          "button",
+					Name:          "Button " + itoa(i+1),
+					Interactable:  true,
 					BackendNodeID: int64(i + 1),
 				}
 			}
@@ -228,13 +228,13 @@ func TestA11ySPA_ImplementationStatus(t *testing.T) {
 	// 此测试记录 A11y SPA POC 的实现状态
 	// 用于在 T7 证据包中追踪 HA-02 验证进展
 	status := map[string]string{
-		"A11y 实现方式":          "chromedp Go 原生 CDP (accessibility.GetFullAXTree)",
-		"SPA 覆盖策略":           "A11y tree → DOM fallback → Screenshot fallback",
-		"交互角色覆盖":             "button/link/textbox/combobox/checkbox/radio/tab/switch/slider/spinbutton等",
-		"HA-02 L1 验证":         "PASS (interactableRoles 覆盖 SPA 常见角色)",
-		"HA-02 L2 集成验证":       "in integration_test.go TC-09-I-04 (需要 Chrome)",
+		"A11y 实现方式":            "chromedp Go 原生 CDP (accessibility.GetFullAXTree)",
+		"SPA 覆盖策略":             "A11y tree → DOM fallback → Screenshot fallback",
+		"交互角色覆盖":               "button/link/textbox/combobox/checkbox/radio/tab/switch/slider/spinbutton等",
+		"HA-02 L1 验证":          "PASS (interactableRoles 覆盖 SPA 常见角色)",
+		"HA-02 L2 集成验证":        "in integration_test.go TC-09-I-04 (需要 Chrome)",
 		"HA-02 L3 Journey POC": "in journey_test.go TC-09-J-05 (需要 Chrome)",
-		"动态内容更新":              "每次 snap 完全重建 refTable (GetSnapshot 行为)",
+		"动态内容更新":               "每次 snap 完全重建 refTable (GetSnapshot 行为)",
 		"iframe 覆盖":            "DEFERRED (TC-09-I-04 备注: 复杂 iframe 场景需进一步验证)",
 	}
 
@@ -244,4 +244,3 @@ func TestA11ySPA_ImplementationStatus(t *testing.T) {
 
 	t.Log("TestA11ySPA_ImplementationStatus PASS: A11y SPA POC 状态已记录")
 }
-

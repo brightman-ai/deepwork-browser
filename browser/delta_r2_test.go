@@ -47,7 +47,9 @@ func TestSnapOptions_CompactFilter_KeepsInteractable(t *testing.T) {
 
 // TC-C5-12: act --snap で action 失敗時は snap を実行しない（エラーで即 return）。
 // 验证: needsPostActionSnapshot || snapAfterAct の論理 — snapAfterAct=true でも
-//      ActWithSessionMode が error を返した場合、output に snap が含まれないこと。
+//
+//	ActWithSessionMode が error を返した場合、output に snap が含まれないこと。
+//
 // L1レベルでは: ErrActFailed エラー型が正しく定義されていることを確認する。
 func TestActSnap_ActionFailure_NoSnapProduced(t *testing.T) {
 	// TC-ID: TC-C5-12
@@ -65,7 +67,8 @@ func TestActSnap_ActionFailure_NoSnapProduced(t *testing.T) {
 // ============================================================
 
 // TC-C5-13: SnapOptions 構造体で Selector フィールドが非空の場合、SnapWithOptions が
-//           それを使用する（L1: 構造体フィールド + ErrSelectorNotFound の存在確認）。
+//
+//	それを使用する（L1: 構造体フィールド + ErrSelectorNotFound の存在確認）。
 func TestSnapOptions_Selector_FieldExists(t *testing.T) {
 	// TC-ID: TC-C5-13 (L1 structural)
 	opts := SnapOptions{

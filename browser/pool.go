@@ -1372,7 +1372,6 @@ func (p *BrowserPool) materializeManagedTabLocked(entry *chromePoolEntry, tabCtx
 	// 之前错误地把监听挂在 tabCtx，page-opened target=_blank / window.open 的 TargetCreated
 	// 可能漏收，只能在后续 RefreshTargets() 中被动补登记，导致 liveview 不自动切 tab，
 	// 真实 headed Chrome 却已经打开了新标签，表现为焦点/Space 被抢走。
-	tracker.SetupListeners(entry.browserCtx)
 
 	core := &browserCoreImpl{
 		allocCtx:           entry.allocCtx,
@@ -1397,9 +1396,13 @@ func (p *BrowserPool) materializeManagedTabLocked(entry *chromePoolEntry, tabCtx
 		launcher:           NewChromeLauncher(),
 		supervisor:         NewChromeSupervisor(),
 	}
+	inputPID := entry.execChromePID
 	if entry.chromeHandle != nil {
 		core.wsURL = entry.chromeHandle.WSURL()
+		inputPID = entry.chromeHandle.PID()
 	}
+	core.bindRuntimeInputIdentity(core.wsURL, inputPID)
+	tracker.SetupListeners(entry.browserCtx)
 	if mode == ModeVisible && entry.chromeHandle != nil {
 		scheduleBootstrapBlankCleanup(entry.browserCtx, string(entry.identity.Key), targetID, entry.chromeHandle.WSURL())
 	}

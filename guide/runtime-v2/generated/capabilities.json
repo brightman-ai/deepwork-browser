@@ -1,0 +1,3698 @@
+{
+  "actions": [
+    {
+      "kind": "click",
+      "summary": "Click a visible target; count 2 or button right selects its mouse variant",
+      "target_kinds": [
+        "ref",
+        "locator",
+        "point"
+      ],
+      "fields": [
+        "target",
+        "button",
+        "count"
+      ],
+      "mutates": true
+    },
+    {
+      "kind": "tap",
+      "summary": "Touch a visible target",
+      "target_kinds": [
+        "ref",
+        "locator",
+        "point"
+      ],
+      "fields": [
+        "target"
+      ],
+      "mutates": true
+    },
+    {
+      "kind": "hover",
+      "summary": "Move the pointer to a visible target",
+      "target_kinds": [
+        "ref",
+        "locator",
+        "point"
+      ],
+      "fields": [
+        "target"
+      ],
+      "mutates": false
+    },
+    {
+      "kind": "fill",
+      "summary": "Replace editable text using verified physical selection and input",
+      "target_kinds": [
+        "ref",
+        "locator"
+      ],
+      "fields": [
+        "target",
+        "text",
+        "sensitive"
+      ],
+      "mutates": true
+    },
+    {
+      "kind": "type",
+      "summary": "Insert text into a target or the physically focused editor",
+      "target_kinds": [
+        "ref",
+        "locator"
+      ],
+      "fields": [
+        "target",
+        "text",
+        "focused"
+      ],
+      "mutates": true
+    },
+    {
+      "kind": "press",
+      "summary": "Dispatch a platform key or shortcut",
+      "target_kinds": [
+        "ref",
+        "locator"
+      ],
+      "fields": [
+        "target",
+        "key"
+      ],
+      "mutates": true
+    },
+    {
+      "kind": "focus",
+      "summary": "Physically focus an editable target",
+      "target_kinds": [
+        "ref",
+        "locator"
+      ],
+      "fields": [
+        "target"
+      ],
+      "mutates": false
+    },
+    {
+      "kind": "select",
+      "summary": "Select a native option; reports its synthetic exception",
+      "target_kinds": [
+        "ref",
+        "locator"
+      ],
+      "fields": [
+        "target",
+        "value"
+      ],
+      "mutates": true
+    },
+    {
+      "kind": "set-checked",
+      "summary": "Set a checkbox to an explicit boolean",
+      "target_kinds": [
+        "ref",
+        "locator"
+      ],
+      "fields": [
+        "target",
+        "checked"
+      ],
+      "mutates": true
+    },
+    {
+      "kind": "scroll",
+      "summary": "Scroll the viewport or target at a declared point",
+      "target_kinds": [
+        "ref",
+        "locator",
+        "point"
+      ],
+      "fields": [
+        "target",
+        "direction",
+        "steps",
+        "delta_x",
+        "delta_y"
+      ],
+      "mutates": false
+    },
+    {
+      "kind": "scrollto",
+      "summary": "Scroll a persistent target into view",
+      "target_kinds": [
+        "ref",
+        "locator"
+      ],
+      "fields": [
+        "target"
+      ],
+      "mutates": false
+    },
+    {
+      "kind": "drag",
+      "summary": "Drag between two points in one coordinate frame",
+      "target_kinds": [
+        "ref",
+        "locator",
+        "point"
+      ],
+      "fields": [
+        "target",
+        "end"
+      ],
+      "mutates": true
+    },
+    {
+      "kind": "swipe",
+      "summary": "Swipe between two touch points",
+      "target_kinds": [
+        "ref",
+        "locator",
+        "point"
+      ],
+      "fields": [
+        "target",
+        "end"
+      ],
+      "mutates": true
+    },
+    {
+      "kind": "navigate",
+      "summary": "Navigate the existing session to a URL",
+      "fields": [
+        "url"
+      ],
+      "mutates": false
+    },
+    {
+      "kind": "reload",
+      "summary": "Reload the existing document",
+      "mutates": false
+    },
+    {
+      "kind": "back",
+      "summary": "Traverse browser history backwards",
+      "mutates": false
+    },
+    {
+      "kind": "forward",
+      "summary": "Traverse browser history forwards",
+      "mutates": false
+    },
+    {
+      "kind": "zoom",
+      "summary": "Set page scale",
+      "fields": [
+        "value"
+      ],
+      "mutates": true
+    },
+    {
+      "kind": "keyboard",
+      "summary": "Show or hide the emulated mobile keyboard",
+      "fields": [
+        "value"
+      ],
+      "mutates": true
+    }
+  ],
+  "commands": [
+    {
+      "command": "help",
+      "summary": "Show the same executable command contract",
+      "flags": [
+        {
+          "name": "--output",
+          "takes_value": true,
+          "value_type": "string",
+          "infrastructure": "output"
+        },
+        {
+          "name": "--lock-wait",
+          "takes_value": true,
+          "value_type": "lock-duration",
+          "infrastructure": "locking"
+        },
+        {
+          "name": "--verbose",
+          "takes_value": false,
+          "infrastructure": "logging"
+        }
+      ],
+      "min_args": 0,
+      "max_args": 2,
+      "diagnostic": true
+    },
+    {
+      "command": "open",
+      "summary": "Create one session; duplicate IDs are rejected",
+      "flags": [
+        {
+          "name": "--scenario",
+          "takes_value": true,
+          "values": [
+            "app-test-explore",
+            "app-test-baseline",
+            "webvisit"
+          ],
+          "value_type": "string"
+        },
+        {
+          "name": "--mode",
+          "takes_value": true,
+          "values": [
+            "headless",
+            "headed",
+            "visible"
+          ],
+          "value_type": "string"
+        },
+        {
+          "name": "--persona",
+          "takes_value": true,
+          "value_type": "string"
+        },
+        {
+          "name": "--engine",
+          "takes_value": true,
+          "values": [
+            "chrome",
+            "safari"
+          ],
+          "value_type": "string"
+        },
+        {
+          "name": "--safari-device",
+          "takes_value": true,
+          "value_type": "string"
+        },
+        {
+          "name": "--viewport",
+          "takes_value": true,
+          "value_type": "string"
+        },
+        {
+          "name": "--profile",
+          "takes_value": true,
+          "value_type": "string"
+        },
+        {
+          "name": "--evidence",
+          "takes_value": true,
+          "value_type": "string"
+        },
+        {
+          "name": "--allow-host",
+          "takes_value": true,
+          "value_type": "string"
+        },
+        {
+          "name": "--browser-chrome",
+          "takes_value": true,
+          "values": [
+            "auto",
+            "on",
+            "off"
+          ],
+          "value_type": "string"
+        },
+        {
+          "name": "--user-agent",
+          "takes_value": true,
+          "value_type": "string"
+        },
+        {
+          "name": "--goal",
+          "takes_value": true,
+          "value_type": "string"
+        },
+        {
+          "name": "--stealth",
+          "takes_value": false
+        },
+        {
+          "name": "--id",
+          "takes_value": true,
+          "value_type": "session-id"
+        },
+        {
+          "name": "--output",
+          "takes_value": true,
+          "value_type": "string",
+          "infrastructure": "output"
+        },
+        {
+          "name": "--lock-wait",
+          "takes_value": true,
+          "value_type": "lock-duration",
+          "infrastructure": "locking"
+        },
+        {
+          "name": "--verbose",
+          "takes_value": false,
+          "infrastructure": "logging"
+        }
+      ],
+      "required": [
+        "--scenario",
+        "--id"
+      ],
+      "min_args": 1,
+      "max_args": 1,
+      "diagnostic": false
+    },
+    {
+      "command": "close",
+      "summary": "Close only the named session",
+      "flags": [
+        {
+          "name": "--id",
+          "takes_value": true,
+          "value_type": "session-id"
+        },
+        {
+          "name": "--force",
+          "takes_value": false
+        },
+        {
+          "name": "--output",
+          "takes_value": true,
+          "value_type": "string",
+          "infrastructure": "output"
+        },
+        {
+          "name": "--lock-wait",
+          "takes_value": true,
+          "value_type": "lock-duration",
+          "infrastructure": "locking"
+        },
+        {
+          "name": "--verbose",
+          "takes_value": false,
+          "infrastructure": "logging"
+        }
+      ],
+      "required": [
+        "--id"
+      ],
+      "min_args": 0,
+      "max_args": 0,
+      "diagnostic": false
+    },
+    {
+      "command": "once",
+      "summary": "Create, observe and close a short-lived reading session",
+      "flags": [
+        {
+          "name": "--scenario",
+          "takes_value": true,
+          "values": [
+            "app-test-explore",
+            "app-test-baseline",
+            "webvisit"
+          ],
+          "value_type": "string"
+        },
+        {
+          "name": "--mode",
+          "takes_value": true,
+          "values": [
+            "headless",
+            "headed",
+            "visible"
+          ],
+          "value_type": "string"
+        },
+        {
+          "name": "--persona",
+          "takes_value": true,
+          "value_type": "string"
+        },
+        {
+          "name": "--engine",
+          "takes_value": true,
+          "values": [
+            "chrome",
+            "safari"
+          ],
+          "value_type": "string"
+        },
+        {
+          "name": "--safari-device",
+          "takes_value": true,
+          "value_type": "string"
+        },
+        {
+          "name": "--viewport",
+          "takes_value": true,
+          "value_type": "string"
+        },
+        {
+          "name": "--profile",
+          "takes_value": true,
+          "value_type": "string"
+        },
+        {
+          "name": "--evidence",
+          "takes_value": true,
+          "value_type": "string"
+        },
+        {
+          "name": "--allow-host",
+          "takes_value": true,
+          "value_type": "string"
+        },
+        {
+          "name": "--browser-chrome",
+          "takes_value": true,
+          "values": [
+            "auto",
+            "on",
+            "off"
+          ],
+          "value_type": "string"
+        },
+        {
+          "name": "--user-agent",
+          "takes_value": true,
+          "value_type": "string"
+        },
+        {
+          "name": "--goal",
+          "takes_value": true,
+          "value_type": "string"
+        },
+        {
+          "name": "--stealth",
+          "takes_value": false
+        },
+        {
+          "name": "--screenshot",
+          "takes_value": true,
+          "value_type": "string"
+        },
+        {
+          "name": "--content",
+          "takes_value": true,
+          "values": [
+            "text",
+            "list",
+            "table"
+          ],
+          "value_type": "string"
+        },
+        {
+          "name": "--health",
+          "takes_value": false
+        },
+        {
+          "name": "--tree",
+          "takes_value": false
+        },
+        {
+          "name": "--all",
+          "takes_value": false
+        },
+        {
+          "name": "--annotate",
+          "takes_value": false
+        },
+        {
+          "name": "--output",
+          "takes_value": true,
+          "value_type": "string",
+          "infrastructure": "output"
+        },
+        {
+          "name": "--lock-wait",
+          "takes_value": true,
+          "value_type": "lock-duration",
+          "infrastructure": "locking"
+        },
+        {
+          "name": "--verbose",
+          "takes_value": false,
+          "infrastructure": "logging"
+        }
+      ],
+      "required": [
+        "--scenario"
+      ],
+      "min_args": 1,
+      "max_args": 1,
+      "diagnostic": false
+    },
+    {
+      "command": "observe",
+      "summary": "Capture a canonical observation and actual screenshot",
+      "flags": [
+        {
+          "name": "--id",
+          "takes_value": true,
+          "value_type": "session-id"
+        },
+        {
+          "name": "--screenshot",
+          "takes_value": true,
+          "value_type": "string"
+        },
+        {
+          "name": "--content",
+          "takes_value": true,
+          "values": [
+            "text",
+            "list",
+            "table"
+          ],
+          "value_type": "string"
+        },
+        {
+          "name": "--scope",
+          "takes_value": true,
+          "values": [
+            "visible",
+            "all"
+          ],
+          "value_type": "string"
+        },
+        {
+          "name": "--top",
+          "takes_value": true,
+          "value_type": "integer"
+        },
+        {
+          "name": "--budget",
+          "takes_value": true,
+          "value_type": "integer"
+        },
+        {
+          "name": "--health",
+          "takes_value": false
+        },
+        {
+          "name": "--tree",
+          "takes_value": false
+        },
+        {
+          "name": "--all",
+          "takes_value": false
+        },
+        {
+          "name": "--hit-audit",
+          "takes_value": false
+        },
+        {
+          "name": "--annotate",
+          "takes_value": false
+        },
+        {
+          "name": "--output",
+          "takes_value": true,
+          "value_type": "string",
+          "infrastructure": "output"
+        },
+        {
+          "name": "--lock-wait",
+          "takes_value": true,
+          "value_type": "lock-duration",
+          "infrastructure": "locking"
+        },
+        {
+          "name": "--verbose",
+          "takes_value": false,
+          "infrastructure": "logging"
+        }
+      ],
+      "required": [
+        "--id"
+      ],
+      "min_args": 0,
+      "max_args": 0,
+      "diagnostic": false
+    },
+    {
+      "command": "check",
+      "summary": "Judge required assertions against one canonical observation",
+      "flags": [
+        {
+          "name": "--id",
+          "takes_value": true,
+          "value_type": "session-id"
+        },
+        {
+          "name": "--observation",
+          "takes_value": true,
+          "value_type": "string"
+        },
+        {
+          "name": "--assert",
+          "takes_value": true,
+          "value_type": "string"
+        },
+        {
+          "name": "--file",
+          "takes_value": true,
+          "value_type": "string"
+        },
+        {
+          "name": "--using",
+          "takes_value": true,
+          "value_type": "string"
+        },
+        {
+          "name": "--vision-url",
+          "takes_value": true,
+          "value_type": "string"
+        },
+        {
+          "name": "--vision-provider",
+          "takes_value": true,
+          "value_type": "string"
+        },
+        {
+          "name": "--vision-model",
+          "takes_value": true,
+          "value_type": "string"
+        },
+        {
+          "name": "--vision-api-key",
+          "takes_value": true,
+          "value_type": "string"
+        },
+        {
+          "name": "--output",
+          "takes_value": true,
+          "value_type": "string",
+          "infrastructure": "output"
+        },
+        {
+          "name": "--lock-wait",
+          "takes_value": true,
+          "value_type": "lock-duration",
+          "infrastructure": "locking"
+        },
+        {
+          "name": "--verbose",
+          "takes_value": false,
+          "infrastructure": "logging"
+        }
+      ],
+      "min_args": 0,
+      "max_args": 0,
+      "diagnostic": false,
+      "rules": [
+        {
+          "exactly_one": [
+            "--id",
+            "--observation"
+          ]
+        },
+        {
+          "exactly_one": [
+            "--assert",
+            "--file"
+          ]
+        }
+      ]
+    },
+    {
+      "command": "diff",
+      "summary": "Compare two canonical observations",
+      "flags": [
+        {
+          "name": "--output",
+          "takes_value": true,
+          "value_type": "string",
+          "infrastructure": "output"
+        },
+        {
+          "name": "--lock-wait",
+          "takes_value": true,
+          "value_type": "lock-duration",
+          "infrastructure": "locking"
+        },
+        {
+          "name": "--verbose",
+          "takes_value": false,
+          "infrastructure": "logging"
+        }
+      ],
+      "min_args": 2,
+      "max_args": 2,
+      "diagnostic": true
+    },
+    {
+      "command": "wait",
+      "summary": "Wait for one assertion or a declared duration",
+      "flags": [
+        {
+          "name": "--id",
+          "takes_value": true,
+          "value_type": "session-id"
+        },
+        {
+          "name": "--assert",
+          "takes_value": true,
+          "value_type": "string"
+        },
+        {
+          "name": "--timeout",
+          "takes_value": true,
+          "value_type": "duration"
+        },
+        {
+          "name": "--duration",
+          "takes_value": true,
+          "value_type": "duration"
+        },
+        {
+          "name": "--output",
+          "takes_value": true,
+          "value_type": "string",
+          "infrastructure": "output"
+        },
+        {
+          "name": "--lock-wait",
+          "takes_value": true,
+          "value_type": "lock-duration",
+          "infrastructure": "locking"
+        },
+        {
+          "name": "--verbose",
+          "takes_value": false,
+          "infrastructure": "logging"
+        }
+      ],
+      "required": [
+        "--id"
+      ],
+      "min_args": 0,
+      "max_args": 0,
+      "diagnostic": false,
+      "rules": [
+        {
+          "exactly_one": [
+            "--assert",
+            "--duration"
+          ]
+        },
+        {
+          "when_present": "--assert",
+          "requires": [
+            "--timeout"
+          ]
+        },
+        {
+          "when_present": "--duration",
+          "forbids": [
+            "--timeout"
+          ]
+        }
+      ]
+    },
+    {
+      "command": "journey",
+      "summary": "Run typed deterministic steps through the shared runtime",
+      "flags": [
+        {
+          "name": "--scenario",
+          "takes_value": true,
+          "values": [
+            "app-test-explore",
+            "app-test-baseline",
+            "webvisit"
+          ],
+          "value_type": "string"
+        },
+        {
+          "name": "--mode",
+          "takes_value": true,
+          "values": [
+            "headless",
+            "headed",
+            "visible"
+          ],
+          "value_type": "string"
+        },
+        {
+          "name": "--persona",
+          "takes_value": true,
+          "value_type": "string"
+        },
+        {
+          "name": "--engine",
+          "takes_value": true,
+          "values": [
+            "chrome",
+            "safari"
+          ],
+          "value_type": "string"
+        },
+        {
+          "name": "--safari-device",
+          "takes_value": true,
+          "value_type": "string"
+        },
+        {
+          "name": "--viewport",
+          "takes_value": true,
+          "value_type": "string"
+        },
+        {
+          "name": "--profile",
+          "takes_value": true,
+          "value_type": "string"
+        },
+        {
+          "name": "--evidence",
+          "takes_value": true,
+          "value_type": "string"
+        },
+        {
+          "name": "--allow-host",
+          "takes_value": true,
+          "value_type": "string"
+        },
+        {
+          "name": "--browser-chrome",
+          "takes_value": true,
+          "values": [
+            "auto",
+            "on",
+            "off"
+          ],
+          "value_type": "string"
+        },
+        {
+          "name": "--user-agent",
+          "takes_value": true,
+          "value_type": "string"
+        },
+        {
+          "name": "--goal",
+          "takes_value": true,
+          "value_type": "string"
+        },
+        {
+          "name": "--stealth",
+          "takes_value": false
+        },
+        {
+          "name": "--id",
+          "takes_value": true,
+          "value_type": "session-id"
+        },
+        {
+          "name": "--file",
+          "takes_value": true,
+          "value_type": "string"
+        },
+        {
+          "name": "--base-url",
+          "takes_value": true,
+          "value_type": "string"
+        },
+        {
+          "name": "--fail-fast",
+          "takes_value": false
+        },
+        {
+          "name": "--output",
+          "takes_value": true,
+          "value_type": "string",
+          "infrastructure": "output"
+        },
+        {
+          "name": "--lock-wait",
+          "takes_value": true,
+          "value_type": "lock-duration",
+          "infrastructure": "locking"
+        },
+        {
+          "name": "--verbose",
+          "takes_value": false,
+          "infrastructure": "logging"
+        }
+      ],
+      "required": [
+        "--file"
+      ],
+      "min_args": 0,
+      "max_args": 0,
+      "diagnostic": false,
+      "rules": [
+        {
+          "when_present": "--id",
+          "forbids": [
+            "--scenario",
+            "--mode",
+            "--persona",
+            "--engine",
+            "--safari-device",
+            "--viewport",
+            "--profile",
+            "--evidence",
+            "--allow-host",
+            "--browser-chrome",
+            "--user-agent",
+            "--goal",
+            "--stealth"
+          ]
+        },
+        {
+          "unless_present": "--id",
+          "requires": [
+            "--scenario"
+          ]
+        }
+      ]
+    },
+    {
+      "command": "eval",
+      "summary": "Run gated JavaScript debugging and revoke old observation authority",
+      "flags": [
+        {
+          "name": "--id",
+          "takes_value": true,
+          "value_type": "session-id"
+        },
+        {
+          "name": "--output",
+          "takes_value": true,
+          "value_type": "string",
+          "infrastructure": "output"
+        },
+        {
+          "name": "--lock-wait",
+          "takes_value": true,
+          "value_type": "lock-duration",
+          "infrastructure": "locking"
+        },
+        {
+          "name": "--verbose",
+          "takes_value": false,
+          "infrastructure": "logging"
+        }
+      ],
+      "required": [
+        "--id"
+      ],
+      "min_args": 1,
+      "max_args": 1,
+      "diagnostic": false
+    },
+    {
+      "command": "cookie-import",
+      "summary": "Import native browser cookies with keychain decryption and a domain filter",
+      "flags": [
+        {
+          "name": "--id",
+          "takes_value": true,
+          "value_type": "session-id"
+        },
+        {
+          "name": "--browser",
+          "takes_value": true,
+          "value_type": "string"
+        },
+        {
+          "name": "--domain",
+          "takes_value": true,
+          "value_type": "string"
+        },
+        {
+          "name": "--output",
+          "takes_value": true,
+          "value_type": "string",
+          "infrastructure": "output"
+        },
+        {
+          "name": "--lock-wait",
+          "takes_value": true,
+          "value_type": "lock-duration",
+          "infrastructure": "locking"
+        },
+        {
+          "name": "--verbose",
+          "takes_value": false,
+          "infrastructure": "logging"
+        }
+      ],
+      "required": [
+        "--id"
+      ],
+      "min_args": 0,
+      "max_args": 0,
+      "diagnostic": false
+    },
+    {
+      "command": "audit",
+      "summary": "Audit compatibility, accessibility, layout, performance and browser chrome rules",
+      "flags": [
+        {
+          "name": "--id",
+          "takes_value": true,
+          "value_type": "session-id"
+        },
+        {
+          "name": "--suite",
+          "takes_value": true,
+          "value_type": "string"
+        },
+        {
+          "name": "--check",
+          "takes_value": true,
+          "value_type": "string"
+        },
+        {
+          "name": "--threshold",
+          "takes_value": true,
+          "value_type": "integer"
+        },
+        {
+          "name": "--format",
+          "takes_value": true,
+          "values": [
+            "json",
+            "compact"
+          ],
+          "value_type": "string"
+        },
+        {
+          "name": "--output",
+          "takes_value": true,
+          "value_type": "string",
+          "infrastructure": "output"
+        },
+        {
+          "name": "--lock-wait",
+          "takes_value": true,
+          "value_type": "lock-duration",
+          "infrastructure": "locking"
+        },
+        {
+          "name": "--verbose",
+          "takes_value": false,
+          "infrastructure": "logging"
+        }
+      ],
+      "required": [
+        "--id"
+      ],
+      "min_args": 0,
+      "max_args": 0,
+      "diagnostic": false
+    },
+    {
+      "command": "session status",
+      "summary": "Inspect persisted runtime ownership without recovery",
+      "flags": [
+        {
+          "name": "--id",
+          "takes_value": true,
+          "value_type": "session-id"
+        },
+        {
+          "name": "--output",
+          "takes_value": true,
+          "value_type": "string",
+          "infrastructure": "output"
+        },
+        {
+          "name": "--lock-wait",
+          "takes_value": true,
+          "value_type": "lock-duration",
+          "infrastructure": "locking"
+        },
+        {
+          "name": "--verbose",
+          "takes_value": false,
+          "infrastructure": "logging"
+        }
+      ],
+      "required": [
+        "--id"
+      ],
+      "min_args": 0,
+      "max_args": 0,
+      "diagnostic": true
+    },
+    {
+      "command": "session list",
+      "summary": "List persisted sessions",
+      "flags": [
+        {
+          "name": "--output",
+          "takes_value": true,
+          "value_type": "string",
+          "infrastructure": "output"
+        },
+        {
+          "name": "--lock-wait",
+          "takes_value": true,
+          "value_type": "lock-duration",
+          "infrastructure": "locking"
+        },
+        {
+          "name": "--verbose",
+          "takes_value": false,
+          "infrastructure": "logging"
+        }
+      ],
+      "min_args": 0,
+      "max_args": 0,
+      "diagnostic": true
+    },
+    {
+      "command": "session viewport",
+      "summary": "Resize the existing runtime and persist its environment",
+      "flags": [
+        {
+          "name": "--id",
+          "takes_value": true,
+          "value_type": "session-id"
+        },
+        {
+          "name": "--size",
+          "takes_value": true,
+          "value_type": "string"
+        },
+        {
+          "name": "--output",
+          "takes_value": true,
+          "value_type": "string",
+          "infrastructure": "output"
+        },
+        {
+          "name": "--lock-wait",
+          "takes_value": true,
+          "value_type": "lock-duration",
+          "infrastructure": "locking"
+        },
+        {
+          "name": "--verbose",
+          "takes_value": false,
+          "infrastructure": "logging"
+        }
+      ],
+      "required": [
+        "--id",
+        "--size"
+      ],
+      "min_args": 0,
+      "max_args": 0,
+      "diagnostic": false
+    },
+    {
+      "command": "tabs list",
+      "summary": "List user page targets without recovering the runtime",
+      "flags": [
+        {
+          "name": "--id",
+          "takes_value": true,
+          "value_type": "session-id"
+        },
+        {
+          "name": "--output",
+          "takes_value": true,
+          "value_type": "string",
+          "infrastructure": "output"
+        },
+        {
+          "name": "--lock-wait",
+          "takes_value": true,
+          "value_type": "lock-duration",
+          "infrastructure": "locking"
+        },
+        {
+          "name": "--verbose",
+          "takes_value": false,
+          "infrastructure": "logging"
+        }
+      ],
+      "required": [
+        "--id"
+      ],
+      "min_args": 0,
+      "max_args": 0,
+      "diagnostic": true
+    },
+    {
+      "command": "tabs select",
+      "summary": "Activate an existing target under the runtime input lock",
+      "flags": [
+        {
+          "name": "--id",
+          "takes_value": true,
+          "value_type": "session-id"
+        },
+        {
+          "name": "--target",
+          "takes_value": true,
+          "value_type": "string"
+        },
+        {
+          "name": "--output",
+          "takes_value": true,
+          "value_type": "string",
+          "infrastructure": "output"
+        },
+        {
+          "name": "--lock-wait",
+          "takes_value": true,
+          "value_type": "lock-duration",
+          "infrastructure": "locking"
+        },
+        {
+          "name": "--verbose",
+          "takes_value": false,
+          "infrastructure": "logging"
+        }
+      ],
+      "required": [
+        "--id",
+        "--target"
+      ],
+      "min_args": 0,
+      "max_args": 0,
+      "diagnostic": false
+    },
+    {
+      "command": "tabs close",
+      "summary": "Close a target and revoke page authority",
+      "flags": [
+        {
+          "name": "--id",
+          "takes_value": true,
+          "value_type": "session-id"
+        },
+        {
+          "name": "--target",
+          "takes_value": true,
+          "value_type": "string"
+        },
+        {
+          "name": "--output",
+          "takes_value": true,
+          "value_type": "string",
+          "infrastructure": "output"
+        },
+        {
+          "name": "--lock-wait",
+          "takes_value": true,
+          "value_type": "lock-duration",
+          "infrastructure": "locking"
+        },
+        {
+          "name": "--verbose",
+          "takes_value": false,
+          "infrastructure": "logging"
+        }
+      ],
+      "required": [
+        "--id",
+        "--target"
+      ],
+      "min_args": 0,
+      "max_args": 0,
+      "diagnostic": false
+    },
+    {
+      "command": "tabs new",
+      "summary": "Create a target in the existing browser",
+      "flags": [
+        {
+          "name": "--id",
+          "takes_value": true,
+          "value_type": "session-id"
+        },
+        {
+          "name": "--url",
+          "takes_value": true,
+          "value_type": "string"
+        },
+        {
+          "name": "--output",
+          "takes_value": true,
+          "value_type": "string",
+          "infrastructure": "output"
+        },
+        {
+          "name": "--lock-wait",
+          "takes_value": true,
+          "value_type": "lock-duration",
+          "infrastructure": "locking"
+        },
+        {
+          "name": "--verbose",
+          "takes_value": false,
+          "infrastructure": "logging"
+        }
+      ],
+      "required": [
+        "--id"
+      ],
+      "min_args": 0,
+      "max_args": 0,
+      "diagnostic": false
+    },
+    {
+      "command": "htr status",
+      "summary": "Inspect Human control and runtime state without recovery",
+      "flags": [
+        {
+          "name": "--id",
+          "takes_value": true,
+          "value_type": "session-id"
+        },
+        {
+          "name": "--output",
+          "takes_value": true,
+          "value_type": "string",
+          "infrastructure": "output"
+        },
+        {
+          "name": "--lock-wait",
+          "takes_value": true,
+          "value_type": "lock-duration",
+          "infrastructure": "locking"
+        },
+        {
+          "name": "--verbose",
+          "takes_value": false,
+          "infrastructure": "logging"
+        }
+      ],
+      "required": [
+        "--id"
+      ],
+      "min_args": 0,
+      "max_args": 0,
+      "diagnostic": true
+    },
+    {
+      "command": "htr takeover",
+      "summary": "Set Human/AI authority; obsolete observations are revoked",
+      "flags": [
+        {
+          "name": "--id",
+          "takes_value": true,
+          "value_type": "session-id"
+        },
+        {
+          "name": "--output",
+          "takes_value": true,
+          "value_type": "string",
+          "infrastructure": "output"
+        },
+        {
+          "name": "--lock-wait",
+          "takes_value": true,
+          "value_type": "lock-duration",
+          "infrastructure": "locking"
+        },
+        {
+          "name": "--verbose",
+          "takes_value": false,
+          "infrastructure": "logging"
+        }
+      ],
+      "required": [
+        "--id"
+      ],
+      "min_args": 0,
+      "max_args": 0,
+      "diagnostic": false
+    },
+    {
+      "command": "htr yield",
+      "summary": "Set Human/AI authority; obsolete observations are revoked",
+      "flags": [
+        {
+          "name": "--id",
+          "takes_value": true,
+          "value_type": "session-id"
+        },
+        {
+          "name": "--output",
+          "takes_value": true,
+          "value_type": "string",
+          "infrastructure": "output"
+        },
+        {
+          "name": "--lock-wait",
+          "takes_value": true,
+          "value_type": "lock-duration",
+          "infrastructure": "locking"
+        },
+        {
+          "name": "--verbose",
+          "takes_value": false,
+          "infrastructure": "logging"
+        }
+      ],
+      "required": [
+        "--id"
+      ],
+      "min_args": 0,
+      "max_args": 0,
+      "diagnostic": false
+    },
+    {
+      "command": "htr share",
+      "summary": "Set Human/AI authority; obsolete observations are revoked",
+      "flags": [
+        {
+          "name": "--id",
+          "takes_value": true,
+          "value_type": "session-id"
+        },
+        {
+          "name": "--output",
+          "takes_value": true,
+          "value_type": "string",
+          "infrastructure": "output"
+        },
+        {
+          "name": "--lock-wait",
+          "takes_value": true,
+          "value_type": "lock-duration",
+          "infrastructure": "locking"
+        },
+        {
+          "name": "--verbose",
+          "takes_value": false,
+          "infrastructure": "logging"
+        }
+      ],
+      "required": [
+        "--id"
+      ],
+      "min_args": 0,
+      "max_args": 0,
+      "diagnostic": false
+    },
+    {
+      "command": "persona list",
+      "summary": "List environment personas",
+      "flags": [
+        {
+          "name": "--output",
+          "takes_value": true,
+          "value_type": "string",
+          "infrastructure": "output"
+        },
+        {
+          "name": "--lock-wait",
+          "takes_value": true,
+          "value_type": "lock-duration",
+          "infrastructure": "locking"
+        },
+        {
+          "name": "--verbose",
+          "takes_value": false,
+          "infrastructure": "logging"
+        }
+      ],
+      "min_args": 0,
+      "max_args": 0,
+      "diagnostic": true
+    },
+    {
+      "command": "profile list",
+      "summary": "List persistent and temporary profile directories",
+      "flags": [
+        {
+          "name": "--output",
+          "takes_value": true,
+          "value_type": "string",
+          "infrastructure": "output"
+        },
+        {
+          "name": "--lock-wait",
+          "takes_value": true,
+          "value_type": "lock-duration",
+          "infrastructure": "locking"
+        },
+        {
+          "name": "--verbose",
+          "takes_value": false,
+          "infrastructure": "logging"
+        }
+      ],
+      "min_args": 0,
+      "max_args": 0,
+      "diagnostic": true
+    },
+    {
+      "command": "profile import",
+      "summary": "Copy a profile into the CLI profile store",
+      "flags": [
+        {
+          "name": "--name",
+          "takes_value": true,
+          "value_type": "string"
+        },
+        {
+          "name": "--output",
+          "takes_value": true,
+          "value_type": "string",
+          "infrastructure": "output"
+        },
+        {
+          "name": "--lock-wait",
+          "takes_value": true,
+          "value_type": "lock-duration",
+          "infrastructure": "locking"
+        },
+        {
+          "name": "--verbose",
+          "takes_value": false,
+          "infrastructure": "logging"
+        }
+      ],
+      "min_args": 1,
+      "max_args": 1,
+      "diagnostic": false
+    },
+    {
+      "command": "profile prune",
+      "summary": "Prune task profile directories explicitly",
+      "flags": [
+        {
+          "name": "--min-age",
+          "takes_value": true,
+          "value_type": "duration"
+        },
+        {
+          "name": "--ephemeral",
+          "takes_value": false
+        },
+        {
+          "name": "--dry-run",
+          "takes_value": false
+        },
+        {
+          "name": "--reap-orphaned",
+          "takes_value": false
+        },
+        {
+          "name": "--output",
+          "takes_value": true,
+          "value_type": "string",
+          "infrastructure": "output"
+        },
+        {
+          "name": "--lock-wait",
+          "takes_value": true,
+          "value_type": "lock-duration",
+          "infrastructure": "locking"
+        },
+        {
+          "name": "--verbose",
+          "takes_value": false,
+          "infrastructure": "logging"
+        }
+      ],
+      "required": [
+        "--ephemeral"
+      ],
+      "min_args": 0,
+      "max_args": 0,
+      "diagnostic": false
+    },
+    {
+      "command": "gc",
+      "summary": "Inspect or reclaim unowned browser resources explicitly",
+      "flags": [
+        {
+          "name": "--older-than",
+          "takes_value": true,
+          "value_type": "duration"
+        },
+        {
+          "name": "--dry-run",
+          "takes_value": false
+        },
+        {
+          "name": "--all",
+          "takes_value": false
+        },
+        {
+          "name": "--output",
+          "takes_value": true,
+          "value_type": "string",
+          "infrastructure": "output"
+        },
+        {
+          "name": "--lock-wait",
+          "takes_value": true,
+          "value_type": "lock-duration",
+          "infrastructure": "locking"
+        },
+        {
+          "name": "--verbose",
+          "takes_value": false,
+          "infrastructure": "logging"
+        }
+      ],
+      "min_args": 0,
+      "max_args": 0,
+      "diagnostic": false
+    },
+    {
+      "command": "skills list",
+      "summary": "List installed site recipes",
+      "flags": [
+        {
+          "name": "--output",
+          "takes_value": true,
+          "value_type": "string",
+          "infrastructure": "output"
+        },
+        {
+          "name": "--lock-wait",
+          "takes_value": true,
+          "value_type": "lock-duration",
+          "infrastructure": "locking"
+        },
+        {
+          "name": "--verbose",
+          "takes_value": false,
+          "infrastructure": "logging"
+        }
+      ],
+      "min_args": 0,
+      "max_args": 0,
+      "diagnostic": true
+    },
+    {
+      "command": "skills read",
+      "summary": "Read one site recipe",
+      "flags": [
+        {
+          "name": "--action",
+          "takes_value": true,
+          "value_type": "string"
+        },
+        {
+          "name": "--output",
+          "takes_value": true,
+          "value_type": "string",
+          "infrastructure": "output"
+        },
+        {
+          "name": "--lock-wait",
+          "takes_value": true,
+          "value_type": "lock-duration",
+          "infrastructure": "locking"
+        },
+        {
+          "name": "--verbose",
+          "takes_value": false,
+          "infrastructure": "logging"
+        }
+      ],
+      "min_args": 1,
+      "max_args": 1,
+      "diagnostic": true
+    },
+    {
+      "command": "skills write",
+      "summary": "Write a site recipe from declared input",
+      "flags": [
+        {
+          "name": "--action",
+          "takes_value": true,
+          "value_type": "string"
+        },
+        {
+          "name": "--output",
+          "takes_value": true,
+          "value_type": "string",
+          "infrastructure": "output"
+        },
+        {
+          "name": "--lock-wait",
+          "takes_value": true,
+          "value_type": "lock-duration",
+          "infrastructure": "locking"
+        },
+        {
+          "name": "--verbose",
+          "takes_value": false,
+          "infrastructure": "logging"
+        }
+      ],
+      "required": [
+        "--action"
+      ],
+      "min_args": 1,
+      "max_args": 1,
+      "diagnostic": false
+    },
+    {
+      "command": "record start",
+      "summary": "Start a structured action trace",
+      "flags": [
+        {
+          "name": "--id",
+          "takes_value": true,
+          "value_type": "session-id"
+        },
+        {
+          "name": "--output",
+          "takes_value": true,
+          "value_type": "string",
+          "infrastructure": "output"
+        },
+        {
+          "name": "--lock-wait",
+          "takes_value": true,
+          "value_type": "lock-duration",
+          "infrastructure": "locking"
+        },
+        {
+          "name": "--verbose",
+          "takes_value": false,
+          "infrastructure": "logging"
+        }
+      ],
+      "required": [
+        "--id"
+      ],
+      "min_args": 0,
+      "max_args": 0,
+      "diagnostic": false
+    },
+    {
+      "command": "record stop",
+      "summary": "Stop and return the trace",
+      "flags": [
+        {
+          "name": "--id",
+          "takes_value": true,
+          "value_type": "session-id"
+        },
+        {
+          "name": "--output",
+          "takes_value": true,
+          "value_type": "string",
+          "infrastructure": "output"
+        },
+        {
+          "name": "--lock-wait",
+          "takes_value": true,
+          "value_type": "lock-duration",
+          "infrastructure": "locking"
+        },
+        {
+          "name": "--verbose",
+          "takes_value": false,
+          "infrastructure": "logging"
+        }
+      ],
+      "required": [
+        "--id"
+      ],
+      "min_args": 0,
+      "max_args": 0,
+      "diagnostic": false
+    },
+    {
+      "command": "record export",
+      "summary": "Return the current trace",
+      "flags": [
+        {
+          "name": "--id",
+          "takes_value": true,
+          "value_type": "session-id"
+        },
+        {
+          "name": "--output",
+          "takes_value": true,
+          "value_type": "string",
+          "infrastructure": "output"
+        },
+        {
+          "name": "--lock-wait",
+          "takes_value": true,
+          "value_type": "lock-duration",
+          "infrastructure": "locking"
+        },
+        {
+          "name": "--verbose",
+          "takes_value": false,
+          "infrastructure": "logging"
+        }
+      ],
+      "required": [
+        "--id"
+      ],
+      "min_args": 0,
+      "max_args": 0,
+      "diagnostic": true
+    },
+    {
+      "command": "muxhost serve",
+      "summary": "Run the existing headed host infrastructure",
+      "flags": [
+        {
+          "name": "--muxhost-id",
+          "takes_value": true,
+          "value_type": "string"
+        },
+        {
+          "name": "--runtime-id",
+          "takes_value": true,
+          "value_type": "string"
+        },
+        {
+          "name": "--browser-session-id",
+          "takes_value": true,
+          "value_type": "string"
+        },
+        {
+          "name": "--kind",
+          "takes_value": true,
+          "values": [
+            "task",
+            "interactive",
+            "service",
+            "debug",
+            "test"
+          ],
+          "value_type": "string"
+        },
+        {
+          "name": "--profile-id",
+          "takes_value": true,
+          "value_type": "string"
+        },
+        {
+          "name": "--profile-dir",
+          "takes_value": true,
+          "value_type": "string"
+        },
+        {
+          "name": "--chrome-path",
+          "takes_value": true,
+          "value_type": "string"
+        },
+        {
+          "name": "--debug-port",
+          "takes_value": true,
+          "value_type": "integer"
+        },
+        {
+          "name": "--owner-pid",
+          "takes_value": true,
+          "value_type": "integer"
+        },
+        {
+          "name": "--owner",
+          "takes_value": true,
+          "value_type": "string"
+        },
+        {
+          "name": "--isolation",
+          "takes_value": true,
+          "value_type": "string"
+        },
+        {
+          "name": "--mode",
+          "takes_value": true,
+          "values": [
+            "headless",
+            "headed",
+            "visible"
+          ],
+          "value_type": "string"
+        },
+        {
+          "name": "--goal",
+          "takes_value": true,
+          "value_type": "string"
+        },
+        {
+          "name": "--idle-ttl",
+          "takes_value": true,
+          "value_type": "duration"
+        },
+        {
+          "name": "--persona",
+          "takes_value": true,
+          "allow_empty": true,
+          "value_type": "string"
+        },
+        {
+          "name": "--preset",
+          "takes_value": true,
+          "allow_empty": true,
+          "value_type": "string"
+        },
+        {
+          "name": "--width",
+          "takes_value": true,
+          "value_type": "integer"
+        },
+        {
+          "name": "--height",
+          "takes_value": true,
+          "value_type": "integer"
+        },
+        {
+          "name": "--user-agent",
+          "takes_value": true,
+          "value_type": "string"
+        },
+        {
+          "name": "--service",
+          "takes_value": true,
+          "value_type": "string"
+        },
+        {
+          "name": "--account",
+          "takes_value": true,
+          "value_type": "string"
+        },
+        {
+          "name": "--identity-key",
+          "takes_value": true,
+          "value_type": "string"
+        },
+        {
+          "name": "--touch",
+          "takes_value": false
+        },
+        {
+          "name": "--output",
+          "takes_value": true,
+          "value_type": "string",
+          "infrastructure": "output"
+        },
+        {
+          "name": "--lock-wait",
+          "takes_value": true,
+          "value_type": "lock-duration",
+          "infrastructure": "locking"
+        },
+        {
+          "name": "--verbose",
+          "takes_value": false,
+          "infrastructure": "logging"
+        }
+      ],
+      "min_args": 0,
+      "max_args": 0,
+      "diagnostic": false
+    },
+    {
+      "command": "muxhost ensure",
+      "summary": "Ensure an explicitly named headed host",
+      "flags": [
+        {
+          "name": "--muxhost-id",
+          "takes_value": true,
+          "value_type": "string"
+        },
+        {
+          "name": "--runtime-id",
+          "takes_value": true,
+          "value_type": "string"
+        },
+        {
+          "name": "--browser-session-id",
+          "takes_value": true,
+          "value_type": "string"
+        },
+        {
+          "name": "--kind",
+          "takes_value": true,
+          "values": [
+            "task",
+            "interactive",
+            "service",
+            "debug",
+            "test"
+          ],
+          "value_type": "string"
+        },
+        {
+          "name": "--profile-id",
+          "takes_value": true,
+          "value_type": "string"
+        },
+        {
+          "name": "--profile-dir",
+          "takes_value": true,
+          "value_type": "string"
+        },
+        {
+          "name": "--chrome-path",
+          "takes_value": true,
+          "value_type": "string"
+        },
+        {
+          "name": "--debug-port",
+          "takes_value": true,
+          "value_type": "integer"
+        },
+        {
+          "name": "--owner-pid",
+          "takes_value": true,
+          "value_type": "integer"
+        },
+        {
+          "name": "--owner",
+          "takes_value": true,
+          "value_type": "string"
+        },
+        {
+          "name": "--isolation",
+          "takes_value": true,
+          "value_type": "string"
+        },
+        {
+          "name": "--mode",
+          "takes_value": true,
+          "values": [
+            "headless",
+            "headed",
+            "visible"
+          ],
+          "value_type": "string"
+        },
+        {
+          "name": "--goal",
+          "takes_value": true,
+          "value_type": "string"
+        },
+        {
+          "name": "--idle-ttl",
+          "takes_value": true,
+          "value_type": "duration"
+        },
+        {
+          "name": "--persona",
+          "takes_value": true,
+          "allow_empty": true,
+          "value_type": "string"
+        },
+        {
+          "name": "--preset",
+          "takes_value": true,
+          "allow_empty": true,
+          "value_type": "string"
+        },
+        {
+          "name": "--width",
+          "takes_value": true,
+          "value_type": "integer"
+        },
+        {
+          "name": "--height",
+          "takes_value": true,
+          "value_type": "integer"
+        },
+        {
+          "name": "--user-agent",
+          "takes_value": true,
+          "value_type": "string"
+        },
+        {
+          "name": "--service",
+          "takes_value": true,
+          "value_type": "string"
+        },
+        {
+          "name": "--account",
+          "takes_value": true,
+          "value_type": "string"
+        },
+        {
+          "name": "--identity-key",
+          "takes_value": true,
+          "value_type": "string"
+        },
+        {
+          "name": "--touch",
+          "takes_value": false
+        },
+        {
+          "name": "--output",
+          "takes_value": true,
+          "value_type": "string",
+          "infrastructure": "output"
+        },
+        {
+          "name": "--lock-wait",
+          "takes_value": true,
+          "value_type": "lock-duration",
+          "infrastructure": "locking"
+        },
+        {
+          "name": "--verbose",
+          "takes_value": false,
+          "infrastructure": "logging"
+        }
+      ],
+      "min_args": 0,
+      "max_args": 0,
+      "diagnostic": false
+    },
+    {
+      "command": "muxhost status",
+      "summary": "Inspect an existing headed host",
+      "flags": [
+        {
+          "name": "--muxhost-id",
+          "takes_value": true,
+          "value_type": "string"
+        },
+        {
+          "name": "--runtime-id",
+          "takes_value": true,
+          "value_type": "string"
+        },
+        {
+          "name": "--browser-session-id",
+          "takes_value": true,
+          "value_type": "string"
+        },
+        {
+          "name": "--output",
+          "takes_value": true,
+          "value_type": "string",
+          "infrastructure": "output"
+        },
+        {
+          "name": "--lock-wait",
+          "takes_value": true,
+          "value_type": "lock-duration",
+          "infrastructure": "locking"
+        },
+        {
+          "name": "--verbose",
+          "takes_value": false,
+          "infrastructure": "logging"
+        }
+      ],
+      "min_args": 0,
+      "max_args": 0,
+      "diagnostic": true,
+      "rules": [
+        {
+          "exactly_one": [
+            "--muxhost-id",
+            "--runtime-id",
+            "--browser-session-id"
+          ]
+        }
+      ]
+    },
+    {
+      "command": "muxhost release",
+      "summary": "Release an existing headed host lease",
+      "flags": [
+        {
+          "name": "--muxhost-id",
+          "takes_value": true,
+          "value_type": "string"
+        },
+        {
+          "name": "--runtime-id",
+          "takes_value": true,
+          "value_type": "string"
+        },
+        {
+          "name": "--browser-session-id",
+          "takes_value": true,
+          "value_type": "string"
+        },
+        {
+          "name": "--output",
+          "takes_value": true,
+          "value_type": "string",
+          "infrastructure": "output"
+        },
+        {
+          "name": "--lock-wait",
+          "takes_value": true,
+          "value_type": "lock-duration",
+          "infrastructure": "locking"
+        },
+        {
+          "name": "--verbose",
+          "takes_value": false,
+          "infrastructure": "logging"
+        }
+      ],
+      "min_args": 0,
+      "max_args": 0,
+      "diagnostic": false,
+      "rules": [
+        {
+          "exactly_one": [
+            "--muxhost-id",
+            "--runtime-id",
+            "--browser-session-id"
+          ]
+        }
+      ]
+    },
+    {
+      "command": "muxhost shutdown",
+      "summary": "Shut down the explicitly named headed host",
+      "flags": [
+        {
+          "name": "--muxhost-id",
+          "takes_value": true,
+          "value_type": "string"
+        },
+        {
+          "name": "--runtime-id",
+          "takes_value": true,
+          "value_type": "string"
+        },
+        {
+          "name": "--browser-session-id",
+          "takes_value": true,
+          "value_type": "string"
+        },
+        {
+          "name": "--output",
+          "takes_value": true,
+          "value_type": "string",
+          "infrastructure": "output"
+        },
+        {
+          "name": "--lock-wait",
+          "takes_value": true,
+          "value_type": "lock-duration",
+          "infrastructure": "locking"
+        },
+        {
+          "name": "--verbose",
+          "takes_value": false,
+          "infrastructure": "logging"
+        }
+      ],
+      "min_args": 0,
+      "max_args": 0,
+      "diagnostic": false,
+      "rules": [
+        {
+          "exactly_one": [
+            "--muxhost-id",
+            "--runtime-id",
+            "--browser-session-id"
+          ]
+        }
+      ]
+    },
+    {
+      "command": "version",
+      "summary": "Return the candidate protocol version",
+      "flags": [
+        {
+          "name": "--output",
+          "takes_value": true,
+          "value_type": "string",
+          "infrastructure": "output"
+        },
+        {
+          "name": "--lock-wait",
+          "takes_value": true,
+          "value_type": "lock-duration",
+          "infrastructure": "locking"
+        },
+        {
+          "name": "--verbose",
+          "takes_value": false,
+          "infrastructure": "logging"
+        }
+      ],
+      "min_args": 0,
+      "max_args": 0,
+      "diagnostic": true
+    },
+    {
+      "command": "capabilities",
+      "summary": "Return this executable command and action contract",
+      "flags": [
+        {
+          "name": "--output",
+          "takes_value": true,
+          "value_type": "string",
+          "infrastructure": "output"
+        },
+        {
+          "name": "--lock-wait",
+          "takes_value": true,
+          "value_type": "lock-duration",
+          "infrastructure": "locking"
+        },
+        {
+          "name": "--verbose",
+          "takes_value": false,
+          "infrastructure": "logging"
+        }
+      ],
+      "min_args": 0,
+      "max_args": 0,
+      "diagnostic": true
+    },
+    {
+      "command": "export-contract",
+      "summary": "Generate same-version capabilities, completions and tool-use skill",
+      "flags": [
+        {
+          "name": "--directory",
+          "takes_value": true,
+          "value_type": "string"
+        },
+        {
+          "name": "--output",
+          "takes_value": true,
+          "value_type": "string",
+          "infrastructure": "output"
+        },
+        {
+          "name": "--lock-wait",
+          "takes_value": true,
+          "value_type": "lock-duration",
+          "infrastructure": "locking"
+        },
+        {
+          "name": "--verbose",
+          "takes_value": false,
+          "infrastructure": "logging"
+        }
+      ],
+      "required": [
+        "--directory"
+      ],
+      "min_args": 0,
+      "max_args": 0,
+      "diagnostic": false
+    },
+    {
+      "command": "completion",
+      "summary": "Generate shell completion from this command contract",
+      "flags": [
+        {
+          "name": "--output",
+          "takes_value": true,
+          "value_type": "string",
+          "infrastructure": "output"
+        },
+        {
+          "name": "--lock-wait",
+          "takes_value": true,
+          "value_type": "lock-duration",
+          "infrastructure": "locking"
+        },
+        {
+          "name": "--verbose",
+          "takes_value": false,
+          "infrastructure": "logging"
+        }
+      ],
+      "min_args": 1,
+      "max_args": 1,
+      "diagnostic": true
+    },
+    {
+      "command": "protocol",
+      "summary": "Generate the same-version tool-use protocol",
+      "flags": [
+        {
+          "name": "--output",
+          "takes_value": true,
+          "value_type": "string",
+          "infrastructure": "output"
+        },
+        {
+          "name": "--lock-wait",
+          "takes_value": true,
+          "value_type": "lock-duration",
+          "infrastructure": "locking"
+        },
+        {
+          "name": "--verbose",
+          "takes_value": false,
+          "infrastructure": "logging"
+        }
+      ],
+      "min_args": 0,
+      "max_args": 0,
+      "diagnostic": true
+    },
+    {
+      "command": "act click",
+      "summary": "Click a visible target; count 2 or button right selects its mouse variant",
+      "flags": [
+        {
+          "name": "--id",
+          "takes_value": true,
+          "value_type": "session-id"
+        },
+        {
+          "name": "--x",
+          "takes_value": true,
+          "value_type": "number"
+        },
+        {
+          "name": "--y",
+          "takes_value": true,
+          "value_type": "number"
+        },
+        {
+          "name": "--unit",
+          "takes_value": true,
+          "values": [
+            "css-px",
+            "percent"
+          ],
+          "value_type": "string"
+        },
+        {
+          "name": "--frame",
+          "takes_value": true,
+          "values": [
+            "viewport",
+            "target"
+          ],
+          "value_type": "string"
+        },
+        {
+          "name": "--observation-id",
+          "takes_value": true,
+          "value_type": "string"
+        },
+        {
+          "name": "--button",
+          "takes_value": true,
+          "values": [
+            "left",
+            "right"
+          ],
+          "value_type": "string"
+        },
+        {
+          "name": "--count",
+          "takes_value": true,
+          "values": [
+            "1",
+            "2"
+          ],
+          "value_type": "integer"
+        },
+        {
+          "name": "--output",
+          "takes_value": true,
+          "value_type": "string",
+          "infrastructure": "output"
+        },
+        {
+          "name": "--lock-wait",
+          "takes_value": true,
+          "value_type": "lock-duration",
+          "infrastructure": "locking"
+        },
+        {
+          "name": "--verbose",
+          "takes_value": false,
+          "infrastructure": "logging"
+        }
+      ],
+      "required": [
+        "--id"
+      ],
+      "min_args": 0,
+      "max_args": 1,
+      "diagnostic": false,
+      "rules": [
+        {
+          "when_present": "--x",
+          "requires": [
+            "--y"
+          ]
+        },
+        {
+          "when_present": "--y",
+          "requires": [
+            "--x"
+          ]
+        },
+        {
+          "when_present": "--unit",
+          "requires": [
+            "--x",
+            "--y"
+          ]
+        },
+        {
+          "when_present": "--frame",
+          "requires": [
+            "--x",
+            "--y"
+          ]
+        },
+        {
+          "when_present": "--observation-id",
+          "requires": [
+            "--x",
+            "--y"
+          ]
+        }
+      ]
+    },
+    {
+      "command": "act tap",
+      "summary": "Touch a visible target",
+      "flags": [
+        {
+          "name": "--id",
+          "takes_value": true,
+          "value_type": "session-id"
+        },
+        {
+          "name": "--x",
+          "takes_value": true,
+          "value_type": "number"
+        },
+        {
+          "name": "--y",
+          "takes_value": true,
+          "value_type": "number"
+        },
+        {
+          "name": "--unit",
+          "takes_value": true,
+          "values": [
+            "css-px",
+            "percent"
+          ],
+          "value_type": "string"
+        },
+        {
+          "name": "--frame",
+          "takes_value": true,
+          "values": [
+            "viewport",
+            "target"
+          ],
+          "value_type": "string"
+        },
+        {
+          "name": "--observation-id",
+          "takes_value": true,
+          "value_type": "string"
+        },
+        {
+          "name": "--output",
+          "takes_value": true,
+          "value_type": "string",
+          "infrastructure": "output"
+        },
+        {
+          "name": "--lock-wait",
+          "takes_value": true,
+          "value_type": "lock-duration",
+          "infrastructure": "locking"
+        },
+        {
+          "name": "--verbose",
+          "takes_value": false,
+          "infrastructure": "logging"
+        }
+      ],
+      "required": [
+        "--id"
+      ],
+      "min_args": 0,
+      "max_args": 1,
+      "diagnostic": false,
+      "rules": [
+        {
+          "when_present": "--x",
+          "requires": [
+            "--y"
+          ]
+        },
+        {
+          "when_present": "--y",
+          "requires": [
+            "--x"
+          ]
+        },
+        {
+          "when_present": "--unit",
+          "requires": [
+            "--x",
+            "--y"
+          ]
+        },
+        {
+          "when_present": "--frame",
+          "requires": [
+            "--x",
+            "--y"
+          ]
+        },
+        {
+          "when_present": "--observation-id",
+          "requires": [
+            "--x",
+            "--y"
+          ]
+        }
+      ]
+    },
+    {
+      "command": "act hover",
+      "summary": "Move the pointer to a visible target",
+      "flags": [
+        {
+          "name": "--id",
+          "takes_value": true,
+          "value_type": "session-id"
+        },
+        {
+          "name": "--x",
+          "takes_value": true,
+          "value_type": "number"
+        },
+        {
+          "name": "--y",
+          "takes_value": true,
+          "value_type": "number"
+        },
+        {
+          "name": "--unit",
+          "takes_value": true,
+          "values": [
+            "css-px",
+            "percent"
+          ],
+          "value_type": "string"
+        },
+        {
+          "name": "--frame",
+          "takes_value": true,
+          "values": [
+            "viewport",
+            "target"
+          ],
+          "value_type": "string"
+        },
+        {
+          "name": "--observation-id",
+          "takes_value": true,
+          "value_type": "string"
+        },
+        {
+          "name": "--output",
+          "takes_value": true,
+          "value_type": "string",
+          "infrastructure": "output"
+        },
+        {
+          "name": "--lock-wait",
+          "takes_value": true,
+          "value_type": "lock-duration",
+          "infrastructure": "locking"
+        },
+        {
+          "name": "--verbose",
+          "takes_value": false,
+          "infrastructure": "logging"
+        }
+      ],
+      "required": [
+        "--id"
+      ],
+      "min_args": 0,
+      "max_args": 1,
+      "diagnostic": false,
+      "rules": [
+        {
+          "when_present": "--x",
+          "requires": [
+            "--y"
+          ]
+        },
+        {
+          "when_present": "--y",
+          "requires": [
+            "--x"
+          ]
+        },
+        {
+          "when_present": "--unit",
+          "requires": [
+            "--x",
+            "--y"
+          ]
+        },
+        {
+          "when_present": "--frame",
+          "requires": [
+            "--x",
+            "--y"
+          ]
+        },
+        {
+          "when_present": "--observation-id",
+          "requires": [
+            "--x",
+            "--y"
+          ]
+        }
+      ]
+    },
+    {
+      "command": "act fill",
+      "summary": "Replace editable text using verified physical selection and input",
+      "flags": [
+        {
+          "name": "--id",
+          "takes_value": true,
+          "value_type": "session-id"
+        },
+        {
+          "name": "--text",
+          "takes_value": true,
+          "allow_empty": true,
+          "value_type": "string"
+        },
+        {
+          "name": "--text-file",
+          "takes_value": true,
+          "value_type": "string"
+        },
+        {
+          "name": "--sensitive",
+          "takes_value": false
+        },
+        {
+          "name": "--output",
+          "takes_value": true,
+          "value_type": "string",
+          "infrastructure": "output"
+        },
+        {
+          "name": "--lock-wait",
+          "takes_value": true,
+          "value_type": "lock-duration",
+          "infrastructure": "locking"
+        },
+        {
+          "name": "--verbose",
+          "takes_value": false,
+          "infrastructure": "logging"
+        }
+      ],
+      "required": [
+        "--id"
+      ],
+      "min_args": 0,
+      "max_args": 1,
+      "diagnostic": false,
+      "rules": [
+        {
+          "exactly_one": [
+            "--text",
+            "--text-file"
+          ]
+        },
+        {
+          "when_present": "--text",
+          "forbids": [
+            "--text-file"
+          ]
+        }
+      ]
+    },
+    {
+      "command": "act type",
+      "summary": "Insert text into a target or the physically focused editor",
+      "flags": [
+        {
+          "name": "--id",
+          "takes_value": true,
+          "value_type": "session-id"
+        },
+        {
+          "name": "--text",
+          "takes_value": true,
+          "allow_empty": true,
+          "value_type": "string"
+        },
+        {
+          "name": "--text-file",
+          "takes_value": true,
+          "value_type": "string"
+        },
+        {
+          "name": "--focused",
+          "takes_value": false
+        },
+        {
+          "name": "--output",
+          "takes_value": true,
+          "value_type": "string",
+          "infrastructure": "output"
+        },
+        {
+          "name": "--lock-wait",
+          "takes_value": true,
+          "value_type": "lock-duration",
+          "infrastructure": "locking"
+        },
+        {
+          "name": "--verbose",
+          "takes_value": false,
+          "infrastructure": "logging"
+        }
+      ],
+      "required": [
+        "--id"
+      ],
+      "min_args": 0,
+      "max_args": 1,
+      "diagnostic": false,
+      "rules": [
+        {
+          "exactly_one": [
+            "--text",
+            "--text-file"
+          ]
+        },
+        {
+          "when_present": "--text",
+          "forbids": [
+            "--text-file"
+          ]
+        }
+      ]
+    },
+    {
+      "command": "act press",
+      "summary": "Dispatch a platform key or shortcut",
+      "flags": [
+        {
+          "name": "--id",
+          "takes_value": true,
+          "value_type": "session-id"
+        },
+        {
+          "name": "--key",
+          "takes_value": true,
+          "value_type": "string"
+        },
+        {
+          "name": "--output",
+          "takes_value": true,
+          "value_type": "string",
+          "infrastructure": "output"
+        },
+        {
+          "name": "--lock-wait",
+          "takes_value": true,
+          "value_type": "lock-duration",
+          "infrastructure": "locking"
+        },
+        {
+          "name": "--verbose",
+          "takes_value": false,
+          "infrastructure": "logging"
+        }
+      ],
+      "required": [
+        "--id"
+      ],
+      "min_args": 0,
+      "max_args": 1,
+      "diagnostic": false
+    },
+    {
+      "command": "act focus",
+      "summary": "Physically focus an editable target",
+      "flags": [
+        {
+          "name": "--id",
+          "takes_value": true,
+          "value_type": "session-id"
+        },
+        {
+          "name": "--output",
+          "takes_value": true,
+          "value_type": "string",
+          "infrastructure": "output"
+        },
+        {
+          "name": "--lock-wait",
+          "takes_value": true,
+          "value_type": "lock-duration",
+          "infrastructure": "locking"
+        },
+        {
+          "name": "--verbose",
+          "takes_value": false,
+          "infrastructure": "logging"
+        }
+      ],
+      "required": [
+        "--id"
+      ],
+      "min_args": 0,
+      "max_args": 1,
+      "diagnostic": false
+    },
+    {
+      "command": "act select",
+      "summary": "Select a native option; reports its synthetic exception",
+      "flags": [
+        {
+          "name": "--id",
+          "takes_value": true,
+          "value_type": "session-id"
+        },
+        {
+          "name": "--value",
+          "takes_value": true,
+          "value_type": "string"
+        },
+        {
+          "name": "--output",
+          "takes_value": true,
+          "value_type": "string",
+          "infrastructure": "output"
+        },
+        {
+          "name": "--lock-wait",
+          "takes_value": true,
+          "value_type": "lock-duration",
+          "infrastructure": "locking"
+        },
+        {
+          "name": "--verbose",
+          "takes_value": false,
+          "infrastructure": "logging"
+        }
+      ],
+      "required": [
+        "--id"
+      ],
+      "min_args": 0,
+      "max_args": 1,
+      "diagnostic": false
+    },
+    {
+      "command": "act set-checked",
+      "summary": "Set a checkbox to an explicit boolean",
+      "flags": [
+        {
+          "name": "--id",
+          "takes_value": true,
+          "value_type": "session-id"
+        },
+        {
+          "name": "--checked",
+          "takes_value": true,
+          "values": [
+            "true",
+            "false"
+          ],
+          "value_type": "string"
+        },
+        {
+          "name": "--output",
+          "takes_value": true,
+          "value_type": "string",
+          "infrastructure": "output"
+        },
+        {
+          "name": "--lock-wait",
+          "takes_value": true,
+          "value_type": "lock-duration",
+          "infrastructure": "locking"
+        },
+        {
+          "name": "--verbose",
+          "takes_value": false,
+          "infrastructure": "logging"
+        }
+      ],
+      "required": [
+        "--id"
+      ],
+      "min_args": 0,
+      "max_args": 1,
+      "diagnostic": false
+    },
+    {
+      "command": "act scroll",
+      "summary": "Scroll the viewport or target at a declared point",
+      "flags": [
+        {
+          "name": "--id",
+          "takes_value": true,
+          "value_type": "session-id"
+        },
+        {
+          "name": "--x",
+          "takes_value": true,
+          "value_type": "number"
+        },
+        {
+          "name": "--y",
+          "takes_value": true,
+          "value_type": "number"
+        },
+        {
+          "name": "--unit",
+          "takes_value": true,
+          "values": [
+            "css-px",
+            "percent"
+          ],
+          "value_type": "string"
+        },
+        {
+          "name": "--frame",
+          "takes_value": true,
+          "values": [
+            "viewport",
+            "target"
+          ],
+          "value_type": "string"
+        },
+        {
+          "name": "--observation-id",
+          "takes_value": true,
+          "value_type": "string"
+        },
+        {
+          "name": "--direction",
+          "takes_value": true,
+          "values": [
+            "up",
+            "down",
+            "left",
+            "right"
+          ],
+          "value_type": "string"
+        },
+        {
+          "name": "--steps",
+          "takes_value": true,
+          "value_type": "integer"
+        },
+        {
+          "name": "--delta-x",
+          "takes_value": true,
+          "value_type": "number"
+        },
+        {
+          "name": "--delta-y",
+          "takes_value": true,
+          "value_type": "number"
+        },
+        {
+          "name": "--output",
+          "takes_value": true,
+          "value_type": "string",
+          "infrastructure": "output"
+        },
+        {
+          "name": "--lock-wait",
+          "takes_value": true,
+          "value_type": "lock-duration",
+          "infrastructure": "locking"
+        },
+        {
+          "name": "--verbose",
+          "takes_value": false,
+          "infrastructure": "logging"
+        }
+      ],
+      "required": [
+        "--id"
+      ],
+      "min_args": 0,
+      "max_args": 1,
+      "diagnostic": false,
+      "rules": [
+        {
+          "when_present": "--x",
+          "requires": [
+            "--y"
+          ]
+        },
+        {
+          "when_present": "--y",
+          "requires": [
+            "--x"
+          ]
+        },
+        {
+          "when_present": "--unit",
+          "requires": [
+            "--x",
+            "--y"
+          ]
+        },
+        {
+          "when_present": "--frame",
+          "requires": [
+            "--x",
+            "--y"
+          ]
+        },
+        {
+          "when_present": "--observation-id",
+          "requires": [
+            "--x",
+            "--y"
+          ]
+        }
+      ]
+    },
+    {
+      "command": "act scrollto",
+      "summary": "Scroll a persistent target into view",
+      "flags": [
+        {
+          "name": "--id",
+          "takes_value": true,
+          "value_type": "session-id"
+        },
+        {
+          "name": "--output",
+          "takes_value": true,
+          "value_type": "string",
+          "infrastructure": "output"
+        },
+        {
+          "name": "--lock-wait",
+          "takes_value": true,
+          "value_type": "lock-duration",
+          "infrastructure": "locking"
+        },
+        {
+          "name": "--verbose",
+          "takes_value": false,
+          "infrastructure": "logging"
+        }
+      ],
+      "required": [
+        "--id"
+      ],
+      "min_args": 0,
+      "max_args": 1,
+      "diagnostic": false
+    },
+    {
+      "command": "act drag",
+      "summary": "Drag between two points in one coordinate frame",
+      "flags": [
+        {
+          "name": "--id",
+          "takes_value": true,
+          "value_type": "session-id"
+        },
+        {
+          "name": "--x",
+          "takes_value": true,
+          "value_type": "number"
+        },
+        {
+          "name": "--y",
+          "takes_value": true,
+          "value_type": "number"
+        },
+        {
+          "name": "--unit",
+          "takes_value": true,
+          "values": [
+            "css-px",
+            "percent"
+          ],
+          "value_type": "string"
+        },
+        {
+          "name": "--frame",
+          "takes_value": true,
+          "values": [
+            "viewport",
+            "target"
+          ],
+          "value_type": "string"
+        },
+        {
+          "name": "--observation-id",
+          "takes_value": true,
+          "value_type": "string"
+        },
+        {
+          "name": "--end-x",
+          "takes_value": true,
+          "value_type": "number"
+        },
+        {
+          "name": "--end-y",
+          "takes_value": true,
+          "value_type": "number"
+        },
+        {
+          "name": "--output",
+          "takes_value": true,
+          "value_type": "string",
+          "infrastructure": "output"
+        },
+        {
+          "name": "--lock-wait",
+          "takes_value": true,
+          "value_type": "lock-duration",
+          "infrastructure": "locking"
+        },
+        {
+          "name": "--verbose",
+          "takes_value": false,
+          "infrastructure": "logging"
+        }
+      ],
+      "required": [
+        "--id"
+      ],
+      "min_args": 0,
+      "max_args": 1,
+      "diagnostic": false,
+      "rules": [
+        {
+          "when_present": "--x",
+          "requires": [
+            "--y"
+          ]
+        },
+        {
+          "when_present": "--y",
+          "requires": [
+            "--x"
+          ]
+        },
+        {
+          "when_present": "--unit",
+          "requires": [
+            "--x",
+            "--y"
+          ]
+        },
+        {
+          "when_present": "--frame",
+          "requires": [
+            "--x",
+            "--y"
+          ]
+        },
+        {
+          "when_present": "--observation-id",
+          "requires": [
+            "--x",
+            "--y"
+          ]
+        },
+        {
+          "when_present": "--end-x",
+          "requires": [
+            "--end-y",
+            "--x",
+            "--y"
+          ]
+        },
+        {
+          "when_present": "--end-y",
+          "requires": [
+            "--end-x",
+            "--x",
+            "--y"
+          ]
+        }
+      ]
+    },
+    {
+      "command": "act swipe",
+      "summary": "Swipe between two touch points",
+      "flags": [
+        {
+          "name": "--id",
+          "takes_value": true,
+          "value_type": "session-id"
+        },
+        {
+          "name": "--x",
+          "takes_value": true,
+          "value_type": "number"
+        },
+        {
+          "name": "--y",
+          "takes_value": true,
+          "value_type": "number"
+        },
+        {
+          "name": "--unit",
+          "takes_value": true,
+          "values": [
+            "css-px",
+            "percent"
+          ],
+          "value_type": "string"
+        },
+        {
+          "name": "--frame",
+          "takes_value": true,
+          "values": [
+            "viewport",
+            "target"
+          ],
+          "value_type": "string"
+        },
+        {
+          "name": "--observation-id",
+          "takes_value": true,
+          "value_type": "string"
+        },
+        {
+          "name": "--end-x",
+          "takes_value": true,
+          "value_type": "number"
+        },
+        {
+          "name": "--end-y",
+          "takes_value": true,
+          "value_type": "number"
+        },
+        {
+          "name": "--output",
+          "takes_value": true,
+          "value_type": "string",
+          "infrastructure": "output"
+        },
+        {
+          "name": "--lock-wait",
+          "takes_value": true,
+          "value_type": "lock-duration",
+          "infrastructure": "locking"
+        },
+        {
+          "name": "--verbose",
+          "takes_value": false,
+          "infrastructure": "logging"
+        }
+      ],
+      "required": [
+        "--id"
+      ],
+      "min_args": 0,
+      "max_args": 1,
+      "diagnostic": false,
+      "rules": [
+        {
+          "when_present": "--x",
+          "requires": [
+            "--y"
+          ]
+        },
+        {
+          "when_present": "--y",
+          "requires": [
+            "--x"
+          ]
+        },
+        {
+          "when_present": "--unit",
+          "requires": [
+            "--x",
+            "--y"
+          ]
+        },
+        {
+          "when_present": "--frame",
+          "requires": [
+            "--x",
+            "--y"
+          ]
+        },
+        {
+          "when_present": "--observation-id",
+          "requires": [
+            "--x",
+            "--y"
+          ]
+        },
+        {
+          "when_present": "--end-x",
+          "requires": [
+            "--end-y",
+            "--x",
+            "--y"
+          ]
+        },
+        {
+          "when_present": "--end-y",
+          "requires": [
+            "--end-x",
+            "--x",
+            "--y"
+          ]
+        }
+      ]
+    },
+    {
+      "command": "act navigate",
+      "summary": "Navigate the existing session to a URL",
+      "flags": [
+        {
+          "name": "--id",
+          "takes_value": true,
+          "value_type": "session-id"
+        },
+        {
+          "name": "--url",
+          "takes_value": true,
+          "value_type": "string"
+        },
+        {
+          "name": "--output",
+          "takes_value": true,
+          "value_type": "string",
+          "infrastructure": "output"
+        },
+        {
+          "name": "--lock-wait",
+          "takes_value": true,
+          "value_type": "lock-duration",
+          "infrastructure": "locking"
+        },
+        {
+          "name": "--verbose",
+          "takes_value": false,
+          "infrastructure": "logging"
+        }
+      ],
+      "required": [
+        "--id"
+      ],
+      "min_args": 0,
+      "max_args": 1,
+      "diagnostic": false
+    },
+    {
+      "command": "act reload",
+      "summary": "Reload the existing document",
+      "flags": [
+        {
+          "name": "--id",
+          "takes_value": true,
+          "value_type": "session-id"
+        },
+        {
+          "name": "--output",
+          "takes_value": true,
+          "value_type": "string",
+          "infrastructure": "output"
+        },
+        {
+          "name": "--lock-wait",
+          "takes_value": true,
+          "value_type": "lock-duration",
+          "infrastructure": "locking"
+        },
+        {
+          "name": "--verbose",
+          "takes_value": false,
+          "infrastructure": "logging"
+        }
+      ],
+      "required": [
+        "--id"
+      ],
+      "min_args": 0,
+      "max_args": 1,
+      "diagnostic": false
+    },
+    {
+      "command": "act back",
+      "summary": "Traverse browser history backwards",
+      "flags": [
+        {
+          "name": "--id",
+          "takes_value": true,
+          "value_type": "session-id"
+        },
+        {
+          "name": "--output",
+          "takes_value": true,
+          "value_type": "string",
+          "infrastructure": "output"
+        },
+        {
+          "name": "--lock-wait",
+          "takes_value": true,
+          "value_type": "lock-duration",
+          "infrastructure": "locking"
+        },
+        {
+          "name": "--verbose",
+          "takes_value": false,
+          "infrastructure": "logging"
+        }
+      ],
+      "required": [
+        "--id"
+      ],
+      "min_args": 0,
+      "max_args": 1,
+      "diagnostic": false
+    },
+    {
+      "command": "act forward",
+      "summary": "Traverse browser history forwards",
+      "flags": [
+        {
+          "name": "--id",
+          "takes_value": true,
+          "value_type": "session-id"
+        },
+        {
+          "name": "--output",
+          "takes_value": true,
+          "value_type": "string",
+          "infrastructure": "output"
+        },
+        {
+          "name": "--lock-wait",
+          "takes_value": true,
+          "value_type": "lock-duration",
+          "infrastructure": "locking"
+        },
+        {
+          "name": "--verbose",
+          "takes_value": false,
+          "infrastructure": "logging"
+        }
+      ],
+      "required": [
+        "--id"
+      ],
+      "min_args": 0,
+      "max_args": 1,
+      "diagnostic": false
+    },
+    {
+      "command": "act zoom",
+      "summary": "Set page scale",
+      "flags": [
+        {
+          "name": "--id",
+          "takes_value": true,
+          "value_type": "session-id"
+        },
+        {
+          "name": "--value",
+          "takes_value": true,
+          "value_type": "string"
+        },
+        {
+          "name": "--output",
+          "takes_value": true,
+          "value_type": "string",
+          "infrastructure": "output"
+        },
+        {
+          "name": "--lock-wait",
+          "takes_value": true,
+          "value_type": "lock-duration",
+          "infrastructure": "locking"
+        },
+        {
+          "name": "--verbose",
+          "takes_value": false,
+          "infrastructure": "logging"
+        }
+      ],
+      "required": [
+        "--id"
+      ],
+      "min_args": 0,
+      "max_args": 1,
+      "diagnostic": false
+    },
+    {
+      "command": "act keyboard",
+      "summary": "Show or hide the emulated mobile keyboard",
+      "flags": [
+        {
+          "name": "--id",
+          "takes_value": true,
+          "value_type": "session-id"
+        },
+        {
+          "name": "--value",
+          "takes_value": true,
+          "value_type": "string"
+        },
+        {
+          "name": "--output",
+          "takes_value": true,
+          "value_type": "string",
+          "infrastructure": "output"
+        },
+        {
+          "name": "--lock-wait",
+          "takes_value": true,
+          "value_type": "lock-duration",
+          "infrastructure": "locking"
+        },
+        {
+          "name": "--verbose",
+          "takes_value": false,
+          "infrastructure": "logging"
+        }
+      ],
+      "required": [
+        "--id"
+      ],
+      "min_args": 0,
+      "max_args": 1,
+      "diagnostic": false
+    }
+  ],
+  "schema_version": "dw.capabilities.v2",
+  "version": "0.12.0-v2"
+}

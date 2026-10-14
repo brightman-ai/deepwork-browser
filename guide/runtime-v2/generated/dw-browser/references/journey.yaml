@@ -1,0 +1,52 @@
+version: 2
+id: edit-save-revisit
+name: Edit, save, and revisit
+environment:
+    base_url: http://127.0.0.1:8080
+    entry_url: /
+    mode: headless
+    viewport: 1280x720
+    client: chrome
+journey:
+    - id: look
+      kind: observe
+    - id: edit
+      kind: action
+      action:
+        kind: fill
+        target:
+            kind: locator
+            locator: css=[data-testid='editor']
+        text: A persisted edit
+      mode: visual
+    - id: save
+      kind: action
+      action:
+        kind: click
+        target:
+            kind: locator
+            locator: css=[data-testid='save']
+      mode: visual
+    - id: revisit
+      kind: action
+      action:
+        kind: navigate
+        url: http://127.0.0.1:8080/
+      mode: visual
+    - id: await-persisted
+      kind: wait
+      wait:
+        assert: text_contains('A persisted edit')
+        timeout_ms: 5000
+    - id: assert-persisted
+      kind: check
+      check:
+        - id: persisted
+          assert: text_contains('A persisted edit')
+          required: true
+evidence:
+    save:
+        - screenshot
+        - observation
+        - report
+        - trace

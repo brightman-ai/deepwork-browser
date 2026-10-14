@@ -18,28 +18,27 @@ import (
 // Observation extension storage
 // ---------------------------------------------------------------------------
 
-// obsExtension holds SUT-side artifact state attached to an Observation.
-// It is not serialised.
-type obsExtension struct {
-	transcript   *TranscriptState
-	workspaceDir string
+type TranscriptEvidence struct {
+	FilePath string           `json:"file_path"`
+	Events   []transcriptLine `json:"events"`
+}
+type FileEvidence struct {
+	ChannelState
+	Count *int `json:"count,omitempty"`
 }
 
-// SetTranscript attaches transcript state to an Observation.
-func (obs *Observation) SetTranscript(ts *TranscriptState) {
-	if obs.ext == nil {
-		obs.ext = &obsExtension{}
+func (obs *Observation) SetTranscript(state *TranscriptState) {
+	if obs.Channels == nil {
+		obs.Channels = map[string]ChannelState{}
 	}
-	obs.ext.transcript = ts
-}
-
-// SetWorkspaceDir sets the workspace directory used by file_glob assertions.
-func (obs *Observation) SetWorkspaceDir(dir string) {
-	if obs.ext == nil {
-		obs.ext = &obsExtension{}
+	if state == nil || state.parsed == nil {
+		obs.Channels["transcript"] = ChannelState{Status: "unavailable"}
+		return
 	}
-	obs.ext.workspaceDir = dir
+	obs.Transcript = &TranscriptEvidence{FilePath: state.FilePath, Events: append([]transcriptLine{}, state.parsed.lines...)}
+	obs.Channels["transcript"] = ChannelState{Status: "captured"}
 }
+func (obs *Observation) SetWorkspaceDir(dir string) { obs.WorkspaceDir = dir }
 
 // ---------------------------------------------------------------------------
 // Transcript schema types (deepwork native JSONL)
@@ -53,7 +52,7 @@ type transcriptLine struct {
 }
 
 type workstreamNode struct {
-	Kind    string    `json:"kind"`    // tool_start | tool_result | text | status | done | error
+	Kind    string    `json:"kind"` // tool_start | tool_result | text | status | done | error
 	Tool    *toolNode `json:"tool,omitempty"`
 	Content string    `json:"content,omitempty"` // for kind==text
 }
@@ -71,20 +70,13 @@ type toolNode struct {
 // Exactly one dw-*.jsonl file with mtime >= StartTS must exist; otherwise all
 // transcript_* asserts fail with a clear error (no silent green).
 type TranscriptBinding struct {
-	Path    string    // absolute path after successful resolution
+	Dir     string
+	Pattern string
+	Path    string    // explicit absolute path or most recently resolved file
 	StartTS time.Time // journey start timestamp (set before the first step runs)
 
 	resolved bool
 	err      error
-}
-
-// transcriptsDir returns the directory where the app writes transcript files.
-func transcriptsDir() string {
-	home := os.Getenv("DEEPWORK_HOME")
-	if home == "" {
-		home = filepath.Join(os.Getenv("HOME"), ".deepwork")
-	}
-	return filepath.Join(home, "transcripts", "sessions")
 }
 
 // Resolve scans the transcripts directory for JSONL files with mtime >= StartTS
@@ -96,12 +88,25 @@ func transcriptsDir() string {
 //
 // Caching semantics:
 //   - 0 match      → NOT cached; caller may retry on the next observation
-//                    so that the binding resolves once the SUT has created its file.
+//     so that the binding resolves once the SUT has created its file.
 //   - 1+ matches   → select the one with the newest mtime; update b.Path.
-//                    Never fail on multiple matches (multi-turn is expected).
+//     Never fail on multiple matches (multi-turn is expected).
 //   - dir read err → NOT cached; may be transient.
 func (b *TranscriptBinding) Resolve() error {
-	dir := transcriptsDir()
+	if b.Dir == "" {
+		if b.Path == "" {
+			return fmt.Errorf("transcript requires explicit path or directory")
+		}
+		if _, err := os.Stat(b.Path); err != nil {
+			return err
+		}
+		return nil
+	}
+	dir := b.Dir
+	pattern := b.Pattern
+	if pattern == "" {
+		pattern = "*.jsonl"
+	}
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		// Transient read error — do not cache, allow retry.
@@ -115,7 +120,9 @@ func (b *TranscriptBinding) Resolve() error {
 			continue
 		}
 		name := e.Name()
-		if !strings.HasPrefix(name, "dw-") || !strings.HasSuffix(name, ".jsonl") {
+		if matched, err := filepath.Match(pattern, name); err != nil {
+			return err
+		} else if !matched {
 			continue
 		}
 		info, infoErr := e.Info()
@@ -206,7 +213,11 @@ func parseTranscript(path string) (*parsedTranscript, error) {
 	if err := scanner.Err(); err != nil {
 		return nil, fmt.Errorf("transcript parse: scan %s: %w", path, err)
 	}
-	return &parsedTranscript{lines: lines}, nil
+	parsed := &parsedTranscript{lines: lines}
+	if !parsed.hasFormatV1() {
+		return nil, fmt.Errorf("transcript schema empty or unsupported")
+	}
+	return parsed, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -300,17 +311,16 @@ func (pt *parsedTranscript) hasFormatV1() bool {
 // ---------------------------------------------------------------------------
 
 func transcriptFromObs(obs *Observation) *TranscriptState {
-	if obs == nil || obs.ext == nil {
+	if obs == nil || obs.Transcript == nil || obs.Channels["transcript"].Status != "captured" {
 		return nil
 	}
-	return obs.ext.transcript
+	return &TranscriptState{FilePath: obs.Transcript.FilePath, parsed: &parsedTranscript{lines: obs.Transcript.Events}}
 }
-
 func workspaceDirFromObs(obs *Observation) string {
-	if obs == nil || obs.ext == nil {
+	if obs == nil {
 		return ""
 	}
-	return obs.ext.workspaceDir
+	return obs.WorkspaceDir
 }
 
 // ---------------------------------------------------------------------------
@@ -397,20 +407,46 @@ func evalTranscriptDoneCountWithComparison(obs *Observation, comparison string) 
 // evalFileGlobCountWithComparison — file_glob_count('pattern') op N.
 func evalFileGlobCountWithComparison(obs *Observation, args, comparison string) (bool, string) {
 	pattern := stripQuotes(args)
-	workspaceDir := workspaceDirFromObs(obs)
-	if workspaceDir != "" && !filepath.IsAbs(pattern) {
-		pattern = filepath.Join(workspaceDir, pattern)
+	fact, ok := obs.Files[pattern]
+	if !ok || fact.Status != "captured" || fact.Count == nil {
+		return false, "BLOCKED: file glob evidence not captured"
 	}
-	matches, err := filepath.Glob(pattern)
+	return compareInt(int64(*fact.Count), comparison, "file_glob_count")
+}
+
+// CaptureFileGlob reads one explicitly requested SUT workspace fact.
+func CaptureFileGlob(obs *Observation, pattern string) error {
+	root := obs.WorkspaceDir
+	if root == "" && !filepath.IsAbs(pattern) {
+		return fmt.Errorf("file glob requires explicit workspace_dir or absolute pattern")
+	}
+	if root != "" {
+		info, err := os.Stat(root)
+		if err != nil || !info.IsDir() {
+			return fmt.Errorf("workspace unavailable: %v", err)
+		}
+	}
+	query := pattern
+	if root != "" && !filepath.IsAbs(query) {
+		query = filepath.Join(root, query)
+	}
+	matches, err := filepath.Glob(query)
 	if err != nil {
-		return false, fmt.Sprintf("BLOCKED: file_glob_count: invalid pattern %q: %v", pattern, err)
+		return err
 	}
 	count := 0
-	for _, m := range matches {
-		info, statErr := os.Stat(m)
-		if statErr == nil && info.Mode()&fs.ModeType == 0 {
+	for _, path := range matches {
+		info, err := os.Stat(path)
+		if err != nil {
+			return err
+		}
+		if info.Mode()&fs.ModeType == 0 {
 			count++
 		}
 	}
-	return compareInt(int64(count), comparison, fmt.Sprintf("file_glob_count(%q)", pattern))
+	if obs.Files == nil {
+		obs.Files = map[string]FileEvidence{}
+	}
+	obs.Files[pattern] = FileEvidence{ChannelState: ChannelState{Status: "captured"}, Count: &count}
+	return nil
 }

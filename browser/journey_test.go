@@ -136,7 +136,7 @@ func TestJourney_CUJ02_AIWebAutomation(t *testing.T) {
 	}
 
 	// Step 3: Act click
-	snap2, err := core.Act(ctx, "click "+linkRef, true)
+	snap2, err := executeFixtureAction(ctx, core, Action{Verb: "click", Target: fixtureRef(linkRef)}, true, false)
 	if err != nil {
 		t.Logf("TC-09-J-02 [Act]: err=%v (may be acceptable for navigation)", err)
 		// 导航跳转可能导致 snap 失败，不视为测试失败
@@ -272,12 +272,12 @@ func TestJourney_J06_YAMLTestSuite_L1Logic(t *testing.T) {
 
 	// 验证步骤类型正确
 	expectedStepTypes := map[string]bool{
-		"navigate":  true,
-		"l1_assert": true,
-		"act":       true,
-		"snap":      true,
-		"l2_layout": true,
-		"l3_screenshot": true,
+		"navigate":         true,
+		"l1_assert":        true,
+		"act":              true,
+		"snap":             true,
+		"l2_layout":        true,
+		"l3_screenshot":    true,
 		"l4_probe_start":   true,
 		"l4_probe_collect": true,
 	}
@@ -333,7 +333,7 @@ func TestJourney_J07_PasswordSecurity_AIBlocked(t *testing.T) {
 		if ref.Role != "textbox" {
 			continue
 		}
-		_, err := core.Act(ctx, "type "+ref.Ref+" '"+secretPassword+"'", false)
+		_, err := executeFixtureAction(ctx, core, Action{Verb: "type", Target: fixtureRef(ref.Ref), Text: secretPassword}, false, false)
 		if err == ErrPasswordField {
 			passwordBlocked = true
 			t.Logf("TC-09-J-07: ref %s blocked with ErrPasswordField", ref.Ref)

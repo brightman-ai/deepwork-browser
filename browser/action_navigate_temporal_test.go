@@ -9,28 +9,20 @@ import (
 	"testing"
 )
 
-func TestParseAction_Navigate(t *testing.T) {
-	for _, tc := range []struct {
-		action string
-		want   string
-	}{
-		{"navigate http://localhost:8087/living-work/1", "http://localhost:8087/living-work/1"},
-		{"goto https://example.com/a?b=c", "https://example.com/a?b=c"},
-		{"navigate 'http://localhost:1234/x'", "http://localhost:1234/x"},
-	} {
-		parsed, err := ParseAction(tc.action)
+func TestTypedNavigateDocumentURLs(t *testing.T) {
+	for _, url := range []string{"http://localhost:8087/living-work/1", "https://example.com/a?b=c", "http://localhost:1234/x"} {
+		parsed, err := (Action{Verb: "navigate", URL: url}).executionRequest()
 		if err != nil {
-			t.Fatalf("ParseAction(%q): %v", tc.action, err)
+			t.Fatalf("typed navigate(%q): %v", url, err)
 		}
-		if parsed.Op != "navigate" || parsed.Value != tc.want {
-			t.Fatalf("ParseAction(%q) = %+v, want navigate %q", tc.action, parsed, tc.want)
+		if parsed.Op != "navigate" || parsed.Value != url {
+			t.Fatalf("typed navigate(%q)=%+v", url, parsed)
 		}
 	}
-	if _, err := ParseAction("navigate"); !errors.Is(err, ErrActFailed) {
-		t.Fatalf("bare navigate must fail with ErrActFailed, got %v", err)
-	}
-	if _, err := ParseAction("navigate a b"); !errors.Is(err, ErrActFailed) {
-		t.Fatalf("navigate with two args must fail, got %v", err)
+	for _, request := range []Action{{Verb: "navigate"}, {Verb: "navigate", URL: "a b"}, {Verb: "goto", URL: "https://example.com"}} {
+		if err := request.Validate(); !errors.Is(err, ErrActFailed) {
+			t.Fatalf("malformed/removed navigate must fail ErrActFailed, got %v", err)
+		}
 	}
 }
 
@@ -73,5 +65,22 @@ func TestTemporalInputKind(t *testing.T) {
 	}
 	if kind := temporalInputKind("TEXTAREA", "date"); kind != "" {
 		t.Fatalf("TEXTAREA never temporal, got %q", kind)
+	}
+}
+
+func TestStrictTemporalAndUnmaskedSensitiveDestinationsRejectBeforeDeletion(t *testing.T) {
+	for _, kind := range []string{"date", "time", "month", "week", "datetime-local"} {
+		state := strictEditableState{Tag: "INPUT", InputType: kind, Editable: true}
+		if err := validatePhysicalTextDestination(state, false); err == nil {
+			t.Fatalf("strict temporal %s accepted setter rescue", kind)
+		}
+	}
+	for _, state := range []strictEditableState{{Tag: "TEXTAREA", Editable: true}, {Tag: "INPUT", InputType: "text", Editable: true}, {Tag: "INPUT", InputType: "password", TextSecurity: "none", Editable: true}} {
+		if err := validateMaskedSensitiveDestination(state); err == nil {
+			t.Fatal("unmasked sensitive destination accepted")
+		}
+	}
+	if err := validateMaskedSensitiveDestination(strictEditableState{Tag: "INPUT", InputType: "password", TextSecurity: "disc", Editable: true}); err != nil {
+		t.Fatalf("masked native password rejected: %v", err)
 	}
 }

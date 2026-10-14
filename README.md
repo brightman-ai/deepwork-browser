@@ -1,46 +1,44 @@
 # deepwork-browser
 
-A browser automation engine built on Chrome DevTools Protocol (CDP). Provides a managed Chrome pool, session lifecycle, LiveView HTTP streaming, and a CLI for scripted browser tasks.
+DW-Browser v2 operates real Chrome/Safari sessions through typed actions, immutable observations and deterministic journeys. It preserves the managed browser pool, Human takeover, LiveView and host-owned HTTP integration.
 
-## Features
+Build a local candidate with Go 1.26+ and Chrome installed:
 
-- Chrome pool with configurable concurrency
-- Session-based tab management with target tracking
-- LiveView: real-time DOM/screenshot streaming over HTTP
-- Snapshot: full-page capture (HTML + screenshot)
-- Action execution: click, type, scroll, evaluate
-- SQLite-backed session persistence
-- CLI tool (`dw-browser`) for scripted automation
-
-## Quick Start
-
-```bash
-go get github.com/brightman-ai/deepwork-browser
+```sh
+GOMAXPROCS=2 go build -p 2 -o ./artifacts/dw-browser ./cmd/dw-browser
+./artifacts/dw-browser capabilities
+./artifacts/dw-browser help act fill
 ```
 
-Or run the CLI:
+A session owns its creation environment and evidence directory. Open creates only; every later operation names the session.
 
-```bash
-go run ./cmd/dw-browser --help
+```sh
+dw-browser open http://127.0.0.1:8080 --id edit --scenario app-test-explore --persona desktop --mode headless --viewport 1280x720 --evidence evidence/edit
+dw-browser observe --id edit
+# Read the returned PNG, then copy a real opaque token from that observation.
+dw-browser act fill "$EDITOR_REF" --id edit --text-file draft.txt
+dw-browser observe --id edit
+dw-browser act click "$SAVE_REF" --id edit
+dw-browser act navigate --id edit --url http://127.0.0.1:8080
+dw-browser observe --id edit
+dw-browser session viewport --id edit --size 880x720
+dw-browser observe --id edit
+dw-browser close --id edit
 ```
 
-```bash
-# Open a URL and take a screenshot
-dw-browser open https://example.com
-dw-browser snap --out screenshot.png
+`fill` replaces through verified physical selection/input; `type --focused` inserts. Text files retain UTF-8 and trailing newlines. Tokens and screenshot geometry expire across input, target, document and runtime changes. Unknown/partial dispatch requires observation before deciding whether another input is safe.
+
+stdout is one JSON value. `--output` saves JSON, `--screenshot` names a PNG, and creation `--evidence` selects the evidence root. `check` exits 0 only for required PASS, 1 for FAIL, and 2 for BLOCKED/evidence/runtime/argument errors. Other exit 0 means the command delivered its result.
+
+Use `app-test-baseline` for deterministic typed journeys with no internal LLM; use `webvisit` for public browsing, retaining explicit `--allow-host` write authorization. `htr takeover --id edit` blocks AI input; `htr yield --id edit` restores authority and requires a new observation.
+
+The same executable generates [the tool-use skill](guide/runtime-v2/generated/dw-browser/SKILL.md), [command reference](guide/runtime-v2/generated/dw-browser/references/commands.md), capabilities and completion:
+
+```sh
+dw-browser export-contract --directory guide/runtime-v2/generated
 ```
 
-Embed the HTTP server:
+See [getting started](guide/getting-started.md) and [the v2 migration](guide/runtime-v2/migration.md) for Go/HTTP integration and advanced cookie import, audit rules, site recipes and traces. Candidate artifacts do not replace any installed binary or automatically become accepted baselines.
 
-```go
-import browser "github.com/brightman-ai/deepwork-browser"
-
-srv := browser.New(browser.DefaultConfig())
-http.Handle("/browser/", srv.Handler())
-```
-
-See [guide/](guide/) for full documentation.
-
-## License
-
-[MIT](LICENSE)
+[Acceptance evidence and scope](guide/runtime-v2/acceptance.md) describe the real
+browser checks and their reproducible harnesses.

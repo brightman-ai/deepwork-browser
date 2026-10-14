@@ -212,15 +212,15 @@ func TestParseZoomFactor(t *testing.T) {
 }
 
 // act "zoom" 解析进入 op 表；错误语法 fail-loud（fill 语法同款纪律）。
-func TestParseActionZoom(t *testing.T) {
-	pa, err := ParseAction("zoom 2")
+func TestTypedRequestZoom(t *testing.T) {
+	pa, err := (Action{Verb: "zoom", Value: "2"}).executionRequest()
 	if err != nil || pa.Op != "zoom" || pa.Value != "2" {
-		t.Fatalf("ParseAction zoom 2: %+v, %v", pa, err)
+		t.Fatalf("TypedRequest zoom 2: %+v, %v", pa, err)
 	}
-	if pa, err = ParseAction("zoom reset"); err != nil || pa.Value != "reset" {
-		t.Fatalf("ParseAction zoom reset: %+v, %v", pa, err)
+	if pa, err = (Action{Verb: "zoom", Value: "reset"}).executionRequest(); err != nil || pa.Value != "reset" {
+		t.Fatalf("TypedRequest zoom reset: %+v, %v", pa, err)
 	}
-	if _, err = ParseAction("zoom"); err == nil || !strings.Contains(err.Error(), "zoom") {
+	if _, err = (Action{Verb: "zoom"}).executionRequest(); err == nil || !strings.Contains(err.Error(), "zoom") {
 		t.Fatalf("bare zoom must fail with guidance, got %v", err)
 	}
 }
@@ -314,14 +314,14 @@ func TestCompositeKeyboardState(t *testing.T) {
 	}
 }
 
-func TestParseActionKeyboard(t *testing.T) {
+func TestTypedRequestKeyboard(t *testing.T) {
 	for _, val := range []string{"show", "hide"} {
-		p, err := ParseAction("keyboard " + val)
+		p, err := (Action{Verb: "keyboard", Value: val}).executionRequest()
 		if err != nil || p.Op != "keyboard" || p.Value != val {
 			t.Fatalf("keyboard %s parse failed: %+v %v", val, p, err)
 		}
 	}
-	if _, err := ParseAction("keyboard"); err == nil {
+	if _, err := (Action{Verb: "keyboard"}).executionRequest(); err == nil {
 		t.Fatalf("bare keyboard must fail with guidance")
 	}
 	e := newActionEngine(nil)

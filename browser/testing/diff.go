@@ -1,13 +1,19 @@
 package testing
 
+import (
+	"fmt"
+	"strings"
+)
+
 // Diff — 两次 Observation 的结构化对比
 type Diff struct {
-	Schema     string         `json:"schema"` // "dw.diff.v1"
-	URL        URLDiff        `json:"url"`
-	Tabs       TabsDiff       `json:"tabs"`
-	Structural StructuralDiff `json:"structural"`
-	Telemetry  TelemetryDiff  `json:"telemetry"`
-	LatencyMs  int64          `json:"latency_ms"`
+	Channels   map[string]ChannelState `json:"channels"`
+	Schema     string                  `json:"schema"` // "dw.diff.v1"
+	URL        URLDiff                 `json:"url"`
+	Tabs       TabsDiff                `json:"tabs"`
+	Structural StructuralDiff          `json:"structural"`
+	Telemetry  TelemetryDiff           `json:"telemetry"`
+	LatencyMs  int64                   `json:"latency_ms"`
 }
 
 // URLDiff — URL 变化
@@ -40,7 +46,14 @@ type TelemetryDiff struct {
 
 // ComputeDiff 对比两次 Observation 的变化。before/after 及其子字段均可为 nil。
 func ComputeDiff(before, after *Observation) *Diff {
-	d := &Diff{Schema: "dw.diff.v1"}
+	d := &Diff{Schema: "dw.diff.v1", Channels: map[string]ChannelState{}}
+	for _, name := range []string{"structural", "behavior", "console", "network"} {
+		status := "unavailable"
+		if before != nil && after != nil && before.Channels[name].Status == "captured" && after.Channels[name].Status == "captured" {
+			status = "captured"
+		}
+		d.Channels[name] = ChannelState{Status: status}
+	}
 
 	// URL diff
 	var beforeURL, afterURL string
@@ -74,11 +87,11 @@ func ComputeDiff(before, after *Observation) *Diff {
 	var beforeText, afterText string
 	var beforeRefs, afterRefs int
 	if before != nil && before.Structural != nil {
-		beforeText = before.Structural.Text
+		beforeText = semanticStructuralText(before)
 		beforeRefs = before.Structural.RefsCount
 	}
 	if after != nil && after.Structural != nil {
-		afterText = after.Structural.Text
+		afterText = semanticStructuralText(after)
 		afterRefs = after.Structural.RefsCount
 	}
 	added, removed := textDiff(beforeText, afterText)
@@ -107,6 +120,24 @@ func ComputeDiff(before, after *Observation) *Diff {
 	d.Telemetry = computeTelemetryDiff(beforeTel, afterTel)
 
 	return d
+}
+
+// semanticStructuralText removes only captured identities at compact-ref
+// label positions. Raw observation text remains immutable and authoritative.
+func semanticStructuralText(obs *Observation) string {
+	if obs == nil || obs.Structural == nil {
+		return ""
+	}
+	text := obs.Structural.Text
+	if obs.ID == "" {
+		return text
+	}
+	for index, ref := range obs.Structural.Refs {
+		if strings.HasPrefix(ref.Ref, "@o"+obs.ID+"-r") {
+			text = strings.ReplaceAll(text, "["+ref.Ref+" ", fmt.Sprintf("[slot%d ", index+1))
+		}
+	}
+	return text
 }
 
 // textDiff 返回 after 中新增的行和 before 中删除的行（基于行集合差异）。

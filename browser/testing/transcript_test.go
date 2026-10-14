@@ -27,7 +27,7 @@ func loadFixture(t *testing.T) *TranscriptState {
 // newObsWithTranscript creates a minimal Observation with the fixture transcript attached.
 func newObsWithTranscript(t *testing.T) *Observation {
 	t.Helper()
-	obs := &Observation{Schema: "dw.observe.v1"}
+	obs := &Observation{Schema: "dw.observe.v2"}
 	ts := loadFixture(t)
 	obs.SetTranscript(ts)
 	return obs
@@ -70,7 +70,7 @@ func TestTranscriptToolCount_Equals(t *testing.T) {
 }
 
 func TestTranscriptToolCount_MissingTranscript(t *testing.T) {
-	obs := &Observation{Schema: "dw.observe.v1"} // no transcript attached
+	obs := &Observation{Schema: "dw.observe.v2"} // no transcript attached
 	engine := &AssertionEngine{}
 
 	result := engine.Evaluate(obs, "transcript_tool_count('browser_navigate') >= 1")
@@ -162,6 +162,7 @@ func TestTranscriptFormatV1_Pass(t *testing.T) {
 func TestTranscriptBinding_ZeroMatches(t *testing.T) {
 	// Use a start time in the far future so no file can match.
 	binding := &TranscriptBinding{
+		Dir: fixtureDir(t), Pattern: "*.jsonl",
 		StartTS: time.Date(2099, 1, 1, 0, 0, 0, 0, time.UTC),
 	}
 	err := binding.Resolve()

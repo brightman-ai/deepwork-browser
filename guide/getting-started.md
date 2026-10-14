@@ -1,57 +1,47 @@
-# Getting Started
+# Getting started with DW-Browser v2
 
-## Requirements
+Use Go 1.26+ and Chrome/Chromium. Build into a project artifact directory; installing globally is a separate explicit action.
 
-- Go 1.26+
-- Chrome or Chromium installed (detected automatically)
-
-## Installation
-
-```bash
-go get github.com/brightman-ai/deepwork-browser
+```sh
+mkdir -p artifacts
+GOMAXPROCS=2 go build -p 2 -o artifacts/dw-browser ./cmd/dw-browser
+artifacts/dw-browser help
 ```
 
-## Embed in your application
+Create with `open URL --id NAME --scenario app-test-explore`. Creation-only persona, engine, rendering, profile and evidence parameters remain in the session. The default task profile is temporary; `--profile NAME` selects persistent storage. Duplicate IDs and missing IDs on observe/act are errors.
 
-```go
-package main
+`observe --id NAME` captures an actual PNG and a canonical observation. Read its image and visible controls. `--content text|list|table`, `--tree`, `--health` and `--hit-audit` add facts to that collector. A missing telemetry channel does not mean zero errors. Static pages with zero refs can still have a valid image.
 
-import (
-    "net/http"
-    browser "github.com/brightman-ai/deepwork-browser"
-)
+Use typed actions, keeping each literal text separate from the request:
 
-func main() {
-    cfg := browser.DefaultConfig()
-    srv := browser.New(cfg)
-    http.Handle("/browser/", srv.Handler())
-    http.ListenAndServe(":8090", nil)
-}
+```sh
+dw-browser act fill "$REF" --id NAME --text-file draft.txt
+dw-browser act type --focused --id NAME --text 'append this'
+dw-browser act click "$REF" --id NAME --count 2 --button left
+dw-browser act navigate --id NAME --url http://127.0.0.1:8080
+dw-browser session viewport --id NAME --size 880x720
 ```
 
-## Run as CLI
+Observe again before a new ref or screenshot-coordinate action. A failed/unknown dispatch is not a reason to repeat fill/submit automatically. `eval --id NAME 'EXPRESSION'` is gated debugging, records intervention and revokes old authority. It cannot establish an independent Witness experience.
 
-```bash
-go install github.com/brightman-ai/deepwork-browser/cmd/dw-browser@latest
+`once URL --scenario webvisit` creates, uses the same observation contract, and closes its own short-lived session. Multi-step work belongs in a typed `journey --file FILE`. The [generated journey example](runtime-v2/generated/dw-browser/references/journey.yaml) roundtrips through the strict loader. Its selectors must be adapted to the actual UI; a candidate remains separate from an accepted baseline.
 
-# Open a URL in managed Chrome
-dw-browser open https://example.com
+Advanced operations retain their specific capabilities:
 
-# Take a full-page screenshot
-dw-browser snap --out page.png
-
-# Execute a script
-dw-browser act --script ./my-script.js
-
-# List open tabs
-dw-browser tabs
+```sh
+dw-browser tabs new --id NAME --url http://127.0.0.1:8080
+dw-browser tabs select --id NAME --target TARGET_ID
+dw-browser htr status --id NAME
+dw-browser htr takeover --id NAME
+dw-browser htr yield --id NAME
+dw-browser cookie-import --id NAME --browser chrome --domain example.com
+dw-browser audit --id NAME --suite a11y --threshold 85 --format json
+dw-browser record start --id NAME
+dw-browser record export --id NAME
+dw-browser record stop --id NAME
+dw-browser skills read chatgpt.com --action send-message
 ```
 
-## Build from source
+Cookie import retains the native database/keychain importer; it is an explicit authentication operation. Audit has compatibility, accessibility, layout, performance and browser chrome rules, with named suites and individual checks. Trace requests/outcomes are typed, and sensitive text is redacted. Site recipes are planning material; they never rescue a failed input through an internal model.
 
-```bash
-git clone https://github.com/brightman-ai/deepwork-browser
-cd deepwork-browser
-go build ./cmd/dw-browser
-./dw-browser --help
-```
+For precise required parameters and conditional groups use `help COMMAND` or [the generated reference](runtime-v2/generated/dw-browser/references/commands.md). [Migration](runtime-v2/migration.md) gives the current Go and HTTP ports.

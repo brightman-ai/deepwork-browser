@@ -16,6 +16,12 @@ type primitive func(obs *Observation, args string) (bool, string)
 // primitives 是所有已注册断言原语的查找表。
 var primitives = map[string]primitive{
 	"exists":                  evalExists,
+	"probe_count":             evalProbeCountStub,
+	"probe_http_status":       evalProbeCountStub,
+	"probe_json_count":        evalProbeCountStub,
+	"probe_text_contains":     evalProbeTextContains,
+	"probe_json_has":          evalProbeJSONHas,
+	"probe_value_equals_file": evalProbeValueEqualsFile,
 	"count":                   evalCount,
 	"text_contains":           evalTextContains,
 	"url_matches":             evalURLMatches,
@@ -46,6 +52,7 @@ var transcriptCountFuncs = map[string]bool{
 	"transcript_error_count": true,
 	"transcript_done_count":  true,
 	"file_glob_count":        true,
+	"probe_count":            true, "probe_http_status": true, "probe_json_count": true,
 }
 
 // evalTranscriptToolCountStub is a placeholder called without comparison — blocked.
@@ -70,14 +77,14 @@ func evalFileGlobCountStub(obs *Observation, args string) (bool, string) {
 
 // exprPattern 匹配 "funcName(args) [op value]" 形式的表达式。
 // group 1: 函数名, group 2: 括号内参数, group 3: 可选比较部分 (">= 1")
-var exprPattern = regexp.MustCompile(`^(\w+)\(([^)]*)\)\s*(.*)$`)
+var exprPattern = regexp.MustCompile(`^(\w+)\((.*)\)\s*(.*)$`)
 
 // simplePattern 匹配 "name op value" 形式（无括号）的简单表达式。
 // group 1: 变量名, group 2: 运算符, group 3: 整数值
 var simplePattern = regexp.MustCompile(`^(\w+)\s*(==|>=|<=|!=|>|<)\s*(\d+)$`)
 
 // argPattern 用于从 key='value' 形式的参数中提取键值对。
-var argPattern = regexp.MustCompile(`(\w+)='([^']*)'`)
+var argPattern = regexp.MustCompile(`(\w+)=(?:'((?:\\.|[^'\\])*)'|"((?:\\.|[^"\\])*)")`)
 
 // AssertionEngine 执行 Assertion DSL 断言。所有判定均为确定性（confidence 固定 1.0）。
 // 当 Vision 非 nil 时，using 包含 "visual" 的断言会额外触发 VLM 视觉判定。
@@ -97,9 +104,16 @@ func (e *AssertionEngine) Evaluate(obs *Observation, expr string) *AssertionResu
 func (e *AssertionEngine) EvaluateWithUsing(obs *Observation, expr string, using []string) *AssertionResult {
 	expr = strings.TrimSpace(expr)
 	result := &AssertionResult{
+		Required:   true,
 		Schema:     "dw.check.v1",
 		Assertion:  expr,
 		Confidence: 1.0,
+	}
+
+	if err := validateAssertionSyntax(expr); err != nil {
+		result.Status = StatusBlocked
+		result.Reason = err.Error()
+		return result
 	}
 
 	// 尝试 funcName(args) [op value] 形式
@@ -108,6 +122,12 @@ func (e *AssertionEngine) EvaluateWithUsing(obs *Observation, expr string, using
 		funcArgs := m[2]
 		comparison := strings.TrimSpace(m[3])
 
+		if obs.Schema == "dw.observe.v2" && (funcName == "exists" || funcName == "visible" || funcName == "gone" || funcName == "count" || funcName == "text_contains") && obs.Channels["structural"].Status != "captured" {
+			result.Status = StatusBlocked
+			result.Reason = "structural evidence not captured"
+			result.Using = inferUsing(funcName)
+			return result
+		}
 		fn, ok := primitives[funcName]
 		if !ok {
 			result.Status = StatusBlocked
@@ -126,6 +146,12 @@ func (e *AssertionEngine) EvaluateWithUsing(obs *Observation, expr string, using
 			var passed bool
 			var reason string
 			switch funcName {
+			case "probe_count":
+				passed, reason = evalProbeCount(obs, funcArgs, comparison)
+			case "probe_http_status":
+				passed, reason = evalProbeStatus(obs, funcArgs, comparison)
+			case "probe_json_count":
+				passed, reason = evalProbeJSONCount(obs, funcArgs, comparison)
 			case "transcript_tool_count":
 				passed, reason = evalTranscriptToolCountWithComparison(obs, funcArgs, comparison)
 			case "transcript_error_count":
@@ -171,37 +197,25 @@ func (e *AssertionEngine) EvaluateWithUsing(obs *Observation, expr string, using
 		// overlay below so free-form natural-language assertions can be evaluated by VLM.
 	}
 
-	// 覆盖 using（若调用方显式传入）——但 inferUsing 是内在类的唯一 SSOT，调用者
-	// 只能窄化/一致，不能改类。structural predicate 被标成 acceptance(visual/behavior)
-	// → oracle-class 冲突：a11y 断言不得充当 UX 视觉/行为验收的唯一依据。
 	if len(using) > 0 {
+		result.RequestedUsing = using
 		if conflict, msg := usingClassConflict(result.Using, using); conflict {
-			result.Using = using
 			result.OracleWarning = msg
-			// Endgame intent (no-compromise): oracle-class conflict is a HARD REJECT
-			// by default — an a11y/structural predicate must never be the sole pass
-			// basis for a visual/behavioral acceptance. Opt-DOWN escape for migration
-			// only: DW_BROWSER_ORACLE_WARN_ONLY=1 downgrades REJECT to a stderr warning.
-			if os.Getenv("DW_BROWSER_ORACLE_WARN_ONLY") == "1" {
-				fmt.Fprintf(os.Stderr, "[dw-browser] oracle-class warning (WARN_ONLY): %s\n", msg)
-			} else {
-				result.Status = StatusBlocked
-				result.Reason = "REJECT oracle-class: " + msg
-				return result
-			}
+			result.Status = StatusBlocked
+			result.Reason = "REJECT oracle-class: " + msg
+			return result
 		}
-		result.Using = using
 	}
 
 	// Primitives that return (false, "BLOCKED: ...") signal missing infrastructure,
 	// not a real assertion failure. Promote StatusFail → StatusBlocked so the step
 	// runner can distinguish "infra not wired" from "check ran and failed".
-	if result.Status == StatusFail && strings.HasPrefix(result.Reason, "BLOCKED:") {
+	if result.Status == StatusFail && (strings.HasPrefix(result.Reason, "BLOCKED:") || strings.HasPrefix(result.Reason, "unsupported") || strings.HasPrefix(result.Reason, "cannot parse")) {
 		result.Status = StatusBlocked
 	}
 
 	// Visual oracle overlay：若 using 含 "visual" 且 Vision 已配置
-	if e.Vision != nil && containsVisual(result.Using) {
+	if e.Vision != nil && (containsVisual(result.Using) || containsVisual(using)) {
 		spec := AssertionSpec{Assert: expr}
 		result = e.applyVisualOracle(obs, result, spec)
 	}
@@ -236,16 +250,9 @@ func (e *AssertionEngine) EvaluateVisualOnly(obs *Observation, expr string, usin
 func (e *AssertionEngine) EvaluateAll(obs *Observation, specs []AssertionSpec) []AssertionResult {
 	results := make([]AssertionResult, 0, len(specs))
 	for _, spec := range specs {
-		r := e.Evaluate(obs, spec.Assert)
+		r := e.EvaluateWithUsing(obs, spec.Assert, spec.Using)
 		r.ID = spec.ID
-		// 如果 spec 指定了 using，覆盖推断值
-		if len(spec.Using) > 0 {
-			r.Using = spec.Using
-		}
-		// 如果 using 包含 "visual" 且 Vision oracle 已启用，触发 VLM 视觉判定
-		if e.Vision != nil && containsVisual(r.Using) {
-			r = e.applyVisualOracle(obs, r, spec)
-		}
+		r.Required = required(spec)
 		results = append(results, *r)
 	}
 	return results
@@ -264,52 +271,40 @@ func containsVisual(using []string) bool {
 // applyVisualOracle 调用 VLM 进行视觉判定，结果为 VISUAL_SUSPECT（非 FAIL）。
 // Ollama 不可达时 graceful degradation：返回 BLOCKED，不 crash。
 func (e *AssertionEngine) applyVisualOracle(obs *Observation, r *AssertionResult, spec AssertionSpec) *AssertionResult {
-	if obs.Visual == nil || obs.Visual.ScreenshotPath == "" {
+	if obs.Deterministic || obs.Scenario == "app-test-baseline" {
 		r.Status = StatusBlocked
-		r.Reason = "visual oracle: no screenshot available in Observation.Visual"
+		r.Reason = "deterministic scope forbids internal LLM"
 		return r
 	}
-
+	if obs.Visual == nil || obs.Visual.ScreenshotPath == "" {
+		r.VisualAdviceError = "visual suggestion: screenshot unavailable"
+		return r
+	}
 	screenshot, err := os.ReadFile(obs.Visual.ScreenshotPath)
 	if err != nil {
-		r.Status = StatusBlocked
-		r.Reason = fmt.Sprintf("visual oracle: cannot read screenshot %q: %v", obs.Visual.ScreenshotPath, err)
+		r.VisualAdviceError = err.Error()
 		return r
 	}
-
-	vctx := VisionContext{
-		PageURL:  obs.Page.URL,
-		Viewport: fmt.Sprintf("%dx%d", obs.Page.ViewportW, obs.Page.ViewportH),
-		Expected: spec.Assert,
-	}
+	visionContext := VisionContext{PageURL: obs.Page.URL, Viewport: fmt.Sprintf("%dx%d", obs.Page.ViewportW, obs.Page.ViewportH), Expected: spec.Assert}
 	if obs.Structural != nil {
-		vctx.A11ySummary = obs.Structural.Text
+		visionContext.A11ySummary = obs.Structural.Text
 	}
-
-	vr, err := e.Vision.Check(context.Background(), screenshot, spec.Assert, vctx)
+	advice, err := e.Vision.Check(context.Background(), screenshot, spec.Assert, visionContext)
 	if err != nil {
-		r.Status = StatusBlocked
-		r.Reason = fmt.Sprintf("visual oracle: %v", err)
+		r.VisualAdviceError = err.Error()
 		return r
 	}
+	return ApplyVisualSuggestion(r, advice)
+}
 
-	// VLM 判定完成：无论原始判定结果，视觉不通过时降为 VISUAL_SUSPECT（非 FAIL）
-	if !vr.Pass {
-		r.Status = StatusVisualSuspect
-		r.Confidence = vr.Confidence
-		r.Reason = fmt.Sprintf("visual oracle: %s (confidence=%.2f, observations=%v)",
-			vr.Category, vr.Confidence, vr.Observations)
-	} else {
-		// VLM 确认通过：结构化原语已有明确结果时保留原状态；
-		// free-form visual-only 断言从 BLOCKED 提升为 PASS。
-		if r.Status == "" || r.Status == StatusBlocked {
-			r.Status = StatusPass
-		}
-		r.Confidence = vr.Confidence
-		r.Reason = fmt.Sprintf("visual oracle: %s (confidence=%.2f, observations=%v)",
-			vr.Category, vr.Confidence, vr.Observations)
+// ApplyVisualSuggestion never changes a deterministic verdict.
+func ApplyVisualSuggestion(result *AssertionResult, advice *VisionResult) *AssertionResult {
+	result.VisualAdvice = advice
+	if result.Status == "" {
+		result.Status = StatusBlocked
+		result.Reason = "no deterministic hard assertion"
 	}
-	return r
+	return result
 }
 
 // ---------------------------------------------------------------------------
@@ -343,9 +338,33 @@ func evalExists(obs *Observation, args string) (bool, string) {
 	return false, fmt.Sprintf("no element matching %s", args)
 }
 
-// evalVisible 在 P1 阶段与 exists 等价（均基于 A11y 树，不做视觉判定）。
+// evalVisible requires captured visibility facts; document presence alone
+// cannot prove that a user can see an element.
 func evalVisible(obs *Observation, args string) (bool, string) {
-	return evalExists(obs, args)
+	if obs.Structural == nil {
+		return false, "BLOCKED: structural layer missing"
+	}
+	filters := parseKV(args)
+	if len(filters) == 0 {
+		return false, fmt.Sprintf("unsupported selector %q (use role=/name=/testid=/text=)", strings.TrimSpace(args))
+	}
+	knownHidden, unknown := false, false
+	for _, ref := range obs.Structural.Refs {
+		if !refMatches(ref, filters) {
+			continue
+		}
+		if !ref.VisibilityKnown {
+			unknown = true
+		} else if ref.Visible {
+			return true, fmt.Sprintf("captured visible element matching %s", args)
+		} else {
+			knownHidden = true
+		}
+	}
+	if unknown || !knownHidden {
+		return false, "BLOCKED: matching element visibility not captured"
+	}
+	return false, fmt.Sprintf("captured matching elements are hidden: %s", args)
 }
 
 // evalGone 是 exists 的反面：元素不存在则通过。
@@ -434,10 +453,10 @@ func evalTextContains(obs *Observation, args string) (bool, string) {
 	if strings.Contains(obs.Structural.Text, target) {
 		return true, fmt.Sprintf("A11y text contains %q", target)
 	}
-	if obs.Structural.DocumentText != "" {
-		if strings.Contains(obs.Structural.DocumentText, target) {
-			return true, fmt.Sprintf("rendered document text contains %q", target)
-		}
+	if strings.Contains(obs.Structural.DocumentText, target) {
+		return true, fmt.Sprintf("rendered document text contains %q", target)
+	}
+	if obs.Structural.DocumentTextComplete {
 		return false, fmt.Sprintf("complete rendered document text has no witness containing %q", target)
 	}
 	return false, fmt.Sprintf("BLOCKED: incomplete structural text has no witness containing %q", target)
@@ -477,7 +496,7 @@ func evalActiveTabURLContains(obs *Observation, args string) (bool, string) {
 // 仅计 level=="error" — warnings 是操作性日志，不代表用户可感知错误。
 // args 形如 "== 0"（来自简单表达式路由）。
 func evalConsoleErrorsCount(obs *Observation, args string) (bool, string) {
-	if obs.Telemetry == nil {
+	if obs.Telemetry == nil || (obs.Schema == "dw.observe.v2" && obs.Channels["console"].Status != "captured") {
 		return false, "BLOCKED: telemetry layer missing"
 	}
 	var count int64
@@ -491,7 +510,7 @@ func evalConsoleErrorsCount(obs *Observation, args string) (bool, string) {
 
 // evalNetworkFailuresCount 检查网络失败数量并与阈值比较。
 func evalNetworkFailuresCount(obs *Observation, args string) (bool, string) {
-	if obs.Telemetry == nil {
+	if obs.Telemetry == nil || (obs.Schema == "dw.observe.v2" && obs.Channels["network"].Status != "captured") {
 		return false, "BLOCKED: telemetry layer missing"
 	}
 	count := int64(len(obs.Telemetry.NetworkFailures))
@@ -519,13 +538,7 @@ func evalLatencyLt(obs *Observation, args string) (bool, string) {
 // ---------------------------------------------------------------------------
 
 // parseKV 从 "role='button', name='Research'" 形式的字符串解析 key→value 映射。
-func parseKV(args string) map[string]string {
-	m := make(map[string]string)
-	for _, match := range argPattern.FindAllStringSubmatch(args, -1) {
-		m[match[1]] = match[2]
-	}
-	return m
-}
+func parseKV(args string) map[string]string { fields, _ := strictKV(args); return fields }
 
 // refMatches 检查 RefSummary 是否满足所有过滤条件。
 func refMatches(ref RefSummary, filters map[string]string) bool {
@@ -533,6 +546,10 @@ func refMatches(ref RefSummary, filters map[string]string) bool {
 		switch k {
 		case "role":
 			if !strings.EqualFold(ref.Role, v) {
+				return false
+			}
+		case "name_contains":
+			if !strings.Contains(ref.Name, v) {
 				return false
 			}
 		case "name":
@@ -549,7 +566,7 @@ func refMatches(ref RefSummary, filters map[string]string) bool {
 				return false
 			}
 		default:
-			// 未知 key 忽略（宽容解析）
+			return false
 		}
 	}
 	return true
@@ -609,15 +626,12 @@ func compareInt(lhs int64, comparison, label string) (bool, string) {
 }
 
 // stripQuotes 去除字符串首尾的单引号或双引号。
-func stripQuotes(s string) string {
-	s = strings.TrimSpace(s)
-	if len(s) >= 2 {
-		if (s[0] == '\'' && s[len(s)-1] == '\'') ||
-			(s[0] == '"' && s[len(s)-1] == '"') {
-			return s[1 : len(s)-1]
-		}
+func stripQuotes(value string) string {
+	value = strings.TrimSpace(value)
+	if decoded, err := decodeAssertionLiteral(value); err == nil {
+		return decoded
 	}
-	return s
+	return value
 }
 
 // boolToStatus 将 bool 转换为 PASS/FAIL 状态。
@@ -668,7 +682,7 @@ func usingClassConflict(inferred, callerUsing []string) (bool, string) {
 // inferUsing 根据原语名称推断依赖的 Observation 层。
 func inferUsing(funcName string) []string {
 	switch funcName {
-	case "exists", "visible", "gone", "count", "text_contains":
+	case "exists", "visible", "gone", "count", "text_contains", "probe_count", "probe_text_contains", "probe_value_equals_file":
 		return []string{"structural"}
 	case "url_matches":
 		return []string{"page"}
@@ -683,6 +697,8 @@ func inferUsing(funcName string) []string {
 		return []string{"transcript"}
 	case "file_glob_count":
 		return []string{"file"}
+	case "probe_json_has", "probe_json_count", "probe_http_status":
+		return []string{"sut"}
 	default:
 		return nil
 	}
@@ -695,7 +711,7 @@ func inferUsing(funcName string) []string {
 // evalRegionNonEmpty 检查指定 data-region 元素的尺寸是否非零。
 // args 形如: 'main-workspace'
 func evalRegionNonEmpty(obs *Observation, args string) (bool, string) {
-	if obs.Visual == nil {
+	if obs.Visual == nil || (obs.Schema == "dw.observe.v2" && (obs.Channels["visual"].Status != "captured" || obs.Channels["layout"].Status != "captured")) {
 		return false, "BLOCKED: visual/layout layer missing"
 	}
 	id := stripQuotes(args)
@@ -713,7 +729,7 @@ func evalRegionNonEmpty(obs *Observation, args string) (bool, string) {
 // evalRegionNotOverlapped 检查两个 data-region 元素的矩形是否不重叠（通过则 pass）。
 // args 形如: 'browser-sidebar', 'main-workspace'
 func evalRegionNotOverlapped(obs *Observation, args string) (bool, string) {
-	if obs.Visual == nil {
+	if obs.Visual == nil || (obs.Schema == "dw.observe.v2" && (obs.Channels["visual"].Status != "captured" || obs.Channels["layout"].Status != "captured")) {
 		return false, "BLOCKED: visual/layout layer missing"
 	}
 
@@ -759,4 +775,8 @@ func evalRegionNotOverlapped(obs *Observation, args string) (bool, string) {
 			idB, rectB.X, rectB.Y, rectB.Width, rectB.Height)
 	}
 	return true, fmt.Sprintf("regions %q and %q do not overlap", idA, idB)
+}
+
+func evalProbeCountStub(obs *Observation, args string) (bool, string) {
+	return false, "BLOCKED: probe count requires comparison"
 }

@@ -213,7 +213,7 @@ func TestL4_Concurrent_SnapAct_NoRace(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			_, err := core.Act(ctx, "click e1", false)
+			_, err := executeFixtureAction(ctx, core, Action{Verb: "click", Target: fixtureRef("@ofixture-r1")}, false, false)
 			// ErrRefNotFound 是正常的（并发 snap 可能重建 refTable）
 			if err != nil && err != ErrRefNotFound && err != ErrTakeoverActive {
 				errCh <- err

@@ -22,12 +22,14 @@ import (
 //	srv, _ := dwbrowser.NewServer()
 //	srv.ListenAndServe(ctx)
 type Server struct {
-	mux      *http.ServeMux
-	pool     *browser.BrowserPool
-	hooks    Hooks
-	config   Config
-	listener net.Listener
-	mu       sync.Mutex
+	mux             *http.ServeMux
+	pool            *browser.BrowserPool
+	hooks           Hooks
+	config          Config
+	listener        net.Listener
+	mu              sync.Mutex
+	runtimeMu       sync.Mutex
+	runtimeResolver RuntimeResolver
 }
 
 // NewServer creates a Server with the provided options.
@@ -100,24 +102,15 @@ func (s *Server) Close() error {
 // registerRoutes wires the built-in HTTP routes.
 func (s *Server) registerRoutes() {
 	s.mux.HandleFunc("GET /status", s.handleStatus)
-	s.mux.HandleFunc("POST /navigate", s.handleNavigate)
-	s.mux.HandleFunc("GET /tabs", s.handleTabs)
+	s.mux.HandleFunc("POST /act", s.handleAction)
+	s.mux.HandleFunc("GET /observe", s.handleObserve)
+	s.mux.HandleFunc("POST /navigate", s.handleBoundNavigate)
+	s.mux.HandleFunc("GET /tabs", s.handleBoundTabs)
 	// LiveView WebSocket route will be added in a future release.
 }
 
 // handleStatus returns a basic health-check response.
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	fmt.Fprintf(w, `{"status":"ok"}`)
-}
-
-// handleNavigate is a placeholder for the navigate endpoint.
-func (s *Server) handleNavigate(w http.ResponseWriter, r *http.Request) {
-	http.Error(w, "not implemented", http.StatusNotImplemented)
-}
-
-// handleTabs returns the list of active tabs.
-func (s *Server) handleTabs(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	fmt.Fprintf(w, `{"tabs":[]}`)
+	writeHTTPResult(w, http.StatusOK, map[string]interface{}{"status": "ok", "runtime_bound": s.runtimeResolver != nil})
 }

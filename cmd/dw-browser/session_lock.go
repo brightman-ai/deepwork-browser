@@ -23,71 +23,51 @@ import (
 // 取锁点刻意放在 main() 分派之前而不是每个子命令内部:一个入口 = 一条不变量,
 // 不会出现"新加的子命令忘了取锁"这种按文件数量增长的漏洞。
 //
-// 持锁 goroutine-safe 说明:锁在进程生命周期内一直持有,没有 defer Release ——
-// 各子命令都以 os.Exit 结束(defer 本来就不跑),而 flock 由内核在进程退出时释放。
-// 这正是选 flock 的理由:SIGKILL 也不会留下脏锁。
+// runCLI 持有锁直到 typed handler 与结果交付完成，并通过 defer 释放。
+// flock 同时保证异常进程退出（包括 SIGKILL）不会留下脏锁。
 
 // heldSessionLock 是包级引用,唯一目的是防止 GC 回收 *os.File 触发 finalizer
-// 提前 close 掉持锁的 fd。它必须活到进程结束。
+// 提前 close 掉持锁的 fd。runCLI 完成时显式释放。
 var heldSessionLock *browser.OperatorLock
 
-// operatorLockExemptCommands 是不取会话锁的命令。
-//
-// 每一条都有具体理由,不是"顺手放行":
-//   - muxhost: 浏览器宿主基础设施。它由持锁的会话命令 fork 出来(muxhost serve
-//     --id <同一个 session>),自己再取同一把锁必然自锁死。
-//   - session status / session list / gc: 只读诊断。占有者是谁恰恰要靠它们查,
-//     把诊断也堵在锁后面等于"出问题时没法看"。
-//   - profile / skills / persona / version / help: 根本不碰会话。
-var operatorLockExemptCommands = map[string]bool{
-	"muxhost": true,
-	"gc":      true,
-	"profile": true,
-	"skills":  true,
-	"persona": true, "personas": true,
-	"--version": true, "version": true,
-	"--help": true, "-h": true, "help": true,
-}
-
-// acquireSessionOperatorLockOrExit 在命令分派前取会话锁。
-//
-// 无 --id(一次性会话 / 纯本地命令)= 无会话可争,直接放行。
-// close --force 是运维逃生口:会话已经被卡住的操作者占着时,总得有办法把它收掉。
-func acquireSessionOperatorLockOrExit(argv []string) {
+// Only the declared request enters the session critical section. Diagnostics
+// and infrastructure identifiers never pretend to be a task session id.
+func acquireSessionOperatorLockE(argv []string) error {
 	if len(argv) == 0 {
-		return
+		return nil
 	}
-	cmd := argv[0]
-	if operatorLockExemptCommands[cmd] {
-		return
+	def, _, err := lookupCommand(argv)
+	if err == nil && def.Diagnostic {
+		return nil
 	}
-	if cmd == "session" && len(argv) > 1 && (argv[1] == "status" || argv[1] == "list") {
-		return
+	sid := scanSessionIDArg(argv)
+	if sid == "" {
+		return nil
 	}
-	sessionID := scanSessionIDArg(argv)
-	if sessionID == "" {
-		return
+	if argv[0] == "close" && scanBoolFlag(argv, "--force") {
+		return nil
 	}
-	if cmd == "close" || (cmd == "session" && len(argv) > 1 && argv[1] == "close") {
-		if scanBoolFlag(argv, "--force") {
-			fmt.Fprintf(os.Stderr, "dw-browser %s: --force 跳过会话锁(运维逃生口):"+
-				"如果另一个操作者正在这个会话上动作,它的下一步可能落空\n", cmd)
-			return
-		}
-	}
-
-	wait := scanLockWait(argv)
-	lock, err := browser.AcquireSessionOperatorLock(sessionID, browser.SummarizeOperatorCommand(argv), wait)
+	lock, err := browser.AcquireSessionOperatorLock(sid, browser.SummarizeOperatorCommand(redactCLIArguments(argv)), scanLockWait(argv))
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "dw-browser %s: %v\n", cmd, err)
-		if isSessionBusy(err) {
-			// 逃生口一并说清,否则被拒的人只知道"不让我干",不知道下一步怎么办。
-			fmt.Fprintf(os.Stderr, "  等久一点: --lock-wait 30s   |   查占有者: dw-browser session status --id %s"+
-				"   |   强制收掉会话: dw-browser close --id %s --force\n", sessionID, sessionID)
-		}
-		os.Exit(exitRunErr)
+		return err
 	}
 	heldSessionLock = lock
+	return nil
+}
+func redactCLIArguments(args []string) []string {
+	result := append([]string(nil), args...)
+	for i := 0; i < len(result); i++ {
+		name, _, inline := strings.Cut(result[i], "=")
+		if name == "--text" || name == "--text-file" || strings.HasSuffix(name, "-api-key") {
+			if inline {
+				result[i] = name + "=***"
+			} else if i+1 < len(result) {
+				i++
+				result[i] = "***"
+			}
+		}
+	}
+	return result
 }
 
 func isSessionBusy(err error) bool {
@@ -96,8 +76,7 @@ func isSessionBusy(err error) bool {
 }
 
 // scanSessionIDArg 只认 --id,与 parseCommonFlags 保持一致。
-// 单独扫一遍 argv 而不复用 parseCommonFlags:后者会对未知 flag / 缺失 --scenario
-// 直接 os.Exit,取锁这一步不该背上那些语义。
+// 只提取会话身份；完整声明验证和 typed parser 负责参数错误。
 func scanSessionIDArg(args []string) string {
 	for i := 0; i < len(args); i++ {
 		switch {

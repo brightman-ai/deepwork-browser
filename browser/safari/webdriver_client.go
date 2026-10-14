@@ -67,6 +67,7 @@ type ElementInfo struct {
 	Href        string
 	Visible     bool
 	Enabled     bool
+	Rect        struct{ X, Y, Width, Height float64 }
 }
 
 // w3c element identifier key per spec.
@@ -398,7 +399,8 @@ return {
 	testid: el.getAttribute('data-testid') || '',
 	placeholder: el.getAttribute('placeholder') || '',
 	href: el.getAttribute('href') || '',
-	visible: el.offsetParent !== null || el.tagName === 'BODY',
+	visible: (el.offsetParent !== null || el.tagName === 'BODY') && el.getBoundingClientRect().bottom>0 && el.getBoundingClientRect().right>0 && el.getBoundingClientRect().top<innerHeight && el.getBoundingClientRect().left<innerWidth,
+ rect: {x:el.getBoundingClientRect().x,y:el.getBoundingClientRect().y,width:el.getBoundingClientRect().width,height:el.getBoundingClientRect().height},
 	enabled: !el.disabled
 };`
 	raw, err := c.ExecuteScript(ctx, script, map[string]string{w3cElementKey: el.ID})
@@ -438,7 +440,8 @@ for (var i = 0; i < els.length; i++) {
 		testid: el.getAttribute('data-testid') || '',
 		placeholder: el.getAttribute('placeholder') || '',
 		href: el.getAttribute('href') || '',
-		visible: el.offsetParent !== null || el.tagName === 'BODY',
+		visible: (el.offsetParent !== null || el.tagName === 'BODY') && el.getBoundingClientRect().bottom>0 && el.getBoundingClientRect().right>0 && el.getBoundingClientRect().top<innerHeight && el.getBoundingClientRect().left<innerWidth,
+ rect: {x:el.getBoundingClientRect().x,y:el.getBoundingClientRect().y,width:el.getBoundingClientRect().width,height:el.getBoundingClientRect().height},
 		enabled: !el.disabled
 	});
 }

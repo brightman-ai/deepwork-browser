@@ -50,6 +50,7 @@ func launchTestBrowser(t *testing.T) BrowserCore {
 		homeDir, _ := os.UserHomeDir()
 		_ = os.RemoveAll(homeDir + "/.deepwork/browser-data/" + profileID)
 	})
+	core.(ScenarioInteractionCapable).SetInteractionScenario(ScenarioAppTestExplore)
 	return core
 }
 
@@ -287,7 +288,7 @@ func TestActionEngine_Click_ReturnsSnapshot(t *testing.T) {
 		t.Skip("TC-09-I-05: No link ref found in snapshot, skip")
 	}
 
-	snap2, err := core.Act(ctx, "click "+linkRef, true)
+	snap2, err := executeFixtureAction(ctx, core, Action{Verb: "click", Target: fixtureRef(linkRef)}, true, false)
 	if err != nil {
 		// 某些 click 可能跳转导致 snap 失败，记录但不失败
 		t.Logf("TC-09-I-05: Act() returned error (may be expected): %v", err)
@@ -346,7 +347,7 @@ func TestActionEngine_Type_InputSuccess(t *testing.T) {
 		t.Skip("TC-09-I-06: No textbox ref found, skip")
 	}
 
-	_, err = core.Act(ctx, "type "+inputRef+" 'hello'", false)
+	_, err = executeFixtureAction(ctx, core, Action{Verb: "type", Target: fixtureRef(inputRef), Text: "hello"}, false, false)
 	if err != nil {
 		t.Fatalf("TC-09-I-06: Act(type) failed: %v", err)
 	}
@@ -389,7 +390,7 @@ func TestActionEngine_PasswordField_Blocked(t *testing.T) {
 	for _, ref := range snap.Refs {
 		if ref.Role == "textbox" {
 			// 尝试 type，如果是密码字段会被拦截
-			_, err := core.Act(ctx, "type "+ref.Ref+" 'secret'", false)
+			_, err := executeFixtureAction(ctx, core, Action{Verb: "type", Target: fixtureRef(ref.Ref), Text: "secret"}, false, false)
 			if err == ErrPasswordField {
 				pwdRef = ref.Ref
 				break
@@ -514,7 +515,7 @@ func TestBrowserCore_Takeover_BlocksAct(t *testing.T) {
 	}
 
 	// 验证 Act 被拒绝
-	_, err = core.Act(ctx, "click e1", true)
+	_, err = executeFixtureAction(ctx, core, Action{Verb: "click", Target: fixtureRef("@ofixture-r1")}, true, false)
 	if err != ErrTakeoverActive {
 		t.Errorf("TC-09-I-11: Act() in takeover mode should return ErrTakeoverActive, got: %v", err)
 	} else {
@@ -543,7 +544,7 @@ func TestBrowserCore_DisableTakeover_RestoresAct(t *testing.T) {
 	_ = core.DisableTakeover(ctx)
 
 	// 释放后 Act 不应返回 ErrTakeoverActive
-	_, err := core.Act(ctx, "click e99", true)
+	_, err := executeFixtureAction(ctx, core, Action{Verb: "click", Target: fixtureRef("@ofixture-r99")}, true, false)
 	if err == ErrTakeoverActive {
 		t.Error("TC-09-I-12: After DisableTakeover, Act should not return ErrTakeoverActive")
 	} else if err == ErrRefNotFound || err != nil {

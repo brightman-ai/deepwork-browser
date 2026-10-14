@@ -1,10 +1,9 @@
-version: 1
-id: BROWSERACT-ARTICLE-NL-STEP-001
-name: BrowserAct 文章 fixture — NL step 路径
+version: 2
+id: BROWSERACT-ARTICLE-AUTHORED-001
+name: BrowserAct article — authored remote-assist workflow
 app: deepwork-browser
 portal: local-fixture
-risk_tags: [nl-step, planner, chinese-content, interaction]
-
+risk_tags: [deterministic, chinese-content, interaction]
 environment:
   base_url: http://127.0.0.1:18765
   entry_url: /
@@ -12,30 +11,51 @@ environment:
   viewport: "1440x1000"
   client: chrome
   clean_session: true
-
 journey:
-  - id: nl-filter-remote-assist
-    do: "在关键词筛选框输入 remote-assist，并确认页面只显示相关能力项"
+  # Historical nl-step filename retained for callers. A caller authors this
+  # typed plan; the baseline runner performs no natural-language planning.
+  - id: filter-remote-assist
+    kind: action
+    mode: visual
+    action:
+      kind: fill
+      target:
+        kind: locator
+        locator: "css=[data-testid='search-box']"
+      text: 'remote-assist'
+  - id: await-one-related-card
+    kind: wait
+    probes:
+      - id: filter-status
+        kind: css
+        selector: "[data-testid='filter-status']"
     wait:
-      until: "text 当前显示 1 个能力项"
-      timeout_ms: 20000
+      assert: "probe_text_contains(id='filter-status',text='当前显示 1 个能力项')"
+      timeout_ms: 10000
+  - id: remote-assist-visible
+    kind: check
     check:
-      - assert: "text_contains('remote-assist')"
-        using: [structural]
+      - assert: "region_non_empty('card-remote-assist')"
+        using: [layout]
         required: true
-      - assert: "text_contains('当前显示 1 个能力项')"
-        using: [structural]
-        required: true
-
-  - id: nl-generate-summary
-    do: "点击生成测试摘要按钮"
+  - id: generate-summary
+    kind: action
+    mode: visual
+    action:
+      kind: click
+      target:
+        kind: locator
+        locator: "css=[data-testid='copy-summary']"
+  - id: await-generated-summary
+    kind: wait
     wait:
-      until: "text 测试摘要"
-      timeout_ms: 20000
+      assert: "region_non_empty('summary-output')"
+      timeout_ms: 10000
+  - id: generated-summary
+    kind: check
     check:
-      - assert: "text_contains('测试摘要')"
-        using: [structural]
+      - assert: "region_non_empty('summary-output')"
+        using: [layout]
         required: true
-
 evidence:
-  save: [trace, observations, screenshots, diffs, report]
+  save: [trace, observation, screenshot, report, replay]

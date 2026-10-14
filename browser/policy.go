@@ -84,30 +84,11 @@ func (p SessionPolicy) effectiveRemoteWrites() RemoteWritePolicy {
 	return p.RemoteWrites
 }
 
-// mutatingOps is the set of action verbs that mutate page/app state. It is the
-// SSOT for "is this a write?" — distinct from action_engine's domSettleOps
-// (which is about DOM-settle waiting, an overlapping but different concern).
-// Anything NOT explicitly read-only is treated as mutating (fail-closed for
-// unknown/new verbs).
-var readOnlyOps = map[string]bool{
-	"scroll":     true,
-	"scrollinto": true,
-	"scrollto":   true,
-	"hover":      true,
-	"hoverat":    true,
-	"wheelat":    true,
-	"focus":      true,
-	// back/forward are treated as read-only navigation (consistent with Navigate
-	// itself being ungated — it is *writes* that are gated, not movement). Known
-	// accepted limitation: history back/forward can re-submit a prior POST on some
-	// sites; that history-resubmit edge is not gated here.
-	"back":    true,
-	"forward": true,
-}
-
-// IsMutatingOp reports whether an action verb changes state (a "write").
+// IsMutatingOp consumes the canonical action definition. Unknown verbs fail
+// closed and cannot gain read permission through an unregistered alias.
 func IsMutatingOp(op string) bool {
-	return !readOnlyOps[strings.ToLower(strings.TrimSpace(op))]
+	definition, known := LookupActionDefinition(strings.ToLower(strings.TrimSpace(op)))
+	return !known || definition.Mutates
 }
 
 // IsTrustedOrigin reports whether an origin ("scheme://host[:port]") is local

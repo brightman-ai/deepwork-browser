@@ -72,6 +72,9 @@ var (
 
 // Snapshot 是页面语义快照（不可变）。
 type Snapshot struct {
+	ObservationID    string
+	RuntimeRunID     string
+	DocumentID       int64
 	PageTitle        string
 	URL              string
 	TargetID         string       // CDP target.ID that produced this snapshot, when known
@@ -103,7 +106,8 @@ type Snapshot struct {
 	// DocumentText is the rendered visible document text (innerText + visible
 	// form values), capped at 256KiB. text_contains consults it after the a11y
 	// compact text: presence there is honest; absence there is a proven miss.
-	DocumentText string
+	DocumentText         string
+	DocumentTextComplete bool
 }
 
 // CensusEntry is a non-actionable document inventory item. Keeping it as a
@@ -142,12 +146,13 @@ type ViewportFacts struct {
 
 // NodeLocator 是引擎无关的元素定位器。Chrome 使用 BackendNodeID，Safari 使用 AXPath + StableKey。
 type NodeLocator struct {
-	Engine        BrowserEngine `json:"engine"`
-	BackendNodeID int64         `json:"backend_node_id,omitempty"` // Chrome only
-	AXPath        string        `json:"ax_path,omitempty"`         // Safari: AX 树路径 (如 "0.3.1")
-	StableKey     string        `json:"stable_key,omitempty"`      // Safari: role+name+identifier 组合，用于漂移重定位
-	Ordinal       int           `json:"ordinal,omitempty"`         // DFS 序号
-	Frame         Rect          `json:"frame,omitempty"`           // 元素位置 (Safari coordinate tap fallback)
+	WebDriverElementID string        `json:"webdriver_element_id,omitempty"`
+	Engine             BrowserEngine `json:"engine"`
+	BackendNodeID      int64         `json:"backend_node_id,omitempty"` // Chrome only
+	AXPath             string        `json:"ax_path,omitempty"`         // Safari: AX 树路径 (如 "0.3.1")
+	StableKey          string        `json:"stable_key,omitempty"`      // Safari: role+name+identifier 组合，用于漂移重定位
+	Ordinal            int           `json:"ordinal,omitempty"`         // DFS 序号
+	Frame              Rect          `json:"frame,omitempty"`           // 元素位置 (Safari coordinate tap fallback)
 }
 
 // NormalizeEngine 标准化引擎名称。空值和未知值默认为 Chrome。
@@ -162,6 +167,16 @@ func NormalizeEngine(e BrowserEngine) BrowserEngine {
 
 // ElementRef 是可交互元素的语义引用（每次 snap 后重建）。
 type ElementRef struct {
+	ControlStateKnown  bool
+	Editable           bool
+	Disabled           bool
+	ReadOnly           bool
+	Sensitive          bool
+	Checkable          bool
+	NativeSelect       bool
+	Focusable          bool
+	SelectionSupported bool
+	HumanFocusVerified bool
 	Ref                string      // "e1", "e2", ... 或 session 模式下 "@r1", "@r2", ...
 	BackendNodeID      int64       // CDP BackendNodeID
 	Locator            NodeLocator `json:"-"` // 引擎无关定位器（内部使用，不序列化到 CLI 输出）
@@ -237,8 +252,6 @@ type SessionCore interface {
 	SnapWithSessionMode(ctx context.Context, snapEpoch int) (*Snapshot, error)
 	// SnapWithOptions 获取快照并应用 SnapOptions 过滤（selector/compact/max-depth）[r2]。
 	SnapWithOptions(ctx context.Context, opts SnapOptions) (*Snapshot, error)
-	// ActWithSessionMode 执行操作（session 模式，允许 @rN ref）。
-	ActWithSessionMode(ctx context.Context, action string, observe bool) (*Snapshot, error)
 	// RestoreRefsFromSession 从 session 文件恢复 ref 表。
 	RestoreRefsFromSession(refs []SessionRef)
 }
@@ -251,19 +264,6 @@ type ScenarioInteractionCapable interface {
 	SetObserveAll(all bool)
 }
 
-// InteractionModeActCapable is the optional CDP extension used by journey
-// steps. BrowserCore stays engine-neutral; non-CDP implementations do not gain
-// an implicit fidelity downgrade.
-type InteractionModeActCapable interface {
-	ActWithInteractionMode(ctx context.Context, action string, observe bool, mode InteractionMode) (*Snapshot, error)
-}
-
-// SessionInteractionModeActCapable is the session-ref counterpart of
-// InteractionModeActCapable.
-type SessionInteractionModeActCapable interface {
-	ActWithSessionInteractionMode(ctx context.Context, action string, observe bool, mode InteractionMode) (*Snapshot, error)
-}
-
 // BrowserCore — internal/browser/ 对外服务接口（Core 层，零 Deepwork 依赖）。
 type BrowserCore interface {
 	// Navigate 导航到 URL，等待页面加载完成，返回 A11y 快照。
@@ -272,10 +272,11 @@ type BrowserCore interface {
 	// Snap 获取当前页面 A11y 快照（不导航）。
 	Snap(ctx context.Context) (*Snapshot, error)
 
-	// Act 执行操作，返回操作后快照。
-	// action 语法: "click e3" | "type e5 'hello'" | "scroll down" | "hover e7" | "select e4 'opt2'"
-	// observe=false 时不返回 snap（连续操作优化）[D.2-C2]。
-	Act(ctx context.Context, action string, observe bool) (*Snapshot, error)
+	// ExecuteAction executes one structured request through the shared action contract.
+	// First bind a recognized scenario through ScenarioInteractionCapable.
+	// Unbound/unknown policies fail before dispatch; visual does not select a
+	// scenario or authorize synthetic baseline element behavior.
+	ExecuteAction(ctx context.Context, action Action, observe, sessionMode bool, mode InteractionMode) (*Snapshot, Outcome, error)
 
 	// Text 提取当前页面纯文本（~500-800 tok，focus 为可选 ref 或 CSS selector）。
 	Text(ctx context.Context, focus *string) (string, error)
@@ -331,4 +332,9 @@ type LiveViewportSyncer interface {
 	SetLiveViewport(width, height int, dpr float64, mobile bool) error
 	// SyncActiveTargetViewport 将最近一次 liveview viewport 配置重放到指定活跃 target。
 	SyncActiveTargetViewport(targetCtx context.Context) error
+}
+
+// TypedActionCapable exposes the canonical request without legacy parsing.
+type TypedActionCapable interface {
+	ExecuteAction(ctx context.Context, action Action, observe, sessionMode bool, mode InteractionMode) (*Snapshot, Outcome, error)
 }

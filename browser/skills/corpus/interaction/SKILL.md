@@ -1,85 +1,42 @@
 ---
 name: interaction
-description: Generic browser interaction techniques for dw-browser — shadow DOM, iframes, scrolling, anti-bot, cookie consent
-dependencies:
-  - dw-browser
+description: Use DW-Browser v2 physical input for Shadow DOM, iframes, scrolling and consent controls; keep debug interventions separate from Witness experience.
 actions: [shadow-dom, iframe, cross-origin-iframe, virtual-scroll, cookie-consent, anti-bot]
 ---
 
-# Browser Interaction Techniques
-
-通用交互技能，适用于所有站点。遇到特定交互难题时参考。
+# Browser interaction techniques
 
 ## shadow-dom
-intent: 穿透 Shadow DOM 操作内部元素
+intent: Operate the visible Shadow DOM control through physical input
 
-**策略 1 — 坐标点击 (推荐)**:
-```dw-browser
-clickat {host-element} 0.5 0.5
-```
-- compositor 层不受 shadow boundary 限制
-- 需先通过 snap 或 screenshot 确定目标位置
-
-**策略 2 — JS 穿透**:
-```dw-browser
-eval "document.querySelector('{host}').shadowRoot.querySelector('{target}').click()"
-```
-- 需要知道 host element 和 shadow 内部 selector
-- 只适用于 open shadow root
+Observe and read the actual PNG. Prefer a granted visible ref; otherwise use explicit screenshot coordinates. The browser dispatches physical pointer/keyboard events, with target/focus/editability verified by the common kernel. A DOM focus/value setter or synthetic click is not an input-failure fallback.
 
 ## iframe
-intent: 操作同源 iframe 内元素
+intent: Operate a visible same-origin iframe control
 
-```dw-browser
-eval "document.querySelector('iframe').contentDocument.querySelector('{selector}').click()"
-```
-
-- 同源 iframe 可通过 contentDocument 直接访问
-- 跨域 iframe 需用 cross-origin-iframe 策略
+Use its actual visible target or screenshot geometry. Do not replace interaction with a contentDocument setter/click. Debug `eval --id NAME EXPRESSION` is a separately gated intervention, and revokes prior authority.
 
 ## cross-origin-iframe
-intent: 操作跨域 iframe 内元素
+intent: Operate the visible control in a cross-origin frame
 
-**策略 — 坐标点击**:
-```dw-browser
-clickat iframe 0.5 0.5
-```
-
-- Input.dispatchMouseEvent 走 compositor，穿透跨域 iframe
-- 无需额外 DOM 访问
-- 通过 screenshot 确定 iframe 内目标坐标
+Read the PNG and use an explicitly bound coordinate request. The current effective-origin gate remains authoritative; an opaque origin is not silently trusted. No DOM access or synthetic interaction is substituted when physical input is blocked.
 
 ## virtual-scroll
-intent: 处理虚拟列表/无限滚动
+intent: Expose a virtual-list item through real scrolling
 
-```dw-browser
-scroll down
-wait "text='{target}'" --timeout 5
+```sh
+dw-browser act scroll --id NAME --direction down
+dw-browser observe --id NAME
 ```
 
-- 虚拟列表只渲染可见区域的 DOM 节点
-- 需要滚动到目标位置才能看到/操作目标元素
-- scrollIntoView 对虚拟列表无效 — 需用 scroll 命令逐步滚动
-- 某些列表有自己的 scroll container，需确认滚动目标
+Only rendered items exist in a virtual list. Use `scrollto` for an existing persistent target; it cannot create a virtualized item. Explicit SUT CSS probes plus a bounded assertion wait can validate readiness. A duration by itself does not establish ready.
 
 ## cookie-consent
-intent: 处理 GDPR/Cookie 同意弹窗
+intent: Operate the user's authorized cookie-consent choice
 
-```dw-browser
-click button:'Accept'
-```
-
-- 常见变体: "Accept all", "Accept cookies", "I agree", "Got it"
-- 部分站点使用 shadow-dom overlay — 用 clickat 穿透
-- 某些站点 banner 出现有延迟 — snap 前先 wait 1-2s
+Observe the actual current wording (Accept all/Accept cookies/I agree etc.), then use a granted token or explicit persistent locator. Account/site choices remain the user's task; publishing/sending is a separate authorized operation. Reobserve after scrolling, overlays and modal changes.
 
 ## anti-bot
-intent: 绕过 anti-bot 检测的通用策略
+intent: Keep interaction faithful to the actual browser
 
-**原则**: compositor 层交互比 DOM 交互更难被检测
-
-- 优先 `clickat` (Input.dispatchMouseEvent) 而非 `click` (可能降级为 JS el.click())
-- 操作间加随机间隔 (Human jitter 已内置于 InputGateway)
-- 使用 fingerprint presets (dw-browser --device / --preset) 模拟真实设备
-- 避免: document.querySelector().click() / element.dispatchEvent() 等纯 JS 交互
-- 验证: 使用 screenshot 确认操作生效，不依赖 DOM 状态推断
+Use typed physical input and the creation persona. `app-test-explore` preserves fidelity; `app-test-baseline` is deterministic and forbids internal LLM. `webvisit` retains origin write gating and explicit allow-host authorization. Image and delivered postconditions establish what happened; DOM preparation and hidden retries cannot stand in for that experience.

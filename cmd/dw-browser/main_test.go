@@ -9,53 +9,41 @@ import (
 	"testing"
 
 	"github.com/brightman-ai/deepwork-browser/browser"
+	btest "github.com/brightman-ai/deepwork-browser/browser/testing"
 )
 
 // ============================================================
-// § isPointerAction 单元测试 [BUG-FIX: session new-tab tracking]
+// § typed action new-tab classification 单元测试 [BUG-FIX: session new-tab tracking]
 // ============================================================
 
-// TestIsPointerAction 验证 isPointerAction 正确识别会触发新 tab 的 pointer/touch 操作。
+// TestIsPointerAction 验证 typed pointer activation 正确识别会触发新 tab 的 pointer/touch 操作。
 //
 // 根因: runActSession 在 click 触发 target=_blank 新标签后未更新 session TargetID，
 // 导致后续 snap/act 仍连接到旧标签。
 // 修复: click 前快照已知 targets，click 后扫描新 target → 更新 session 文件。
 func TestIsPointerAction(t *testing.T) {
 	tests := []struct {
-		action string
+		action browser.Action
 		want   bool
 	}{
-		// pointer/touch 操作 → 需要 new-tab 检测
-		{"click @r7", true},
-		{"clickat #browser-liveview 92% 8%", true},
-		{"click button:'确认'", true},
-		{"click link:'Github'", true},
-		{"click #btn", true},
-		{"tap button:'接管'", true},
-		{"tapat #browser-liveview 92% 8%", true},
-		{"CLICK @r3", true}, // case-insensitive
-		{"Click @r3", true}, // case-insensitive
-		{"click", true},     // bare click
-
-		// 非 pointer/touch 操作 → 不触发 new-tab 检测
-		{"fill @r7 'hello'", false},
-		{"type textbox:'name' 'value'", false},
-		{"press Enter", false},
-		{"scroll down", false},
-		{"hover @r3", false},
-		{"back", false},
-		{"forward", false},
-		{"focus @r5", false},
-		{"", false},    // empty string
-		{"   ", false}, // whitespace only
+		{browser.Action{Verb: "click", Target: browser.Target{Kind: "ref", Ref: "@token"}}, true},
+		{browser.Action{Verb: "click", Target: browser.Target{Kind: "point", Point: &browser.Point{X: 92, Y: 8, Unit: "css-px", Frame: "viewport"}}}, true},
+		{browser.Action{Verb: "click", Target: browser.Target{Kind: "locator", Locator: "role=button[name='确认']"}}, true},
+		{browser.Action{Verb: "click", Target: browser.Target{Kind: "locator", Locator: "role=link[name='Github']"}}, true},
+		{browser.Action{Verb: "click", Target: browser.Target{Kind: "locator", Locator: "css=#btn"}}, true},
+		{browser.Action{Verb: "tap"}, true}, {browser.Action{Verb: "click", Count: 2}, true},
+		{browser.Action{Verb: "fill"}, false}, {browser.Action{Verb: "type"}, false},
+		{browser.Action{Verb: "press"}, false}, {browser.Action{Verb: "scroll"}, false},
+		{browser.Action{Verb: "hover"}, false}, {browser.Action{Verb: "back"}, false},
+		{browser.Action{Verb: "forward"}, false}, {browser.Action{Verb: "focus"}, false},
+		{browser.Action{}, false}, {browser.Action{Verb: "unknown"}, false},
 	}
-
 	for _, tc := range tests {
-		got := isPointerAction(tc.action)
-		if got != tc.want {
-			t.Errorf("isPointerAction(%q) = %v, want %v", tc.action, got, tc.want)
+		if got := actionMayOpenTab(tc.action); got != tc.want {
+			t.Errorf("actionMayOpenTab(%+v) = %v, want %v", tc.action, got, tc.want)
 		}
 	}
+
 }
 
 func TestActionFidelityOutputAndSessionFocusReconcile(t *testing.T) {
@@ -161,57 +149,39 @@ func TestIsTransientBrowserStepError(t *testing.T) {
 }
 
 func TestNeedsRefRefresh(t *testing.T) {
-	tests := []struct {
-		name string
-		err  error
-		want bool
-	}{
-		{name: "backend node missing", err: errors.New("backend node not found: context canceled"), want: true},
-		{name: "ref node missing", err: errors.New("node not found for ref \"e42\""), want: true},
-		{name: "stale ref", err: errors.New("ref is stale"), want: true},
-		{name: "selector missing", err: errors.New("selector not found"), want: true},
-		{name: "plain error", err: errors.New("permission denied"), want: false},
+	valid := browser.SessionInfo{ObservationID: "capture", ObservationValid: true, BrowserRunID: "run", ObservationRunID: "run", TargetID: "tab", ObservationTargetID: "tab", PageURL: "http://local", ObservationPageURL: "http://local", ViewportW: 1280, ObservationViewportW: 1280, ViewportH: 720, ObservationViewportH: 720}
+	if err := browser.ValidateSessionObservation(&valid); err != nil {
+		t.Fatal(err)
 	}
-
-	for _, tc := range tests {
-		if got := needsRefRefresh(tc.err); got != tc.want {
-			t.Fatalf("%s: needsRefRefresh() = %v, want %v", tc.name, got, tc.want)
+	for _, change := range []func(*browser.SessionInfo){func(s *browser.SessionInfo) { s.BrowserRunID = "restarted" }, func(s *browser.SessionInfo) { s.TargetID = "changed" }, func(s *browser.SessionInfo) { s.PageURL = "http://new" }, func(s *browser.SessionInfo) { s.ViewportW = 880 }, func(s *browser.SessionInfo) { s.ObservationValid = false }} {
+		stale := valid
+		change(&stale)
+		if err := browser.ValidateSessionObservation(&stale); err == nil {
+			t.Fatal("stale observation did not require fresh capture")
 		}
 	}
 }
-
 func TestIsNLGoalDistinguishesStructuredActions(t *testing.T) {
-	tests := []struct {
-		action string
-		want   bool
-	}{
-		{action: "click #submit", want: false},
-		{action: "fill textbox:'Search' 'deepwork'", want: false},
-		{action: "press Enter", want: false},
-		{action: "wait", want: false},
-		{action: "noop", want: false},
-		{action: "none", want: false},
-		{action: "back", want: false},
-		{action: "Open settings and inspect provider status", want: true},
-		{action: "在浏览器中打开设置并检查 Provider", want: true},
-	}
-
-	for _, tc := range tests {
-		if got := isNLGoal(tc.action); got != tc.want {
-			t.Fatalf("isNLGoal(%q) = %v, want %v", tc.action, got, tc.want)
+	// Both the removed string DSL and natural language are authoring material,
+	// never a runtime dispatch shortcut. Actual CLI request construction is typed.
+	for _, raw := range []string{"click #submit", "fill textbox:'Search' 'deepwork'", "press Enter", "wait", "noop", "none", "Open settings and inspect provider status", "在浏览器中打开设置并检查 Provider"} {
+		if _, _, err := parseTypedActionArgs([]string{raw, "--id", "s"}); err == nil {
+			t.Fatalf("raw authoring/string DSL reached runtime: %q", raw)
 		}
+	}
+	if _, _, err := parseTypedActionArgs([]string{"click", "css=#submit", "--id", "s"}); err != nil {
+		t.Fatalf("canonical typed action rejected: %v", err)
 	}
 }
-
 func TestActionMovesWitnessViewport(t *testing.T) {
-	for _, action := range []string{"scroll down", "scroll @r2 up 3", "scrollto @r9", "scrollinto #panel"} {
-		if !actionMovesWitnessViewport(action) {
-			t.Errorf("actionMovesWitnessViewport(%q)=false, want true", action)
+	for _, a := range []browser.Action{{Verb: "scroll", Direction: "down"}, {Verb: "scroll", Target: browser.Target{Kind: "ref", Ref: "@ocapture-r2"}, Direction: "up", Steps: 3}, {Verb: "scrollto", Target: browser.Target{Kind: "ref", Ref: "@ocapture-r9"}}, {Verb: "scrollto", Target: browser.Target{Kind: "locator", Locator: "css=#panel"}}} {
+		if !actionMovesWitnessViewport(a) {
+			t.Errorf("viewport move missed: %+v", a)
 		}
 	}
-	for _, action := range []string{"click @r1", "hover @r2", "fill @r3 hi"} {
-		if actionMovesWitnessViewport(action) {
-			t.Errorf("actionMovesWitnessViewport(%q)=true, want false", action)
+	for _, a := range []browser.Action{{Verb: "click"}, {Verb: "hover"}, {Verb: "fill"}} {
+		if actionMovesWitnessViewport(a) {
+			t.Errorf("non-viewport action classified as move: %+v", a)
 		}
 	}
 }
@@ -356,55 +326,35 @@ func TestNavigationAfterActRevokesOldRefAuthority(t *testing.T) {
 }
 
 func TestWaitSelectorCountJSSupportsTestIDShorthand(t *testing.T) {
-	js := waitSelectorCountJS("#card-remote-assist")
-	for _, want := range []string{
-		"document.querySelectorAll(selector)",
-		"data-testid",
-		"CSS.escape(testid)",
-	} {
-		if !strings.Contains(js, want) {
-			t.Fatalf("wait selector JS missing %q: %s", want, js)
-		}
+	// v2 preserves test-id presence through explicit structural predicates;
+	// CSS #id no longer silently means data-testid.
+	obs := btest.BuildObservation("s", &browser.Snapshot{URL: "http://localhost", DocumentTestIDs: []string{"card-remote-assist"}}, nil, "", nil, nil)
+	engine := &btest.AssertionEngine{}
+	if got := engine.Evaluate(obs, "exists(testid='card-remote-assist')"); got.Status != btest.StatusPass {
+		t.Fatalf("explicit test-id presence lost: %+v", got)
+	}
+	if got := engine.Evaluate(obs, "exists(#card-remote-assist)"); got.Status != btest.StatusBlocked {
+		t.Fatalf("ambiguous selector accepted: %+v", got)
 	}
 }
 
 func TestURLSurfacesMatchTopLevelAndBrowserPortalURL(t *testing.T) {
-	tests := []struct {
-		name     string
-		surfaces string
-		pattern  string
-		want     bool
-	}{
-		{
-			name:     "top level url",
-			surfaces: "https://example.com/",
-			pattern:  "example.com",
-			want:     true,
-		},
-		{
-			name:     "portal chip without scheme",
-			surfaces: "http://127.0.0.1:8080/portal/browser\n当前页面: iana.org/help/example-domains",
-			pattern:  "https://www.iana.org/help/example-domains",
-			want:     true,
-		},
-		{
-			name:     "glob marker stripped",
-			surfaces: "https://news.ycombinator.com/news",
-			pattern:  "**news.ycombinator.com**",
-			want:     true,
-		},
-		{
-			name:     "unrelated",
-			surfaces: "https://example.com/",
-			pattern:  "iana.org",
-			want:     false,
-		},
+	engine := &btest.AssertionEngine{}
+	obs := btest.BuildObservation("s", &browser.Snapshot{URL: "https://example.com/"}, nil, "", nil, nil)
+	if got := engine.Evaluate(obs, "url_matches('example.com')"); got.Status != btest.StatusPass {
+		t.Fatalf("actual URL match lost: %+v", got)
 	}
-
-	for _, tc := range tests {
-		if got := urlSurfacesMatch(tc.surfaces, tc.pattern); got != tc.want {
-			t.Fatalf("%s: urlSurfacesMatch() = %v, want %v", tc.name, got, tc.want)
-		}
+	if got := engine.Evaluate(obs, "url_matches('iana.org')"); got.Status != btest.StatusFail {
+		t.Fatalf("unrelated URL matched: %+v", got)
+	}
+	obs.Page.URL = "http://localhost/portal/browser"
+	chipText := "当前页面: iana.org/help/example-domains"
+	obs.Probes = map[string]btest.ProbeFact{"url-chip": {ChannelState: btest.ChannelState{Status: "captured"}, Text: &chipText}}
+	if got := engine.Evaluate(obs, "url_matches('iana.org')"); got.Status != btest.StatusFail {
+		t.Fatalf("SUT chip inferred as browser URL: %+v", got)
+	}
+	if got := engine.Evaluate(obs, "probe_text_contains(id='url-chip',text='iana.org/help/example-domains')"); got.Status != btest.StatusPass {
+		t.Fatalf("explicit SUT probe match lost: %+v", got)
 	}
 }
 

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -31,17 +32,33 @@ func TestSessionIDIsScannedFromArgvInBothSpellings(t *testing.T) {
 // muxhost 是被持锁的会话命令 fork 出来的宿主进程,而且带的就是同一个 --id。
 // 它要是也去取同一把锁,必然自锁死 —— 这条豁免是正确性要求,不是优化。
 func TestMuxHostIsExemptFromTheSessionLock(t *testing.T) {
-	if !operatorLockExemptCommands["muxhost"] {
-		t.Fatal("muxhost 不在豁免名单里 —— 它由持锁进程 fork 且带同一个 --id, 会自锁死")
-	}
-	for _, cmd := range []string{"gc", "--version", "help"} {
-		if !operatorLockExemptCommands[cmd] {
-			t.Errorf("%q 不碰会话却要取会话锁", cmd)
+	for _, path := range []string{"muxhost serve", "gc", "version", "capabilities"} {
+		def, _, err := lookupCommand(strings.Fields(path))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, flag := range def.Flags {
+			if flag.Name == "--id" {
+				t.Fatalf("infrastructure/non-session %s exposes task id", path)
+			}
 		}
 	}
-	for _, cmd := range []string{"act", "observe", "open", "close", "eval", "journey"} {
-		if operatorLockExemptCommands[cmd] {
-			t.Errorf("会话作用域命令 %q 被豁免了会话锁", cmd)
+	if id := scanSessionIDArg([]string{"muxhost", "serve", "--browser-session-id", "browser-session-s1"}); id != "" {
+		t.Fatal("host child would recursively acquire task session lock")
+	}
+	for _, path := range []string{"observe", "open", "close", "eval", "journey", "act click"} {
+		def, _, err := lookupCommand(strings.Fields(path))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if def.Diagnostic {
+			t.Errorf("mutating/session %s bypasses operator lock", path)
+		}
+	}
+	for _, path := range []string{"session status", "session list", "htr status", "tabs list"} {
+		def, _, err := lookupCommand(strings.Fields(path))
+		if err != nil || !def.Diagnostic {
+			t.Errorf("diagnostic %s waits for input: %v", path, err)
 		}
 	}
 }

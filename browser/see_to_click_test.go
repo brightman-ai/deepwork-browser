@@ -95,38 +95,38 @@ func TestSeeToClickHitTestOcclusionFailsLoud(t *testing.T) {
 	}
 }
 
-func TestParseActionScrollAtRef(t *testing.T) {
-	parsed, err := ParseAction("scroll @r7 down 3")
+func TestTypedRequestScrollAtRef(t *testing.T) {
+	parsed, err := (Action{Verb: "scroll", Target: fixtureRef("@ofixture-r7"), Direction: "down", Steps: 3}).executionRequest()
 	if err != nil {
-		t.Fatalf("ParseAction: %v", err)
+		t.Fatalf("TypedRequest: %v", err)
 	}
-	if parsed.Op != "scroll" || parsed.ScrollTarget != "@r7" || parsed.Direction != "down" || parsed.Steps != 3 {
+	if parsed.Op != "scroll" || parsed.ScrollTarget != "@ofixture-r7" || parsed.Direction != "down" || parsed.Steps != 3 {
 		t.Fatalf("parsed=%+v", parsed)
 	}
 
-	page, err := ParseAction("scroll up")
+	page, err := (Action{Verb: "scroll", Direction: "up"}).executionRequest()
 	if err != nil {
-		t.Fatalf("ParseAction page scroll: %v", err)
+		t.Fatalf("TypedRequest page scroll: %v", err)
 	}
-	if page.Ref != "up" || page.ScrollTarget != "" || page.Direction != "up" || page.Steps != 0 {
+	if page.Ref != "" || page.ScrollTarget != "" || page.Direction != "up" || page.Steps != 0 {
 		t.Fatalf("page parsed=%+v", page)
 	}
 }
 
-func TestParseActionClickViewportCSSPixels(t *testing.T) {
-	parsed, err := ParseAction("click 320.5,240")
+func TestTypedRequestClickViewportCSSPixels(t *testing.T) {
+	parsed, err := (Action{Verb: "click", Target: fixtureViewport(320.5, 240)}).executionRequest()
 	if err != nil {
-		t.Fatalf("ParseAction: %v", err)
+		t.Fatalf("TypedRequest: %v", err)
 	}
 	if parsed.Op != "clickxy" || parsed.CoordX != 320.5 || parsed.CoordY != 240 {
 		t.Fatalf("parsed=%+v", parsed)
 	}
 	// A CSS selector list must not be stolen by the coordinate grammar.
-	selector, err := ParseAction("click button.primary,a.cta")
+	selector, err := (Action{Verb: "click", Target: fixtureLocator("css=button.primary,a.cta")}).executionRequest()
 	if err != nil {
-		t.Fatalf("ParseAction CSS list: %v", err)
+		t.Fatalf("TypedRequest CSS list: %v", err)
 	}
-	if selector.Op != "click" || selector.Ref != "button.primary,a.cta" {
+	if selector.Op != "click" || selector.Ref != "css=button.primary,a.cta" {
 		t.Fatalf("selector parsed=%+v", selector)
 	}
 }
@@ -273,9 +273,10 @@ func serveStrictHumanFixture(t *testing.T) *httptest.Server {
 
 // TestVisibleSetKeepsNativeControlsAndIsStableAcrossObserves 钉死症状 1 与症状 2:
 //
-//	① 原生 select/checkbox 必须拿到 @rN + bbox —— 它们既没有 ContentQuads 语义
+//	① 原生 select/checkbox 必须拿到本次 observation 的 opaque ref + bbox —— 它们既没有 ContentQuads 语义
 //	   也不是 DOM-only 元素, 任何"几何信息缺失就剥夺句柄"的路径都会在这里现形。
-//	② 页面完全静止时, 连续两次 observe 的可见集与 total/offscreen 必须逐字节一致;
+//	② 页面完全静止时, 连续两次 observe 的元素身份/几何与 total/offscreen 必须一致;
+//	   observation/ref capability 每次必须唯一, 不属于稳定页面事实。
 //	   漂移只允许来自页面自身变化, 不允许来自探测时序。
 func TestVisibleSetKeepsNativeControlsAndIsStableAcrossObserves(t *testing.T) {
 	requireChromeForPool(t)
@@ -325,14 +326,25 @@ func TestVisibleSetKeepsNativeControlsAndIsStableAcrossObserves(t *testing.T) {
 		if ref.BBox.Width <= 0 || ref.BBox.Height <= 0 {
 			t.Fatalf("%s has no bbox: %+v", tc.testID, ref)
 		}
-		if !strings.HasPrefix(ref.Ref, "@r") {
+		if id, err := observationIDFromRef(ref.Ref); err != nil || id != first.ObservationID {
 			t.Fatalf("%s got no session handle: %q", tc.testID, ref.Ref)
+		}
+		if ref.BackendNodeID == 0 {
+			t.Fatalf("%s has no captured backend identity: %+v", tc.testID, ref)
 		}
 	}
 
 	second, err := sessionCore.SnapWithSessionMode(ctx, 2)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if first.ObservationID == "" || second.ObservationID == "" || first.ObservationID == second.ObservationID {
+		t.Fatalf("observations must mint unique capabilities: first=%q second=%q", first.ObservationID, second.ObservationID)
+	}
+	for _, ref := range second.Refs {
+		if id, err := observationIDFromRef(ref.Ref); err != nil || id != second.ObservationID {
+			t.Fatalf("second observation reused or malformed capability: %+v", ref)
+		}
 	}
 	if first.DocumentInteractableCount != second.DocumentInteractableCount ||
 		first.VisibleInteractableCount != second.VisibleInteractableCount ||
@@ -344,7 +356,14 @@ func TestVisibleSetKeepsNativeControlsAndIsStableAcrossObserves(t *testing.T) {
 	if first.DocumentInteractableCount != first.VisibleInteractableCount+first.OffscreenInteractableCount {
 		t.Fatalf("total != visible + offscreen: %+v", first)
 	}
-	if got, want := compactRefRoles(second.Refs), compactRefRoles(first.Refs); got != want {
+	stableFacts := func(refs []ElementRef) string {
+		copyRefs := append([]ElementRef(nil), refs...)
+		for i := range copyRefs {
+			copyRefs[i].Ref = fmt.Sprintf("backend:%d/testid:%s", copyRefs[i].BackendNodeID, copyRefs[i].TestID)
+		}
+		return compactRefRoles(copyRefs)
+	}
+	if got, want := stableFacts(second.Refs), stableFacts(first.Refs); got != want {
 		t.Fatalf("visible set drifted on a static page:\n first=%s\nsecond=%s", want, got)
 	}
 }

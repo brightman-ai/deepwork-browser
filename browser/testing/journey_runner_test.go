@@ -1,8 +1,11 @@
 package testing
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"image"
+	"image/png"
 	"os"
 	"path/filepath"
 	"strings"
@@ -24,17 +27,21 @@ type modeRunnerTestExecutor struct {
 	modes []browser.InteractionMode
 }
 
-func (e *modeRunnerTestExecutor) ExecuteWithMode(_ context.Context, _ string, mode browser.InteractionMode) error {
+func (e *modeRunnerTestExecutor) ExecuteWithMode(_ context.Context, _ browser.Action, mode browser.InteractionMode) (browser.Outcome, error) {
 	e.modes = append(e.modes, mode)
-	return e.executeErr
+	if e.executeErr != nil {
+		return browser.Outcome{Phase: "dispatch", DispatchState: "unknown"}, e.executeErr
+	}
+	return browser.Outcome{Phase: "complete", DispatchState: "confirmed"}, nil
 }
 
-func (e *runnerTestExecutor) Execute(context.Context, string) error {
+func (e *runnerTestExecutor) Execute(context.Context, browser.Action) (browser.Outcome, error) {
 	e.executeCount.Add(1)
-	return e.executeErr
+	if e.executeErr != nil {
+		return browser.Outcome{Phase: "dispatch", DispatchState: "unknown"}, e.executeErr
+	}
+	return browser.Outcome{Phase: "complete", DispatchState: "confirmed"}, nil
 }
-
-func (*runnerTestExecutor) Wait(context.Context, string, int) error { return nil }
 
 func (*runnerTestExecutor) Snapshot(context.Context) (*browser.Snapshot, error) {
 	return &browser.Snapshot{
@@ -52,7 +59,9 @@ func (e *runnerTestExecutor) Screenshot(ctx context.Context) ([]byte, error) {
 	if e.screenshot != nil {
 		return e.screenshot(ctx)
 	}
-	return []byte("jpeg"), nil
+	var data bytes.Buffer
+	err := png.Encode(&data, image.NewRGBA(image.Rect(0, 0, 2, 2)))
+	return data.Bytes(), err
 }
 
 func (*runnerTestExecutor) GetSessionState(context.Context) (*BehaviorState, error) {
@@ -73,12 +82,12 @@ func TestRunnerFailFastStopsAfterFirstFailedStep(t *testing.T) {
 	}
 	runner.SetFailFast(true)
 
-	result, err := runner.Run(context.Background(), &JourneySpec{
+	result, err := runner.Run(context.Background(), &JourneySpec{Version: 2,
 		ID:   "fail-fast",
 		Name: "fail fast",
 		Journey: []StepSpec{
-			{ID: "first", Do: "click e1"},
-			{ID: "second", Do: "click e1"},
+			{ID: "first", Kind: "action", Action: testClick("role=button[name=\"Continue\"]")},
+			{ID: "second", Kind: "action", Action: testClick("role=button[name=\"Continue\"]")},
 		},
 	})
 	if err != nil {
@@ -90,8 +99,8 @@ func TestRunnerFailFastStopsAfterFirstFailedStep(t *testing.T) {
 	if len(result.Steps) != 1 || result.Steps[0].StepID != "first" {
 		t.Fatalf("steps = %+v, want only first", result.Steps)
 	}
-	if result.Status != StatusFail {
-		t.Fatalf("status = %s, want FAIL", result.Status)
+	if result.Status != StatusBlocked {
+		t.Fatalf("status = %s, want BLOCKED", result.Status)
 	}
 }
 
@@ -108,10 +117,10 @@ func TestRunnerScreenshotTimeoutFailsLoudly(t *testing.T) {
 	runner.screenshotTimeout = 20 * time.Millisecond
 
 	started := time.Now()
-	result, err := runner.Run(context.Background(), &JourneySpec{
+	result, err := runner.Run(context.Background(), &JourneySpec{Version: 2,
 		ID:      "screenshot-timeout",
 		Name:    "screenshot timeout",
-		Journey: []StepSpec{{ID: "first", Do: "click e1"}},
+		Journey: []StepSpec{{ID: "first", Kind: "action", Action: testClick("role=button[name=\"Continue\"]")}},
 	})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
@@ -119,7 +128,7 @@ func TestRunnerScreenshotTimeoutFailsLoudly(t *testing.T) {
 	if elapsed := time.Since(started); elapsed > time.Second {
 		t.Fatalf("runner returned after %s, want <= 1s", elapsed)
 	}
-	if result.Status != StatusFail || len(result.Steps) != 1 {
+	if result.Status != StatusBlocked || len(result.Steps) != 1 {
 		t.Fatalf("result = %+v, want one failed step", result)
 	}
 	if got := result.Steps[0].Error; !strings.Contains(got, "journey screenshot timed out") {
@@ -135,18 +144,18 @@ func TestRunnerDefaultsToVisualAndRoutesExplicitElementMode(t *testing.T) {
 		t.Fatalf("NewRunner: %v", err)
 	}
 
-	result, err := runner.Run(context.Background(), &JourneySpec{
+	result, err := runner.Run(context.Background(), &JourneySpec{Version: 2,
 		ID:   "interaction-modes",
 		Name: "interaction modes",
 		Journey: []StepSpec{
-			{ID: "visual-default", Do: "click button:'Continue'"},
-			{ID: "element-escape", Do: "click button:'Below fold'", Mode: browser.InteractionModeElement},
+			{ID: "visual-default", Kind: "action", Action: testClick("role=button[name=\"Continue\"]")},
+			{ID: "element-escape", Kind: "action", Action: testClick("role=button[name=\"Below fold\"]"), Mode: browser.InteractionModeElement},
 		},
 	})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	if result.Status != StatusPass {
+	if result.Status != StatusDelivered {
 		t.Fatalf("result=%+v", result)
 	}
 	if got := base.executeCount.Load(); got != 1 {
@@ -164,15 +173,15 @@ func TestRunnerFailsLoudWhenElementModeIsUnsupported(t *testing.T) {
 		t.Fatalf("NewRunner: %v", err)
 	}
 
-	result, err := runner.Run(context.Background(), &JourneySpec{
+	result, err := runner.Run(context.Background(), &JourneySpec{Version: 2,
 		ID:      "unsupported-element-mode",
 		Name:    "unsupported element mode",
-		Journey: []StepSpec{{ID: "escape", Do: "click #target", Mode: browser.InteractionModeElement}},
+		Journey: []StepSpec{{ID: "escape", Kind: "action", Action: testClick("css=#target"), Mode: browser.InteractionModeElement}},
 	})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	if result.Status != StatusFail || len(result.Steps) != 1 {
+	if result.Status != StatusBlocked || len(result.Steps) != 1 {
 		t.Fatalf("result=%+v", result)
 	}
 	if got := result.Steps[0].Error; !strings.Contains(got, "does not support step interaction modes") {
@@ -185,7 +194,7 @@ func TestRunnerFailsLoudWhenElementModeIsUnsupported(t *testing.T) {
 
 func TestLoadSpecValidatesInteractionMode(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "journey.yaml")
-	valid := []byte("version: 1\nid: modes\nname: modes\nenvironment:\n  base_url: http://example.test\n  mode: headless\njourney:\n  - id: escape\n    do: click '#target'\n    mode: element\nevidence: {}\n")
+	valid := []byte("version: 2\nid: modes\nname: modes\nenvironment:\n  base_url: http://example.test\n  mode: headless\njourney:\n  - id: escape\n    kind: action\n    action:\n      kind: click\n      target:\n        kind: locator\n        locator: 'css=#target'\n    mode: element\nevidence: {}\n")
 	if err := os.WriteFile(path, valid, 0o600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
@@ -204,4 +213,8 @@ func TestLoadSpecValidatesInteractionMode(t *testing.T) {
 	if _, err := LoadSpec(path); err == nil || !strings.Contains(err.Error(), "must be visual or element") {
 		t.Fatalf("LoadSpec invalid error=%v", err)
 	}
+}
+
+func testClick(locator string) *browser.Action {
+	return &browser.Action{Verb: "click", Target: browser.Target{Kind: "locator", Locator: locator}}
 }

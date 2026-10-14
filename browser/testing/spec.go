@@ -1,39 +1,16 @@
 package testing
 
 import (
-	"fmt"
-
+	"encoding/json"
 	"github.com/brightman-ai/deepwork-browser/browser"
-	"gopkg.in/yaml.v3"
 )
 
-// MutationStep is a mutation directive parsed from the spec. It tolerates both
-// scalar form ("- back_forward_recovery") and mapping form ("- viewport: '1280x800'").
-// NOTE: mutations are parsed but NOT yet executed by the journey runner.
+// MutationStep is an explicit deterministic perturbation of an accepted journey.
 type MutationStep struct {
-	Name   string            `json:"name"`
-	Params map[string]string `json:"params,omitempty"`
-}
-
-func (m *MutationStep) UnmarshalYAML(node *yaml.Node) error {
-	switch node.Kind {
-	case yaml.ScalarNode:
-		m.Name = node.Value
-		return nil
-	case yaml.MappingNode:
-		raw := map[string]string{}
-		if err := node.Decode(&raw); err != nil {
-			return err
-		}
-		m.Params = raw
-		for k := range raw { // first key becomes the mutation name
-			m.Name = k
-			break
-		}
-		return nil
-	default:
-		return fmt.Errorf("mutation: unsupported YAML node kind %d", node.Kind)
-	}
+	Kind   string         `yaml:"kind" json:"kind"`
+	Width  int            `yaml:"width,omitempty" json:"width,omitempty"`
+	Height int            `yaml:"height,omitempty" json:"height,omitempty"`
+	Target browser.Target `yaml:"target,omitempty" json:"target,omitempty"`
 }
 
 // JourneySpec — BDD YAML 解析目标
@@ -54,13 +31,16 @@ type JourneySpec struct {
 
 // EnvironmentSpec — 运行环境配置
 type EnvironmentSpec struct {
-	BaseURL      string `yaml:"base_url" json:"base_url"`
-	EntryURL     string `yaml:"entry_url,omitempty" json:"entry_url,omitempty"`
-	Mode         string `yaml:"mode" json:"mode"`                             // "headless" | "headed"
-	Viewport     string `yaml:"viewport,omitempty" json:"viewport,omitempty"` // "1440x900"
-	Client       string `yaml:"client,omitempty" json:"client,omitempty"`     // "chrome" | "safari"
-	CleanSession bool   `yaml:"clean_session,omitempty" json:"clean_session,omitempty"`
-	WorkspaceDir string `yaml:"workspace_dir,omitempty" json:"workspace_dir,omitempty"` // base dir for file_glob assertions (default: cwd)
+	TranscriptPath    string `yaml:"transcript_path,omitempty" json:"transcript_path,omitempty"`
+	TranscriptDir     string `yaml:"transcript_dir,omitempty" json:"transcript_dir,omitempty"`
+	TranscriptPattern string `yaml:"transcript_pattern,omitempty" json:"transcript_pattern,omitempty"`
+	BaseURL           string `yaml:"base_url" json:"base_url"`
+	EntryURL          string `yaml:"entry_url,omitempty" json:"entry_url,omitempty"`
+	Mode              string `yaml:"mode" json:"mode"`                             // "headless" | "headed"
+	Viewport          string `yaml:"viewport,omitempty" json:"viewport,omitempty"` // "1440x900"
+	Client            string `yaml:"client,omitempty" json:"client,omitempty"`     // "chrome" | "safari"
+	CleanSession      bool   `yaml:"clean_session,omitempty" json:"clean_session,omitempty"`
+	WorkspaceDir      string `yaml:"workspace_dir,omitempty" json:"workspace_dir,omitempty"` // base dir for file_glob assertions (default: cwd)
 }
 
 // BaselineRef — 基线引用（快照文件 + 不变量断言）
@@ -71,17 +51,30 @@ type BaselineRef struct {
 
 // StepSpec — 单步旅程规格
 type StepSpec struct {
-	ID    string                  `yaml:"id" json:"id"`
-	Do    string                  `yaml:"do" json:"do"`
-	Mode  browser.InteractionMode `yaml:"mode,omitempty" json:"mode,omitempty"`
-	Wait  *WaitSpec               `yaml:"wait,omitempty" json:"wait,omitempty"`
-	Check []AssertionSpec         `yaml:"check,omitempty" json:"check,omitempty"`
+	ID       string                  `yaml:"id" json:"id"`
+	Kind     string                  `yaml:"kind" json:"kind"` // action | observe | wait | check | probe
+	Action   *browser.Action         `yaml:"action,omitempty" json:"action,omitempty"`
+	TextFile string                  `yaml:"text_file,omitempty" json:"text_file,omitempty"`
+	Mode     browser.InteractionMode `yaml:"mode,omitempty" json:"mode,omitempty"`
+	Wait     *WaitSpec               `yaml:"wait,omitempty" json:"wait,omitempty"`
+	Check    []AssertionSpec         `yaml:"check,omitempty" json:"check,omitempty"`
+	Probes   []ProbeSpec             `yaml:"probes,omitempty" json:"probes,omitempty"`
 }
 
-// WaitSpec — 等待条件
+// WaitSpec has one condition kernel and an explicit cancelable duration alternative.
 type WaitSpec struct {
-	Until     string `yaml:"until" json:"until"`
-	TimeoutMs int    `yaml:"timeout_ms" json:"timeout_ms"`
+	Assert     string `yaml:"assert,omitempty" json:"assert,omitempty"`
+	TimeoutMs  int    `yaml:"timeout_ms,omitempty" json:"timeout_ms,omitempty"`
+	DurationMs int    `yaml:"duration_ms,omitempty" json:"duration_ms,omitempty"`
+}
+
+// ProbeSpec declares the SUT fact to collect; endpoints are never inferred.
+type ProbeSpec struct {
+	ID        string `yaml:"id" json:"id"`
+	Kind      string `yaml:"kind" json:"kind"` // css | text | http-json | mutation-start | mutation-collect
+	Selector  string `yaml:"selector,omitempty" json:"selector,omitempty"`
+	URL       string `yaml:"url,omitempty" json:"url,omitempty"`
+	TimeoutMs int    `yaml:"timeout_ms,omitempty" json:"timeout_ms,omitempty"`
 }
 
 // AssertionSpec — 断言规格
@@ -89,7 +82,7 @@ type AssertionSpec struct {
 	ID       string   `yaml:"id,omitempty" json:"id,omitempty"`
 	Assert   string   `yaml:"assert" json:"assert"`
 	Using    []string `yaml:"using,omitempty" json:"using,omitempty"`
-	Required bool     `yaml:"required,omitempty" json:"required,omitempty"`
+	Required *bool    `yaml:"required,omitempty" json:"required,omitempty"`
 	// Spec governance fields
 	SourceSpec string `yaml:"source_spec,omitempty" json:"source_spec,omitempty"`
 	CoversBug  string `yaml:"covers_bug,omitempty" json:"covers_bug,omitempty"`
@@ -99,4 +92,24 @@ type AssertionSpec struct {
 // EvidenceSpec — 证据持久化配置
 type EvidenceSpec struct {
 	Save []string `yaml:"save,omitempty" json:"save,omitempty"`
+}
+
+// MarshalYAML keeps a file binding separate from the typed request text field.
+func (s StepSpec) MarshalYAML() (any, error) {
+	type wire StepSpec
+	if s.TextFile == "" {
+		return wire(s), nil
+	}
+	data, err := json.Marshal(s)
+	if err != nil {
+		return nil, err
+	}
+	var fields map[string]any
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return nil, err
+	}
+	if action, ok := fields["action"].(map[string]any); ok {
+		delete(action, "text")
+	}
+	return fields, nil
 }

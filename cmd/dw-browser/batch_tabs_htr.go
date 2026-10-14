@@ -2,9 +2,7 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -15,341 +13,352 @@ import (
 	"github.com/chromedp/chromedp"
 )
 
-const (
-	cliTabsCommandTimeout  = 10 * time.Second
-	cliTabCloseSettleDelay = 250 * time.Millisecond
-)
+const cliTabsCommandTimeout = 10 * time.Second
+const cliTabCloseSettleDelay = 250 * time.Millisecond
 
-func runTabs(args []string) {
-	if len(args) == 1 && wantsHelp(args) {
-		printCommandUsage("tabs")
-		os.Exit(exitOK)
+func loadSessionArgs(args []string, cmd string) (*browser.SessionInfo, error) {
+	_, f, e := parseCommonFlagsE(args, cmd)
+	if e != nil {
+		return nil, e
 	}
-	if len(args) < 1 {
-		fmt.Fprintln(os.Stderr, "dw-browser tabs: requires subcommand (list|select|close|new)")
-		os.Exit(exitRunErr)
+	if f.sessionID == "" {
+		return nil, fmt.Errorf("%s requires --id", cmd)
 	}
-	switch args[0] {
-	case "list":
-		runTabsList(args[1:])
-	case "select":
-		runTabsSelect(args[1:])
-	case "close":
-		runTabsClose(args[1:])
-	case "new":
-		runTabsNew(args[1:])
-	default:
-		fmt.Fprintf(os.Stderr, "dw-browser tabs: unknown subcommand %q (use list|select|close|new)\n", args[0])
-		os.Exit(exitRunErr)
-	}
+	return browser.LoadSession(f.sessionID)
 }
-
-func runTabsList(args []string) {
-	_, flags := parseCommonFlags(args, "tabs list")
-	sessionInfo := mustLoadSession(flags, "tabs list")
-	ctx, cancel := context.WithTimeout(context.Background(), cliTabsCommandTimeout)
-	defer cancel()
-	ensureSessionBrowserMuxHostReady(ctx, sessionInfo, "tabs list")
-	targets := fetchSessionTargetsOrExit(sessionInfo, "tabs list")
-	printJSON(map[string]interface{}{
-		"browser_session_id": sessionInfo.BrowserSessionID,
-		"current_target_id":  sessionInfo.TargetID,
-		"targets":            targets,
-	})
+func sessionRuntimeHeader(info *browser.SessionInfo) map[string]any {
+	return map[string]any{"browser_session_id": info.BrowserSessionID, "runtime_run_id": info.BrowserRunID}
 }
-
-func runTabsSelect(args []string) {
-	targetSelector, clean := parseTargetSelectorArg(args, "tabs select")
-	_, flags := parseCommonFlags(clean, "tabs select")
-	sessionInfo := mustLoadSession(flags, "tabs select")
-	ctx, cancel := context.WithTimeout(context.Background(), cliTabsCommandTimeout)
-	defer cancel()
-	ensureSessionBrowserMuxHostReady(ctx, sessionInfo, "tabs select")
-	targets := fetchSessionTargetsOrExit(sessionInfo, "tabs select")
-	targetID, targetURL := resolveCLITarget(targets, targetSelector)
-	if targetID == "" {
-		fmt.Fprintf(os.Stderr, "dw-browser tabs select: target %q not found\n", targetSelector)
-		os.Exit(exitRunErr)
+func runTabsListResult(args []string) (CommandResult, error) {
+	info, e := loadSessionArgs(args, "tabs list")
+	if e != nil {
+		return CommandResult{}, commandError("validation", exitRunErr, e)
 	}
-	ensureForegroundAllowed(ctx, sessionInfo, "tabs select")
-	runBrowserLevelTargetCommand(ctx, sessionInfo.WSURL, func(ctx context.Context) error {
-		return cdpTarget.ActivateTarget(cdpTarget.ID(targetID)).Do(ctx)
-	}, "tabs select")
-	sessionInfo.TargetID = targetID
-	sessionInfo.PageURL = targetURL
-	sessionInfo.Refs = nil
-	_ = browser.SaveSession(sessionInfo)
-	printJSON(map[string]interface{}{
-		"browser_session_id": sessionInfo.BrowserSessionID,
-		"selected_target_id": targetID,
-		"url":                targetURL,
-	})
-}
-
-func runTabsClose(args []string) {
-	targetSelector, clean := parseTargetSelectorArg(args, "tabs close")
-	_, flags := parseCommonFlags(clean, "tabs close")
-	sessionInfo := mustLoadSession(flags, "tabs close")
-	ctx, cancel := context.WithTimeout(context.Background(), cliTabsCommandTimeout)
-	defer cancel()
-	ensureSessionBrowserMuxHostReady(ctx, sessionInfo, "tabs close")
-	targets := fetchSessionTargetsOrExit(sessionInfo, "tabs close")
-	targetID, _ := resolveCLITarget(targets, targetSelector)
-	if targetID == "" {
-		fmt.Fprintf(os.Stderr, "dw-browser tabs close: target %q not found\n", targetSelector)
-		os.Exit(exitRunErr)
+	targets, e := fetchSessionTargets(info)
+	if e != nil {
+		return CommandResult{}, commandError("observation", exitRunErr, e)
 	}
-	runBrowserLevelTargetCommand(ctx, sessionInfo.WSURL, func(ctx context.Context) error {
-		return cdpTarget.CloseTarget(cdpTarget.ID(targetID)).Do(ctx)
-	}, "tabs close")
-	if sessionInfo.TargetID == targetID {
-		sessionInfo.TargetID = ""
-		sessionInfo.Refs = nil
-		time.Sleep(cliTabCloseSettleDelay)
-		if targets, err := browser.FetchChromeTargets(sessionInfo.DebugPort); err == nil {
-			nextID, nextURL := resolveCLITarget(targets, "0")
-			sessionInfo.TargetID = nextID
-			sessionInfo.PageURL = nextURL
+	pages := make([]map[string]interface{}, 0, len(targets))
+	for _, target := range targets {
+		if browser.IsDevToolsPageTarget(target) {
+			pages = append(pages, target)
 		}
 	}
-	_ = browser.SaveSession(sessionInfo)
-	printJSON(map[string]interface{}{
-		"browser_session_id": sessionInfo.BrowserSessionID,
-		"closed_target_id":   targetID,
-		"current_target_id":  sessionInfo.TargetID,
-	})
+	out := sessionRuntimeHeader(info)
+	out["current_target_id"] = info.TargetID
+	out["targets"] = pages
+	return commandSuccess(out), nil
 }
-
-func runTabsNew(args []string) {
-	url := browser.ChromeInitialPageURL
-	var clean []string
+func parseTargetSelectorArgE(args []string, cmd string) (string, []string, error) {
+	selector := ""
+	clean := []string{}
 	for i := 0; i < len(args); i++ {
-		arg := args[i]
-		switch {
-		case arg == "--url" && i+1 < len(args):
-			url = args[i+1]
-			i++
-		case strings.HasPrefix(arg, "--url="):
-			url = strings.TrimPrefix(arg, "--url=")
-		default:
-			clean = append(clean, arg)
+		key, val, inline := strings.Cut(args[i], "=")
+		if key == "--target" {
+			if !inline {
+				if i+1 >= len(args) {
+					return "", nil, fmt.Errorf("--target requires a value")
+				}
+				i++
+				val = args[i]
+			}
+			selector = val
+		} else {
+			clean = append(clean, args[i])
 		}
 	}
-	_, flags := parseCommonFlags(clean, "tabs new")
-	sessionInfo := mustLoadSession(flags, "tabs new")
+	if selector == "" {
+		return "", nil, fmt.Errorf("%s requires --target", cmd)
+	}
+	return selector, clean, nil
+}
+func prepareTabsMutation(args []string, cmd string) (*browser.SessionInfo, *browser.BrowserInputLock, context.Context, context.CancelFunc, error) {
+	info, e := loadSessionArgs(args, cmd)
+	if e != nil {
+		return nil, nil, nil, nil, e
+	}
+	if e = browser.SessionAllowsAIInput(info); e != nil {
+		return nil, nil, nil, nil, e
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), cliTabsCommandTimeout)
+	if e = ensureSessionBrowserMuxHostReadyE(ctx, info, cmd); e != nil {
+		cancel()
+		return nil, nil, nil, nil, e
+	}
+	lock, e := acquireSessionRuntimeInputLock(info)
+	if e != nil {
+		cancel()
+		return nil, nil, nil, nil, e
+	}
+	current, loadErr := browser.LoadSession(info.SessionID)
+	if loadErr != nil {
+		lock.Release()
+		cancel()
+		return nil, nil, nil, nil, loadErr
+	}
+	if browser.BrowserInputKey(current.WSURL, current.ChromePID) != browser.BrowserInputKey(info.WSURL, info.ChromePID) {
+		lock.Release()
+		cancel()
+		return nil, nil, nil, nil, fmt.Errorf("runtime changed while waiting for input lock")
+	}
+	info = current
+	if e = browser.SessionAllowsAIInput(info); e != nil {
+		lock.Release()
+		cancel()
+		return nil, nil, nil, nil, e
+	}
+	return info, lock, ctx, cancel, nil
+}
+func runTabsSelectResult(args []string) (CommandResult, error) {
+	selector, clean, e := parseTargetSelectorArgE(args, "tabs select")
+	if e != nil {
+		return CommandResult{}, commandError("validation", exitRunErr, e)
+	}
+	info, lock, ctx, cancel, e := prepareTabsMutation(clean, "tabs select")
+	if e != nil {
+		return CommandResult{}, commandError("validation", exitRunErr, e)
+	}
+	defer cancel()
+	defer lock.Release()
+	targets, e := fetchSessionTargets(info)
+	if e != nil {
+		return CommandResult{}, commandError("observation", exitRunErr, e)
+	}
+	tid, url := resolveCLITarget(targets, selector)
+	if tid == "" {
+		return CommandResult{}, commandError("validation", exitRunErr, fmt.Errorf("target %q missing or ambiguous", selector))
+	}
+	if e = ensureForegroundAllowedE(ctx, info, "tabs select"); e != nil {
+		return CommandResult{}, commandError("validation", exitRunErr, e)
+	}
+	if e = runBrowserLevelTargetCommand(ctx, info, func(c context.Context) error { return cdpTarget.ActivateTarget(cdpTarget.ID(tid)).Do(c) }, "tabs select"); e != nil {
+		return CommandResult{}, dispatchCommandError(e)
+	}
+	info.TargetID, info.PageURL = tid, url
+	browser.InvalidateSessionObservation(info)
+	if e = browser.SaveSession(info); e != nil {
+		return CommandResult{}, deliveryCommandError(e)
+	}
+	out := sessionRuntimeHeader(info)
+	out["selected_target_id"] = tid
+	out["url"] = url
+	return commandSuccess(out), nil
+}
+func runTabsCloseResult(args []string) (CommandResult, error) {
+	selector, clean, e := parseTargetSelectorArgE(args, "tabs close")
+	if e != nil {
+		return CommandResult{}, commandError("validation", exitRunErr, e)
+	}
+	info, lock, ctx, cancel, e := prepareTabsMutation(clean, "tabs close")
+	if e != nil {
+		return CommandResult{}, commandError("validation", exitRunErr, e)
+	}
+	defer cancel()
+	defer lock.Release()
+	targets, e := fetchSessionTargets(info)
+	if e != nil {
+		return CommandResult{}, commandError("observation", exitRunErr, e)
+	}
+	tid, _ := resolveCLITarget(targets, selector)
+	if tid == "" {
+		return CommandResult{}, commandError("validation", exitRunErr, fmt.Errorf("target %q missing or ambiguous", selector))
+	}
+	if e = ensureForegroundAllowedE(ctx, info, "tabs close"); e != nil {
+		return CommandResult{}, commandError("validation", exitRunErr, e)
+	}
+	if e = runBrowserLevelTargetCommand(ctx, info, func(c context.Context) error { return cdpTarget.CloseTarget(cdpTarget.ID(tid)).Do(c) }, "tabs close"); e != nil {
+		return CommandResult{}, dispatchCommandError(e)
+	}
+	if info.TargetID == tid {
+		info.TargetID, info.PageURL = "", ""
+		browser.InvalidateSessionObservation(info)
+		timer := time.NewTimer(cliTabCloseSettleDelay)
+		defer timer.Stop()
+		select {
+		case <-timer.C:
+		case <-ctx.Done():
+			return CommandResult{}, dispatchCommandError(ctx.Err())
+		}
+		targets, e = fetchSessionTargets(info)
+		if e != nil {
+			_ = browser.SaveSession(info)
+			return CommandResult{}, dispatchCommandError(e)
+		}
+		info.TargetID, info.PageURL = resolveCLITarget(targets, "0")
+	}
+	if e = browser.SaveSession(info); e != nil {
+		return CommandResult{}, deliveryCommandError(e)
+	}
+	out := sessionRuntimeHeader(info)
+	out["closed_target_id"] = tid
+	out["current_target_id"] = info.TargetID
+	return commandSuccess(out), nil
+}
+func runTabsNewResult(args []string) (CommandResult, error) {
+	url := browser.ChromeInitialPageURL
+	clean := []string{}
+	for i := 0; i < len(args); i++ {
+		key, val, inline := strings.Cut(args[i], "=")
+		if key == "--url" {
+			if !inline {
+				if i+1 >= len(args) {
+					return CommandResult{}, commandError("validation", exitRunErr, fmt.Errorf("--url requires value"))
+				}
+				i++
+				val = args[i]
+			}
+			url = val
+		} else {
+			clean = append(clean, args[i])
+		}
+	}
+	if err := browser.ValidateNavigationURL(url); err != nil {
+		return CommandResult{}, commandError("validation", exitRunErr, err)
+	}
+	info, lock, ctx, cancel, e := prepareTabsMutation(clean, "tabs new")
+	if e != nil {
+		return CommandResult{}, commandError("validation", exitRunErr, e)
+	}
+	defer cancel()
+	defer lock.Release()
+	if e = ensureForegroundAllowedE(ctx, info, "tabs new"); e != nil {
+		return CommandResult{}, commandError("validation", exitRunErr, e)
+	}
+	var tid cdpTarget.ID
+	if e = runBrowserLevelTargetCommand(ctx, info, func(c context.Context) error { var err error; tid, err = cdpTarget.CreateTarget(url).Do(c); return err }, "tabs new"); e != nil {
+		return CommandResult{}, dispatchCommandError(e)
+	}
+	info.TargetID, info.PageURL = string(tid), url
+	browser.InvalidateSessionObservation(info)
+	if e = browser.SaveSession(info); e != nil {
+		return CommandResult{}, deliveryCommandError(e)
+	}
+	out := sessionRuntimeHeader(info)
+	out["target_id"] = tid
+	out["url"] = url
+	return commandSuccess(out), nil
+}
+func runHTRStatusResult(args []string) (CommandResult, error) {
+	info, e := loadSessionArgs(args, "htr status")
+	if e != nil {
+		return CommandResult{}, commandError("validation", exitRunErr, e)
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), cliTabsCommandTimeout)
 	defer cancel()
-	ensureSessionBrowserMuxHostReady(ctx, sessionInfo, "tabs new")
-	ensureForegroundAllowed(ctx, sessionInfo, "tabs new")
-	var targetID cdpTarget.ID
-	runBrowserLevelTargetCommand(ctx, sessionInfo.WSURL, func(ctx context.Context) error {
-		var err error
-		targetID, err = cdpTarget.CreateTarget(url).Do(ctx)
-		return err
-	}, "tabs new")
-	sessionInfo.TargetID = string(targetID)
-	sessionInfo.PageURL = url
-	sessionInfo.Refs = nil
-	_ = browser.SaveSession(sessionInfo)
-	printJSON(map[string]interface{}{
-		"browser_session_id": sessionInfo.BrowserSessionID,
-		"target_id":          targetID,
-		"url":                url,
-	})
-}
-
-func runHTR(args []string) {
-	if len(args) == 1 && wantsHelp(args) {
-		printCommandUsage("htr")
-		os.Exit(exitOK)
-	}
-	if len(args) < 1 {
-		fmt.Fprintln(os.Stderr, "dw-browser htr: requires subcommand (attach|status|takeover|yield|share)")
-		os.Exit(exitRunErr)
-	}
-	switch args[0] {
-	case "attach", "status":
-		runHTRAttach(args[1:])
-	case "takeover", "acquire":
-		runHTRSetAuthority(args[1:], browser.AuthorityHuman, "htr takeover")
-	case "yield", "release":
-		runHTRSetAuthority(args[1:], browser.AuthorityAgentic, "htr yield")
-	case "share":
-		runHTRSetAuthority(args[1:], browser.AuthorityShared, "htr share")
-	default:
-		fmt.Fprintf(os.Stderr, "dw-browser htr: unknown subcommand %q (use attach|status|takeover|yield|share)\n", args[0])
-		os.Exit(exitRunErr)
-	}
-}
-
-func runHTRAttach(args []string) {
-	_, flags := parseCommonFlags(args, "htr attach")
-	sessionInfo := mustLoadSession(flags, "htr attach")
-	ctx, cancel := context.WithTimeout(context.Background(), cliTabsCommandTimeout)
-	defer cancel()
-	ensureSessionBrowserMuxHostReady(ctx, sessionInfo, "htr attach")
-	targets := []map[string]interface{}{}
-	if sessionInfo.DebugPort > 0 {
-		targets, _ = browser.FetchChromeTargets(sessionInfo.DebugPort)
-	}
-	var host interface{} = nil
-	if sessionInfo.RuntimeID == "" && sessionInfo.BrowserSessionID != "" {
-		sessionInfo.RuntimeID = browser.BrowserRuntimeIDFromBrowserSessionID(sessionInfo.BrowserSessionID)
-	}
-	if sessionInfo.RuntimeID != "" {
-		if state, err := browser.LoadBrowserRuntimeState(sessionInfo.RuntimeID); err == nil {
-			if live, healthErr := browser.BrowserMuxHostHealth(ctx, state); healthErr == nil {
+	targets, targetErr := fetchSessionTargets(info)
+	var host any
+	if info.RuntimeID != "" {
+		if state, err := browser.LoadBrowserRuntimeState(info.RuntimeID); err == nil {
+			host = state
+			if live, err := browser.BrowserMuxHostHealth(ctx, state); err == nil {
 				host = live
-			} else {
-				host = state
 			}
 		}
 	}
-	printJSON(map[string]interface{}{
-		"browser_session_id": sessionInfo.BrowserSessionID,
-		"authority_state":    sessionInfo.AuthorityState,
-		"owner":              sessionInfo.Owner,
-		"mode":               sessionInfo.Mode,
-		"browser_mux_host":   host,
-		"current_target_id":  sessionInfo.TargetID,
-		"targets":            targets,
-	})
+	out := sessionRuntimeHeader(info)
+	out["authority_state"] = info.AuthorityState
+	out["owner"] = info.Owner
+	out["mode"] = info.Mode
+	out["browser_mux_host"] = host
+	out["current_target_id"] = info.TargetID
+	out["targets"] = targets
+	if targetErr != nil {
+		out["targets_state"] = "unavailable"
+		out["targets_error"] = targetErr.Error()
+	} else {
+		out["targets_state"] = "captured"
+	}
+	return commandSuccess(out), nil
 }
-
-func runHTRSetAuthority(args []string, authority string, cmdName string) {
-	_, flags := parseCommonFlags(args, cmdName)
-	sessionInfo := mustLoadSession(flags, cmdName)
-	sessionInfo.AuthorityState = authority
-	if authority == browser.AuthorityHuman {
-		sessionInfo.Owner = browser.SessionOwnerHuman
+func runHTRSetAuthorityResult(args []string, authority, cmd string) (CommandResult, error) {
+	info, e := loadSessionArgs(args, cmd)
+	if e != nil {
+		return CommandResult{}, commandError("validation", exitRunErr, e)
 	}
-	if err := browser.SaveSession(sessionInfo); err != nil {
-		fmt.Fprintf(os.Stderr, "dw-browser %s: save session: %v\n", cmdName, err)
-		os.Exit(exitRunErr)
+	lock, e := acquireSessionRuntimeInputLock(info)
+	if e != nil {
+		return CommandResult{}, commandError("validation", exitRunErr, e)
 	}
-	printJSON(map[string]interface{}{
-		"browser_session_id": sessionInfo.BrowserSessionID,
-		"authority_state":    sessionInfo.AuthorityState,
-		"owner":              sessionInfo.Owner,
-	})
+	defer lock.Release()
+	if e = browser.SetSessionAuthority(info, authority); e != nil {
+		return CommandResult{}, commandError("validation", exitRunErr, e)
+	}
+	if e = browser.SaveSession(info); e != nil {
+		return CommandResult{}, deliveryCommandError(e)
+	}
+	out := sessionRuntimeHeader(info)
+	out["authority_state"] = info.AuthorityState
+	out["owner"] = info.Owner
+	return commandSuccess(out), nil
 }
-
-func parseTargetSelectorArg(args []string, cmdName string) (string, []string) {
-	targetSelector := ""
-	var clean []string
-	for i := 0; i < len(args); i++ {
-		arg := args[i]
-		switch {
-		case (arg == "--target" || arg == "--target-id") && i+1 < len(args):
-			targetSelector = args[i+1]
-			i++
-		case strings.HasPrefix(arg, "--target="):
-			targetSelector = strings.TrimPrefix(arg, "--target=")
-		case strings.HasPrefix(arg, "--target-id="):
-			targetSelector = strings.TrimPrefix(arg, "--target-id=")
-		default:
-			clean = append(clean, arg)
-		}
+func fetchSessionTargets(info *browser.SessionInfo) ([]map[string]interface{}, error) {
+	if info.DebugPort <= 0 {
+		return nil, fmt.Errorf("session has no debug port")
 	}
-	if targetSelector == "" {
-		fmt.Fprintf(os.Stderr, "dw-browser %s: requires --target <id-or-index>\n", cmdName)
-		os.Exit(exitRunErr)
-	}
-	return targetSelector, clean
+	return browser.FetchChromeTargets(info.DebugPort)
 }
-
-func mustLoadSession(flags commonFlags, cmdName string) *browser.SessionInfo {
-	if flags.sessionID == "" {
-		fmt.Fprintf(os.Stderr, "dw-browser %s: requires --id <id>\n", cmdName)
-		os.Exit(exitRunErr)
-	}
-	sessionInfo, err := browser.LoadSession(flags.sessionID)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "dw-browser %s: %v\n", cmdName, err)
-		os.Exit(exitRunErr)
-	}
-	return sessionInfo
-}
-
-func fetchSessionTargetsOrExit(sessionInfo *browser.SessionInfo, cmdName string) []map[string]interface{} {
-	if sessionInfo.DebugPort <= 0 {
-		fmt.Fprintf(os.Stderr, "dw-browser %s: session has no debug port\n", cmdName)
-		os.Exit(exitRunErr)
-	}
-	targets, err := browser.FetchChromeTargets(sessionInfo.DebugPort)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "dw-browser %s: fetch targets: %v\n", cmdName, err)
-		os.Exit(exitRunErr)
-	}
-	return targets
-}
-
-func resolveCLITarget(targets []map[string]interface{}, selector string) (targetID string, targetURL string) {
-	if idx, err := strconv.Atoi(selector); err == nil {
-		pageIndex := 0
-		for _, target := range targets {
-			if !browser.IsDevToolsPageTarget(target) {
+func resolveCLITarget(targets []map[string]interface{}, selector string) (string, string) {
+	if idx, e := strconv.Atoi(selector); e == nil {
+		n := 0
+		for _, t := range targets {
+			if !browser.IsDevToolsPageTarget(t) {
 				continue
 			}
-			if pageIndex == idx {
-				return browser.ExtractDevToolsTargetID(target), stringFromMap(target, "url")
+			if n == idx {
+				return browser.ExtractDevToolsTargetID(t), stringFromMap(t, "url")
 			}
-			pageIndex++
+			n++
+		}
+		return "", ""
+	}
+	matchID, matchURL := "", ""
+	for _, t := range targets {
+		if !browser.IsDevToolsPageTarget(t) {
+			continue
+		}
+		id := browser.ExtractDevToolsTargetID(t)
+		if id == selector {
+			return id, stringFromMap(t, "url")
+		}
+		if strings.HasPrefix(id, selector) {
+			if matchID != "" {
+				return "", ""
+			}
+			matchID, matchURL = id, stringFromMap(t, "url")
 		}
 	}
-	for _, target := range targets {
-		id := browser.ExtractDevToolsTargetID(target)
-		if id == selector || strings.HasPrefix(id, selector) {
-			return id, stringFromMap(target, "url")
-		}
-	}
-	return "", ""
+	return matchID, matchURL
 }
-
-func runBrowserLevelTargetCommand(ctx context.Context, wsURL string, fn func(context.Context) error, cmdName string) {
-	allocCtx, allocCancel := chromedp.NewRemoteAllocator(ctx, wsURL)
-	defer allocCancel()
-	browserCtx, browserCancel := chromedp.NewContext(allocCtx)
-	defer browserCancel()
-	if err := chromedp.Run(browserCtx, chromedp.ActionFunc(func(ctx context.Context) error {
-		return fn(cdp.WithExecutor(ctx, chromedp.FromContext(ctx).Browser))
-	})); err != nil {
-		fmt.Fprintf(os.Stderr, "dw-browser %s: target command failed: %v\n", cmdName, err)
-		os.Exit(exitFail)
+func runBrowserLevelTargetCommand(ctx context.Context, info *browser.SessionInfo, fn func(context.Context) error, cmd string) error {
+	transportCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	transport, e := chromedp.NewBrowser(transportCtx, info.WSURL)
+	if e != nil {
+		return fmt.Errorf("%s: browser transport: %w", cmd, e)
 	}
-	_ = ctx
+	return fn(cdp.WithExecutor(transportCtx, transport))
 }
-
-func ensureForegroundAllowed(ctx context.Context, sessionInfo *browser.SessionInfo, cmdName string) {
-	if sessionInfo.RuntimeID == "" && sessionInfo.BrowserSessionID != "" {
-		sessionInfo.RuntimeID = browser.BrowserRuntimeIDFromBrowserSessionID(sessionInfo.BrowserSessionID)
+func ensureForegroundAllowedE(ctx context.Context, info *browser.SessionInfo, cmd string) error {
+	if browser.NormalizeBrowserMode(info.Mode, browser.ModeHeadless) != browser.ModeHeaded {
+		return nil
 	}
-	if sessionInfo.RuntimeID == "" {
-		return
+	if info.RuntimeID == "" {
+		return fmt.Errorf("%s: runtime identity unavailable for foreground guard", cmd)
 	}
-	state, err := browser.LoadBrowserRuntimeState(sessionInfo.RuntimeID)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "dw-browser %s: BrowserMuxHost state unavailable: %v\n", cmdName, err)
-		os.Exit(exitRunErr)
+	state, e := browser.LoadBrowserRuntimeState(info.RuntimeID)
+	if e != nil {
+		return fmt.Errorf("BrowserMuxHost state unavailable: %w", e)
 	}
-	live, err := browser.BrowserMuxHostHealth(ctx, state)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "dw-browser %s: BrowserMuxHost health failed: %v\n", cmdName, err)
-		os.Exit(exitRunErr)
+	live, e := browser.BrowserMuxHostHealth(ctx, state)
+	if e != nil {
+		return fmt.Errorf("BrowserMuxHost health failed: %w", e)
 	}
 	if !live.DisplayVerified || !live.ChromeWindowContained || !live.ChromeAlive {
-		fmt.Fprintf(os.Stderr, "dw-browser %s: BrowserMuxHost foreground guard failed display_verified=%t chrome_window_contained=%t chrome_alive=%t\n",
-			cmdName, live.DisplayVerified, live.ChromeWindowContained, live.ChromeAlive)
-		os.Exit(exitFail)
+		return fmt.Errorf("BrowserMuxHost foreground guard failed display_verified=%t chrome_window_contained=%t chrome_alive=%t", live.DisplayVerified, live.ChromeWindowContained, live.ChromeAlive)
 	}
+	return nil
 }
-
-func stringFromMap(m map[string]interface{}, key string) string {
-	v, _ := m[key].(string)
-	return v
+func acquireSessionRuntimeInputLock(info *browser.SessionInfo) (*browser.BrowserInputLock, error) {
+	return browser.AcquireBrowserInputLock(browser.BrowserInputKey(info.WSURL, info.ChromePID), browser.DefaultBrowserInputLockWait)
 }
-
-func printJSON(value interface{}) {
-	enc, _ := json.MarshalIndent(value, "", "  ")
-	fmt.Println(string(enc))
-}
+func stringFromMap(m map[string]interface{}, key string) string { s, _ := m[key].(string); return s }

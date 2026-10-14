@@ -20,10 +20,11 @@ func TestCoordinateAction_MissingCSSFailsImmediately(t *testing.T) {
 		t.Fatalf("NewBrowserCore: %v", err)
 	}
 	defer core.Close(context.Background())
+	core.(ScenarioInteractionCapable).SetInteractionScenario(ScenarioAppTestExplore)
 	core.SetPolicy(SessionPolicy{RemoteWrites: RemoteWriteAllow}, "")
 
 	started := time.Now()
-	_, err = core.Act(ctx, "dragat css=#definitely-missing 20% 20% 80% 80%", false)
+	_, err = executeFixtureAction(ctx, core, Action{Verb: "drag", Target: fixtureRelative("css=#definitely-missing", 20.0, 20.0), End: fixtureEnd(80.0, 80.0)}, false, false)
 	if err == nil {
 		t.Fatal("missing coordinate target should fail")
 	}

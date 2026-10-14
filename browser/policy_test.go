@@ -9,10 +9,15 @@ func TestIsMutatingOp(t *testing.T) {
 			t.Errorf("op %q should be mutating", op)
 		}
 	}
-	reads := []string{"scroll", "scrollinto", "hover", "hoverat", "wheelat", "focus", "back", "forward"}
+	reads := []string{"scroll", "scrollto", "hover", "focus", "back", "forward", "navigate", "reload"}
 	for _, op := range reads {
 		if IsMutatingOp(op) {
 			t.Errorf("op %q should be read-only", op)
+		}
+	}
+	for _, alias := range []string{"scrollinto", "hoverat", "wheelat"} {
+		if !IsMutatingOp(alias) {
+			t.Errorf("removed public alias %q gained read permission", alias)
 		}
 	}
 	// unknown verb is treated as mutating (fail-closed)
@@ -42,7 +47,7 @@ func TestIsTrustedOrigin(t *testing.T) {
 		{"http://0.0.0.0:8080", nil, true},
 		{"https://www.baidu.com", nil, false},
 		{"https://github.com", nil, false},
-		{"", nil, false}, // unknown/opaque -> not trusted
+		{"", nil, false},                                               // unknown/opaque -> not trusted
 		{"https://api.example.com", []string{"api.example.com"}, true}, // allowlisted
 		{"https://api.example.com:443", []string{"api.example.com"}, true},
 		{"https://other.com", []string{"api.example.com"}, false},

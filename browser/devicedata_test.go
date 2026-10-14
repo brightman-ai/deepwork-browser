@@ -31,9 +31,9 @@ func TestDeviceFingerprints_LoadedFromVendoredJSON(t *testing.T) {
 // 权威几何值(而非 CP1 手搓漂移值:iPhone14 曾误作 390x844,Pixel7 曾误作 412x915)。
 func TestDeviceFingerprints_PlaywrightAuthoritativeValues(t *testing.T) {
 	cases := []struct {
-		id      string
-		w, h    int
-		dpr     float64
+		id   string
+		w, h int
+		dpr  float64
 	}{
 		{PresetIPhone14, 390, 664, 3},
 		{PresetIPhone15Pro, 393, 659, 3},

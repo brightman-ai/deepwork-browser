@@ -257,6 +257,11 @@ func NormalizeSessionInfo(info *SessionInfo) {
 	if info.RuntimeID == "" {
 		info.RuntimeID = BrowserRuntimeIDFromBrowserSessionID(info.BrowserSessionID)
 	}
+	// Terminal input deliberately revokes geometry while retaining physical focus.
+	// Only a claimed-valid observation with inconsistent metadata needs full revocation.
+	if info.ObservationValid && info.ObservationID != "" && ValidateSessionObservation(info) != nil {
+		InvalidateSessionObservation(info)
+	}
 	// An action without a recorded terminal result may already have changed the
 	// page. Pre-action refs cannot cross that uncertainty boundary.
 	switch info.LastActionOutcome {

@@ -1,60 +1,83 @@
 #compdef dw-browser
-# zsh completion for dw-browser (github.com/brightman-ai/deepwork-browser)
-# 覆盖子命令 + 通用/会话策略 flag + enum 值。安装: 置于 fpath 目录 (如 ~/.zsh/completions) 后 compinit。
-
-_dw-browser() {
-  local -a subcmds
-  subcmds=(
-    'open:打开/导航, 建持久会话'
-    'observe:感知当前会话 (a11y locators + 可选截图/health/tree)'
-    'act:执行一个语义操作 (click/fill/press/clickat...)'
-    'close:关闭会话'
-    'once:无状态一次性 (开+看+关, 不留会话)'
-    'wait:等待条件 (ms / visible / gone / text)'
-    'check:硬断言 (exit 0=PASS 1=FAIL 2=ERR)'
-    'journey:跑 BDD 旅程 yaml (确定性 pass/fail)'
-    'diff:对比两份 observe 快照'
-    'session:会话管理 (list/status/start)'
-    'tabs:多标签操作 (list/new/select/close)'
-    'htr:Human Trust Runtime 交接 (attach/takeover/yield/share)'
-    'muxhost:BrowserMuxHost 全局操作'
-    'profile:CLI profile 管理 (list/import/prune)'
-    'skills:站点操作知识库 (list/read/write)'
-    'record:录制动作轨迹 → 蒸馏 skill'
-    'layout:URL 布局探测'
-    'eval:原始 JS 求值'
-    'test:跑 spec.yaml'
-    'audit:a11y 审计'
-  )
-  local -a common_flags
-  common_flags=(
-    '--scenario[★必选业务主入口: 导出 Policy/render/kind]:scenario:(app-test-explore app-test-baseline webvisit)'
-    '--id[会话句柄 (开一次, 后续复用)]:id:'
-    '--url[目标 URL]:url:'
-    '--mode[渲染模式 (覆盖场景默认 render)]:mode:(headless headed visible human)'
-    '--ephemeral[临时 profile, 命令结束即删]'
-    '--profile[固定 profile (登录态)]:profile:'
-    '--allow-host[webvisit 信任放行主机 (逗号分隔/可重复)]:hosts:'
-    '--out[截图输出路径]:file:_files'
-    '--health[附遥测通道 (console/network/visible_errors)]'
-    '--tree[附全 a11y 文本树]'
-    '--snap[act 后附 a11y 全树]'
-    '--using[验收 oracle 类]:class:(structural behavior telemetry visual layout transcript file)'
-    '--file[spec/baseline yaml]:file:_files'
-    '--assert[断言表达式]:expr:'
-    '--observation[静态 observation JSON]:file:_files'
-    '--goal[会话目标]:text:'
-    '--viewport[视口 WxH]:wxh:'
-    '--device[设备预设]:device:'
-    '--engine[浏览器引擎]:engine:(chrome safari)'
-    '--json[JSON 输出]'
-  )
-  _arguments -C \
-    '1:command:->cmds' \
-    '*::options:->opts'
-  case $state in
-    cmds) _describe -t commands 'dw-browser command' subcmds ;;
-    opts) _arguments $common_flags ;;
-  esac
+_dw_browser_v2() {
+ local -a candidates
+ if (( CURRENT == 2 )); then candidates=(act audit capabilities check close completion cookie-import diff eval export-contract gc help htr journey muxhost observe once open persona profile protocol record session skills tabs version wait); _describe 'command' candidates; return; fi
+ case "${words[2]} ${words[3]}" in
+ 'session status') candidates=('--id' '--output' '--lock-wait' '--verbose' ); _describe 'flag' candidates; return;;
+ 'session list') candidates=('--output' '--lock-wait' '--verbose' ); _describe 'flag' candidates; return;;
+ 'session viewport') candidates=('--id' '--size' '--output' '--lock-wait' '--verbose' ); _describe 'flag' candidates; return;;
+ 'tabs list') candidates=('--id' '--output' '--lock-wait' '--verbose' ); _describe 'flag' candidates; return;;
+ 'tabs select') candidates=('--id' '--target' '--output' '--lock-wait' '--verbose' ); _describe 'flag' candidates; return;;
+ 'tabs close') candidates=('--id' '--target' '--output' '--lock-wait' '--verbose' ); _describe 'flag' candidates; return;;
+ 'tabs new') candidates=('--id' '--url' '--output' '--lock-wait' '--verbose' ); _describe 'flag' candidates; return;;
+ 'htr status') candidates=('--id' '--output' '--lock-wait' '--verbose' ); _describe 'flag' candidates; return;;
+ 'htr takeover') candidates=('--id' '--output' '--lock-wait' '--verbose' ); _describe 'flag' candidates; return;;
+ 'htr yield') candidates=('--id' '--output' '--lock-wait' '--verbose' ); _describe 'flag' candidates; return;;
+ 'htr share') candidates=('--id' '--output' '--lock-wait' '--verbose' ); _describe 'flag' candidates; return;;
+ 'persona list') candidates=('--output' '--lock-wait' '--verbose' ); _describe 'flag' candidates; return;;
+ 'profile list') candidates=('--output' '--lock-wait' '--verbose' ); _describe 'flag' candidates; return;;
+ 'profile import') candidates=('--name' '--output' '--lock-wait' '--verbose' ); _describe 'flag' candidates; return;;
+ 'profile prune') candidates=('--min-age' '--ephemeral' '--dry-run' '--reap-orphaned' '--output' '--lock-wait' '--verbose' ); _describe 'flag' candidates; return;;
+ 'skills list') candidates=('--output' '--lock-wait' '--verbose' ); _describe 'flag' candidates; return;;
+ 'skills read') candidates=('--action' '--output' '--lock-wait' '--verbose' ); _describe 'flag' candidates; return;;
+ 'skills write') candidates=('--action' '--output' '--lock-wait' '--verbose' ); _describe 'flag' candidates; return;;
+ 'record start') candidates=('--id' '--output' '--lock-wait' '--verbose' ); _describe 'flag' candidates; return;;
+ 'record stop') candidates=('--id' '--output' '--lock-wait' '--verbose' ); _describe 'flag' candidates; return;;
+ 'record export') candidates=('--id' '--output' '--lock-wait' '--verbose' ); _describe 'flag' candidates; return;;
+ 'muxhost serve') candidates=('--muxhost-id' '--runtime-id' '--browser-session-id' '--kind' '--profile-id' '--profile-dir' '--chrome-path' '--debug-port' '--owner-pid' '--owner' '--isolation' '--mode' '--goal' '--idle-ttl' '--persona' '--preset' '--width' '--height' '--user-agent' '--service' '--account' '--identity-key' '--touch' '--output' '--lock-wait' '--verbose' ); _describe 'flag' candidates; return;;
+ 'muxhost ensure') candidates=('--muxhost-id' '--runtime-id' '--browser-session-id' '--kind' '--profile-id' '--profile-dir' '--chrome-path' '--debug-port' '--owner-pid' '--owner' '--isolation' '--mode' '--goal' '--idle-ttl' '--persona' '--preset' '--width' '--height' '--user-agent' '--service' '--account' '--identity-key' '--touch' '--output' '--lock-wait' '--verbose' ); _describe 'flag' candidates; return;;
+ 'muxhost status') candidates=('--muxhost-id' '--runtime-id' '--browser-session-id' '--output' '--lock-wait' '--verbose' ); _describe 'flag' candidates; return;;
+ 'muxhost release') candidates=('--muxhost-id' '--runtime-id' '--browser-session-id' '--output' '--lock-wait' '--verbose' ); _describe 'flag' candidates; return;;
+ 'muxhost shutdown') candidates=('--muxhost-id' '--runtime-id' '--browser-session-id' '--output' '--lock-wait' '--verbose' ); _describe 'flag' candidates; return;;
+ 'act click') candidates=('--id' '--x' '--y' '--unit' '--frame' '--observation-id' '--button' '--count' '--output' '--lock-wait' '--verbose' ); _describe 'flag' candidates; return;;
+ 'act tap') candidates=('--id' '--x' '--y' '--unit' '--frame' '--observation-id' '--output' '--lock-wait' '--verbose' ); _describe 'flag' candidates; return;;
+ 'act hover') candidates=('--id' '--x' '--y' '--unit' '--frame' '--observation-id' '--output' '--lock-wait' '--verbose' ); _describe 'flag' candidates; return;;
+ 'act fill') candidates=('--id' '--text' '--text-file' '--sensitive' '--output' '--lock-wait' '--verbose' ); _describe 'flag' candidates; return;;
+ 'act type') candidates=('--id' '--text' '--text-file' '--focused' '--output' '--lock-wait' '--verbose' ); _describe 'flag' candidates; return;;
+ 'act press') candidates=('--id' '--key' '--output' '--lock-wait' '--verbose' ); _describe 'flag' candidates; return;;
+ 'act focus') candidates=('--id' '--output' '--lock-wait' '--verbose' ); _describe 'flag' candidates; return;;
+ 'act select') candidates=('--id' '--value' '--output' '--lock-wait' '--verbose' ); _describe 'flag' candidates; return;;
+ 'act set-checked') candidates=('--id' '--checked' '--output' '--lock-wait' '--verbose' ); _describe 'flag' candidates; return;;
+ 'act scroll') candidates=('--id' '--x' '--y' '--unit' '--frame' '--observation-id' '--direction' '--steps' '--delta-x' '--delta-y' '--output' '--lock-wait' '--verbose' ); _describe 'flag' candidates; return;;
+ 'act scrollto') candidates=('--id' '--output' '--lock-wait' '--verbose' ); _describe 'flag' candidates; return;;
+ 'act drag') candidates=('--id' '--x' '--y' '--unit' '--frame' '--observation-id' '--end-x' '--end-y' '--output' '--lock-wait' '--verbose' ); _describe 'flag' candidates; return;;
+ 'act swipe') candidates=('--id' '--x' '--y' '--unit' '--frame' '--observation-id' '--end-x' '--end-y' '--output' '--lock-wait' '--verbose' ); _describe 'flag' candidates; return;;
+ 'act navigate') candidates=('--id' '--url' '--output' '--lock-wait' '--verbose' ); _describe 'flag' candidates; return;;
+ 'act reload') candidates=('--id' '--output' '--lock-wait' '--verbose' ); _describe 'flag' candidates; return;;
+ 'act back') candidates=('--id' '--output' '--lock-wait' '--verbose' ); _describe 'flag' candidates; return;;
+ 'act forward') candidates=('--id' '--output' '--lock-wait' '--verbose' ); _describe 'flag' candidates; return;;
+ 'act zoom') candidates=('--id' '--value' '--output' '--lock-wait' '--verbose' ); _describe 'flag' candidates; return;;
+ 'act keyboard') candidates=('--id' '--value' '--output' '--lock-wait' '--verbose' ); _describe 'flag' candidates; return;;
+ esac
+ case "${words[2]}" in
+ 'act') candidates=('click' 'tap' 'hover' 'fill' 'type' 'press' 'focus' 'select' 'set-checked' 'scroll' 'scrollto' 'drag' 'swipe' 'navigate' 'reload' 'back' 'forward' 'zoom' 'keyboard' );;
+ 'audit') candidates=('--id' '--suite' '--check' '--threshold' '--format' '--output' '--lock-wait' '--verbose' );;
+ 'capabilities') candidates=('--output' '--lock-wait' '--verbose' );;
+ 'check') candidates=('--id' '--observation' '--assert' '--file' '--using' '--vision-url' '--vision-provider' '--vision-model' '--vision-api-key' '--output' '--lock-wait' '--verbose' );;
+ 'close') candidates=('--id' '--force' '--output' '--lock-wait' '--verbose' );;
+ 'completion') candidates=('--output' '--lock-wait' '--verbose' );;
+ 'cookie-import') candidates=('--id' '--browser' '--domain' '--output' '--lock-wait' '--verbose' );;
+ 'diff') candidates=('--output' '--lock-wait' '--verbose' );;
+ 'eval') candidates=('--id' '--output' '--lock-wait' '--verbose' );;
+ 'export-contract') candidates=('--directory' '--output' '--lock-wait' '--verbose' );;
+ 'gc') candidates=('--older-than' '--dry-run' '--all' '--output' '--lock-wait' '--verbose' );;
+ 'help') candidates=('--output' '--lock-wait' '--verbose' );;
+ 'htr') candidates=('status' 'takeover' 'yield' 'share' );;
+ 'journey') candidates=('--scenario' '--mode' '--persona' '--engine' '--safari-device' '--viewport' '--profile' '--evidence' '--allow-host' '--browser-chrome' '--user-agent' '--goal' '--stealth' '--id' '--file' '--base-url' '--fail-fast' '--output' '--lock-wait' '--verbose' );;
+ 'muxhost') candidates=('serve' 'ensure' 'status' 'release' 'shutdown' );;
+ 'observe') candidates=('--id' '--screenshot' '--content' '--scope' '--top' '--budget' '--health' '--tree' '--all' '--hit-audit' '--annotate' '--output' '--lock-wait' '--verbose' );;
+ 'once') candidates=('--scenario' '--mode' '--persona' '--engine' '--safari-device' '--viewport' '--profile' '--evidence' '--allow-host' '--browser-chrome' '--user-agent' '--goal' '--stealth' '--screenshot' '--content' '--health' '--tree' '--all' '--annotate' '--output' '--lock-wait' '--verbose' );;
+ 'open') candidates=('--scenario' '--mode' '--persona' '--engine' '--safari-device' '--viewport' '--profile' '--evidence' '--allow-host' '--browser-chrome' '--user-agent' '--goal' '--stealth' '--id' '--output' '--lock-wait' '--verbose' );;
+ 'persona') candidates=('list' );;
+ 'profile') candidates=('list' 'import' 'prune' );;
+ 'protocol') candidates=('--output' '--lock-wait' '--verbose' );;
+ 'record') candidates=('start' 'stop' 'export' );;
+ 'session') candidates=('status' 'list' 'viewport' );;
+ 'skills') candidates=('list' 'read' 'write' );;
+ 'tabs') candidates=('list' 'select' 'close' 'new' );;
+ 'version') candidates=('--output' '--lock-wait' '--verbose' );;
+ 'wait') candidates=('--id' '--assert' '--timeout' '--duration' '--output' '--lock-wait' '--verbose' );;
+ esac
+ _describe 'argument' candidates
 }
-_dw-browser "$@"
+compdef _dw_browser_v2 dw-browser

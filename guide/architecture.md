@@ -1,53 +1,13 @@
-# Architecture
+# DW-Browser v2 architecture
 
-## Overview
+The browser runtime owns an instance/run generation; the session owns creation environment, active target and control authority. Observations are immutable captured facts. Actions are typed requests; outcomes express dispatch and recovery independently of assertions or product acceptance.
 
-```
-┌─────────────────────────────────────────┐
-│             dw-browser CLI              │
-│        cmd/dw-browser/main.go           │
-└──────────────┬──────────────────────────┘
-               │
-┌──────────────▼──────────────────────────┐
-│             HTTP Server                 │
-│             server.go                   │
-│   Handler() mounts all API routes       │
-└──────────────┬──────────────────────────┘
-               │
-┌──────────────▼──────────────────────────┐
-│           browser/ package              │
-│                                         │
-│  BrowserPool   — Chrome process pool    │
-│  Session       — per-tab lifecycle      │
-│  TargetTracker — CDP target events      │
-│  LiveView      — DOM/screenshot stream  │
-│  Snapshot      — full-page capture      │
-│  InputGateway  — click/type/scroll      │
-└──────────────┬──────────────────────────┘
-               │
-┌──────────────▼──────────────────────────┐
-│        chromedp / CDP                   │
-│        Chrome DevTools Protocol         │
-└─────────────────────────────────────────┘
-```
+CLI declarations in `cmd/dw-browser/command_definitions.go` drive routing, allowed arguments, conditional groups, help, capabilities, completion and the generated tool protocol. Every active handler returns `CommandResult,error`; `cli_boundary.go` owns JSON stdout/files and exit classification. It does not interpret arbitrary stdout or use handler process exits as results.
 
-## Key Components
+CLI, typed journey, Go and HTTP adapters construct the same `browser.Action` and call `BrowserCore.ExecuteAction`. ActionDefinitions owns kinds/fields/target kinds/mutation classification. Native input validates visibility/focus/editability, holds the browser input critical section and reports the canonical Outcome. There is no string-action parser or model input-failure fallback.
 
-### BrowserPool
-Manages a pool of Chrome processes. Limits concurrent browser instances. Handles process crash recovery.
+The snapshot engine issues capture identity and opaque refs once. Session binding preserves those identities; source dispatch guards revalidate runtime/document/target/geometry and authority under the same input lock used by target activation and Human raw input. Session viewport persists an actual resize instead of creating another browser. Help/status read metadata without recovery or lock waits.
 
-### Session
-Represents a single browser tab. Owns the CDP connection lifecycle. Provides `Navigate`, `Snapshot`, `LiveView`, `Execute` methods.
+`browser/testing` owns the canonical observation/file loader, assertion engine, wait kernel and one typed journey runner. A requested channel is captured/unavailable/not-requested. Screenshot failure cannot reuse an old file. SUT-specific CSS/HTTP/transcript/mutation facts are explicit probes; the browser does not infer application URL chips or service routes. Required BLOCKED remains blocked, and VLM advice cannot become hard acceptance.
 
-### LiveView
-Streams real-time page state (DOM mutations + periodic screenshots) over HTTP using SSE or WebSocket. Used for monitoring automation progress without a local display.
-
-### Snapshot
-Captures the current page as a structured object: full HTML, a PNG screenshot, and extracted text. Useful for archiving and analysis.
-
-### InputGateway
-Translates high-level actions (`Click`, `Type`, `Scroll`, `KeyPress`) into CDP commands. Includes coordinate mapping for element-relative actions.
-
-## Data Persistence
-
-Session metadata is stored in SQLite (`~/.dw/browser.db` by default). This allows sessions to survive process restarts and enables multi-process coordination.
+The root `dwbrowser.Server` binds a host-owned `BoundRuntime` through a resolver. Its persistence callback stays host-owned; it does not create a hidden browser/session store or close a borrowed core. Existing browser-pool, Human takeover and LiveView mechanisms remain the runtime integration boundary.

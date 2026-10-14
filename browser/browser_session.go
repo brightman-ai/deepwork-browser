@@ -326,6 +326,7 @@ func (bs *BrowserSession) AttachBrowserCore(bc BrowserCore) {
 		})
 	}
 	if tracker := bc.GetTargetTracker(); tracker != nil {
+		bs.InputGW.SetBrowserInputKeyProvider(tracker.BrowserInputKey)
 		bs.InputGW.SetCDPContextProvider(func() context.Context {
 			return tracker.GetActiveCDPContext()
 		})

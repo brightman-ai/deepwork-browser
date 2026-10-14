@@ -3,7 +3,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -14,7 +13,6 @@ import (
 
 	"github.com/brightman-ai/deepwork-browser/browser"
 	btest "github.com/brightman-ai/deepwork-browser/browser/testing"
-	"gopkg.in/yaml.v3"
 )
 
 // ============================================================
@@ -182,57 +180,6 @@ func autoLoadLLMEnv() {
 	}
 }
 
-// isNLGoal returns true when action is a free-form natural-language goal
-// rather than a deterministic browser command. NL goals are routed through
-// the LLM Planner; structural commands go directly to ActWithSessionMode.
-//
-// Structural prefixes: click, fill, press, scroll, select, navigate, wait, type, hover, back, forward.
-// Anything else (e.g. "在浏览器中搜索 arxiv") is treated as an NL goal.
-func isNLGoal(action string) bool {
-	lower := strings.ToLower(strings.TrimSpace(action))
-	// These commands are valid without an argument and are handled directly by
-	// both journey executors. Classifying them as NL would make an otherwise
-	// deterministic spec fail its preflight before execution.
-	switch lower {
-	case "wait", "noop", "none", "back", "forward":
-		return false
-	}
-	// 与引擎动词表同源：ParseAction 的结构化动作（带参形态）+ runner 快路径。
-	// 漏一个动词 = 确定性 spec 被误判成 NL 目标，preflight 直接拒跑。
-	for _, p := range []string{
-		"click ", "clickat ", "clickxy ", "dblclickat ", "dragat ", "rclickat ",
-		"fill ", "fillsecret ", "type ", "typetext ", "press ", "keyboard ",
-		"hover ", "hoverat ", "focus ", "check ", "uncheck ", "select ",
-		"scroll ", "scrollto ", "scrollinto ", "wheelat ", "swipeat ",
-		"tap ", "tapat ", "tapxy ", "native ", "hide ", "show ", "zoom ",
-		"navigate ", "wait ",
-	} {
-		if strings.HasPrefix(lower, p) {
-			return false
-		}
-	}
-	return len(lower) > 0
-}
-
-// specHasNLGoal reports whether any journey/recovery step carries a free-form
-// natural-language goal that needs the LLM planner. It reuses isNLGoal — the
-// same step-type judgement used at execution time — so the classification is
-// single-sourced. Activation is spec-driven (ROOT-C: env is CONFIG, not a
-// trigger), so a purely structural spec never spins up the planner.
-func specHasNLGoal(spec *btest.JourneySpec) bool {
-	if spec == nil {
-		return false
-	}
-	for _, steps := range [][]btest.StepSpec{spec.Journey, spec.Recovery} {
-		for _, s := range steps {
-			if isNLGoal(s.Do) {
-				return true
-			}
-		}
-	}
-	return false
-}
-
 // specHasVisualUsing reports whether any assertion in the spec opts into the
 // visual oracle via using:[visual]. Only explicit per-assertion opt-in counts.
 func specHasVisualUsing(spec *btest.JourneySpec) bool {
@@ -260,74 +207,6 @@ func specHasVisualUsing(spec *btest.JourneySpec) bool {
 		}
 	}
 	return false
-}
-
-// containsHelp returns true if args contains --help or -h.
-func containsHelp(args []string) bool {
-	for _, a := range args {
-		if a == "--help" || a == "-h" {
-			return true
-		}
-	}
-	return false
-}
-
-// printTestingHelp 打印 testing 子命令的完整帮助信息。
-func printTestingHelp() {
-	help := `dw-browser 基线回归命令 (场景 B — 确定性, CLI 零 LLM):
-
-  journey   跑 BDD YAML 旅程 (open/act/check 步) + 证据采集, pass/fail
-  check     对当前会话或 observation 文件求值断言
-  diff      对比两份 observe 快照 (before/after)
-
-用法:
-
-  # BDD 旅程 + 证据 (CI 主入口)
-  dw-browser journey --file tests/bdd/portal.yaml --scenario app-test-baseline --evidence evidence/run-001
-  dw-browser journey --file spec.yaml --scenario app-test-baseline --base-url http://localhost:8080 --fail-fast
-
-  journey 步骤默认 mode: visual（所见即可点 + 真鼠标）。仅需旧元素寻址/自动滚动的
-  单步显式写 mode: element；该选择留在剧本中，作为保真等级 SSOT。
-
-  # 单条断言 (当前会话)
-  dw-browser check --id s1 --assert "console_errors_count == 0"
-  dw-browser check --id s1 --assert "exists(role='button', name='创建')"
-
-  # 批量断言 (baseline 的 invariants 段)
-  dw-browser check --id s1 --file baselines/portal/app-shell.yaml
-
-  # 对已落盘 observation 求值 (无需会话)
-  dw-browser observe --id s1 --json before.json
-  dw-browser check --observation before.json --assert "exists(role='button')"
-
-  # 对比前后
-  dw-browser diff before.json after.json --out diff.json
-
-断言 DSL:
-
-  exists(role='button', name='Search')    元素存在于 A11y 树
-  count(role='link') >= 1                 匹配元素计数
-  visible(testid='sidebar')               元素可见
-  gone(text='Loading')                    元素已消失
-  text_contains('hello')                  页面文本含字符串
-  url_matches('/portal/topic')            URL 含 pattern
-  tab_count == 2                          标签数
-  active_tab_url_contains('example.com')  活动标签 URL 含
-  console_errors_count == 0               无 console 错误
-  network_failures_count == 0             无网络失败
-  latency_lt(3000)                        动作延迟低于阈值 (ms)
-
-软审查 (soft-review): CLI 只跑确定性 hard 断言。视觉/语义判断 (UX 对不对)
-是调用方的活 — agent 自己 Read 截图判, 或 baseline YAML 里标 soft hint 交调用方。
-CLI 默认不起 LLM; 仅 --using visual 显式开启 vision oracle (opt-in):
-
-  --llm-url / --llm-provider / --llm-model / --llm-api-key   Planner/VLM 端点 (env: DW_BROWSER_LLM_*)
-  --vision-url / --vision-model / --vision-api-key           VLM (默认回退 --llm-*; env: DW_BROWSER_VISION_*)
-  dw-browser check --id s1 --assert "looks_like('登录表单')" --using visual
-
-Exit codes: 0=PASS  1=FAIL  2=RUN_ERROR
-`
-	fmt.Fprint(os.Stderr, help)
 }
 
 // ============================================================
@@ -425,7 +304,7 @@ func sessionRefsForObservation(info *browser.SessionInfo, snap *browser.Snapshot
 	return browser.SessionRefsFromSnapshot(snap, true)
 }
 
-func observeListing(snap *browser.Snapshot, censusOnly bool, topN, budget int) (map[string]interface{}, bool) {
+func observeListing(snap *browser.Snapshot, censusOnly bool, topN, budget int, scenarios ...browser.Scenario) (map[string]interface{}, bool) {
 	if censusOnly {
 		census := snap.Census
 		if census == nil {
@@ -439,7 +318,7 @@ func observeListing(snap *browser.Snapshot, censusOnly bool, topN, budget int) (
 			"actionable": false,
 		}, false
 	}
-	elements, selectedTotal, truncated, omitted := briefElements(snap.Refs, topN, budget)
+	elements, selectedTotal, truncated, omitted := briefElements(snap.Refs, topN, budget, scenarios...)
 	total := selectedTotal
 	if snap.SeeToClick {
 		total = snap.DocumentInteractableCount
@@ -531,17 +410,12 @@ func stripObserveHitAuditFlag(args []string) ([]string, bool, string, error) {
 //
 // flag 自由组合 (加法, 非互斥枚举)。observe 与 act 共享 @rN ref-space:
 // observe 后 `act "click @rN"` 解析的是 observe 刚看到的同一批 refs。
-func runObserve(args []string) {
-	if containsHelp(args) {
-		printObserveHelp()
-		os.Exit(exitOK)
-	}
+func runObserveResult(args []string) (CommandResult, error) {
 	args, wantHitAudit, hitAuditScope, scopeErr := stripObserveHitAuditFlag(args)
 	if scopeErr != nil {
-		fmt.Fprintf(os.Stderr, "dw-browser observe: %v\n", scopeErr)
-		os.Exit(exitRunErr)
+		return CommandResult{}, commandError("observation", exitRunErr, fmt.Errorf("dw-browser observe: %v\n", scopeErr))
 	}
-	var jsonOut, outFile string
+	var outFile, evidenceDir, contentFormat string
 	wantHealth, wantTree, wantAnnotate, wantAll := false, false, false, false
 	topN, budget := defaultBriefTopN, defaultBriefBudget
 	topExplicit, budgetExplicit := false, false
@@ -550,16 +424,16 @@ func runObserve(args []string) {
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 		switch {
-		case arg == "--out" && i+1 < len(args):
+		case arg == "--screenshot" && i+1 < len(args):
 			outFile = args[i+1]
 			i++
-		case strings.HasPrefix(arg, "--out="):
-			outFile = arg[len("--out="):]
-		case arg == "--json" && i+1 < len(args):
-			jsonOut = args[i+1]
+		case strings.HasPrefix(arg, "--screenshot="):
+			outFile = arg[len("--screenshot="):]
+		case arg == "--content" && i+1 < len(args):
+			contentFormat = args[i+1]
 			i++
-		case strings.HasPrefix(arg, "--json="):
-			jsonOut = arg[len("--json="):]
+		case strings.HasPrefix(arg, "--content="):
+			contentFormat = strings.TrimPrefix(arg, "--content=")
 		case arg == "--health":
 			wantHealth = true
 		case arg == "--tree":
@@ -595,22 +469,32 @@ func runObserve(args []string) {
 		}
 	}
 
-	_, flags := parseCommonFlags(clean, "observe")
+	if contentFormat != "" && contentFormat != "text" && contentFormat != "list" && contentFormat != "table" {
+		return CommandResult{}, commandError("validation", exitRunErr, fmt.Errorf("unsupported content format %q", contentFormat))
+	}
+	if err := validateReadSessionArgsE(clean, "observe"); err != nil {
+		return CommandResult{}, commandError("validation", exitRunErr, err)
+	}
+	_, flags, parseErr := parseCommonFlagsE(clean, "observe")
+	if parseErr != nil {
+		return CommandResult{}, commandError("validation", exitRunErr, parseErr)
+	}
 	if flags.sessionID == "" {
-		fmt.Fprintln(os.Stderr, "dw-browser observe: requires --id <session-id>")
-		os.Exit(exitRunErr)
+		return CommandResult{}, commandError("observation", exitRunErr, fmt.Errorf("%s", fmt.Sprint("dw-browser observe: requires --id <session-id>")))
 	}
 
 	sessionInfo, err := browser.LoadSession(flags.sessionID)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "dw-browser observe: %v\n", err)
-		os.Exit(exitRunErr)
+		return CommandResult{}, commandError("observation", exitRunErr, fmt.Errorf("dw-browser observe: %v\n", err))
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	impl := connectSession(ctx, sessionInfo, "observe", flags)
+	impl, connectErr := connectSessionE(ctx, sessionInfo, "observe", flags)
+	if connectErr != nil {
+		return CommandResult{}, commandError("attachment", exitRunErr, connectErr)
+	}
 	defer closeSessionCore(impl)
 	if capable, ok := impl.(browser.ScenarioInteractionCapable); ok {
 		capable.SetObserveAll(wantAll)
@@ -625,28 +509,42 @@ func runObserve(args []string) {
 	}
 	snap, err := impl.SnapWithSessionMode(ctx, sessionInfo.SnapEpoch)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "dw-browser observe: snap failed: %v\n", err)
-		os.Exit(exitRunErr)
-	}
-	// settle-wait — retry until SPA a11y tree is populated (up to ~6s).
-	for i := 0; i < 6 && (snap == nil || (len(snap.Refs) == 0 && !(snap.SeeToClick && snap.DocumentInteractableCount > 0))); i++ {
-		time.Sleep(1 * time.Second)
-		snap, _ = impl.SnapWithSessionMode(ctx, sessionInfo.SnapEpoch)
-	}
-	// SSOT: persist THIS observation's @rN refs so a subsequent `act "click @rN"`
-	// resolves the SAME refs the caller just saw (observe shares act's ref-space).
-	// URL + refs + reconciled outcome are one atomic session-file replacement;
-	// never print an observation whose authority failed to persist.
-	if snap != nil {
-		if err := browser.SaveObservedSession(sessionInfo, snap, sessionRefsForObservation(sessionInfo, snap, wantAll)); err != nil {
-			fmt.Fprintf(os.Stderr, "dw-browser observe: save refs: %v\n", err)
-			os.Exit(exitRunErr)
-		}
+		return CommandResult{}, commandError("observation", exitRunErr, fmt.Errorf("dw-browser observe: snap failed: %v\n", err))
 	}
 	if snap == nil {
-		fmt.Fprintln(os.Stderr, "dw-browser observe: empty snapshot")
-		os.Exit(exitRunErr)
+		return CommandResult{}, commandError("observation", exitRunErr, fmt.Errorf("%s", fmt.Sprint("dw-browser observe: empty snapshot")))
 	}
+
+	observationID := snap.ObservationID
+	if observationID == "" {
+		observationID = btest.NewObservationID()
+	}
+	if evidenceDir == "" {
+		evidenceDir = sessionInfo.EvidenceRoot
+	}
+	if evidenceDir == "" {
+		evidenceDir = filepath.Join("evidence", "observations", flags.sessionID)
+	}
+	evidenceDir, err = filepath.Abs(evidenceDir)
+	if err != nil {
+		return CommandResult{}, commandError("observation", exitRunErr, fmt.Errorf("%s", fmt.Sprint(err)))
+	}
+	artifactPath := filepath.Join(evidenceDir, observationID+".json")
+	if !wantAll {
+		if identity, ok := impl.(interface {
+			SessionDocumentIdentity(context.Context) (int64, error)
+		}); ok && snap.DocumentID == 0 {
+			documentID, err := identity.SessionDocumentIdentity(ctx)
+			if err != nil {
+				return CommandResult{}, commandError("observation", exitRunErr, fmt.Errorf("dw-browser observe: document identity: %v\n", err))
+			}
+			snap.DocumentID = documentID
+		}
+		if err := browser.BindSessionObservation(sessionInfo, snap, observationID, artifactPath); err != nil {
+			return CommandResult{}, commandError("observation", exitRunErr, fmt.Errorf("%s", fmt.Sprint(err)))
+		}
+	}
+
 	// occluded 与 offscreen 是两种不同的"看不到句柄": offscreen 滚动可达,
 	// occluded 是在屏却被别的元素占住中心 —— 后者正是 UX 缺陷候选,
 	// 过去被静默丢弃, 现在始终计数 [BUG-OCCLUDED-SILENTLY-DROPPED]。
@@ -660,23 +558,19 @@ func runObserve(args []string) {
 	if wantHitAudit {
 		capable, ok := impl.(browser.HitAuditCapable)
 		if !ok {
-			fmt.Fprintln(os.Stderr, "dw-browser observe: --hit-audit is unavailable for this browser engine")
-			os.Exit(exitRunErr)
+			return CommandResult{}, commandError("observation", exitRunErr, fmt.Errorf("%s", fmt.Sprint("dw-browser observe: --hit-audit is unavailable for this browser engine")))
 		}
 		hitAudit, err = capable.AuditHitCoverage(ctx, snap.Refs)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "dw-browser observe: hit audit failed: %v\n", err)
-			os.Exit(exitRunErr)
+			return CommandResult{}, commandError("observation", exitRunErr, fmt.Errorf("dw-browser observe: hit audit failed: %v\n", err))
 		}
 		if hitAuditScope == hitAuditScopeAll {
 			if !hasOcclusionCensus {
-				fmt.Fprintln(os.Stderr, "dw-browser observe: --hit-audit --scope all is unavailable for this browser engine")
-				os.Exit(exitRunErr)
+				return CommandResult{}, commandError("observation", exitRunErr, fmt.Errorf("%s", fmt.Sprint("dw-browser observe: --hit-audit --scope all is unavailable for this browser engine")))
 			}
 			occludedFindings, auditErr := occlusionCapable.AuditOccludedInteractables(ctx)
 			if auditErr != nil {
-				fmt.Fprintf(os.Stderr, "dw-browser observe: occluded hit audit failed: %v\n", auditErr)
-				os.Exit(exitRunErr)
+				return CommandResult{}, commandError("observation", exitRunErr, fmt.Errorf("dw-browser observe: occluded hit audit failed: %v\n", auditErr))
 			}
 			hitAudit = append(hitAudit, occludedFindings...)
 		}
@@ -691,11 +585,11 @@ func runObserve(args []string) {
 	}
 
 	// — 瘦默认输出可见 elements；--all 改为完全无 ref 的 census —
-	listing, truncated := observeListing(snap, wantAll, topN, budget)
+	listing, truncated := observeListing(snap, wantAll, topN, budget, browser.Scenario(sessionInfo.Scenario))
 	output := map[string]interface{}{
 		"url":        snap.URL,
 		"title":      snap.PageTitle,
-		"user_state": buildUserState(snap, sessionInfo.PageURL),
+		"user_state": buildUserState(snap),
 	}
 	for key, value := range listing {
 		output[key] = value
@@ -814,75 +708,97 @@ func runObserve(args []string) {
 		output["tree"] = snap.Text
 	}
 
-	// — 加法: --out (截图落盘, 返回路径)；--annotate 叠加证据标注
-	// (browser chrome 仿真会话=遮挡区红描边; 供 evidence, 默认截图保 Witness 无提示独立性) —
-	if outFile != "" {
-		if shot, err2 := impl.Screenshot(ctx, wantAnnotate); err2 == nil {
-			if werr := os.WriteFile(outFile, shot, 0o644); werr == nil {
-				output["screenshot"] = outFile
-			} else {
-				fmt.Fprintf(os.Stderr, "dw-browser observe: write screenshot: %v\n", werr)
-			}
+	if outFile == "" {
+		outFile = filepath.Join(evidenceDir, observationID+".png")
+	}
+	outFile, err = filepath.Abs(outFile)
+	if err != nil {
+		return CommandResult{}, commandError("observation", exitRunErr, fmt.Errorf("%s", fmt.Sprint(err)))
+	}
+	shot, shotErr := impl.Screenshot(ctx, wantAnnotate)
+	obs := btest.BuildObservation(flags.sessionID, snap, shot, filepath.Join(evidenceDir, observationID+".png"), behaviorFromSessionInfo(sessionInfo), nil)
+	if obs.Visual != nil && outFile != obs.Visual.ScreenshotPath {
+		if err := os.MkdirAll(filepath.Dir(outFile), 0755); err != nil {
+			shotErr = err
+		} else if canonicalPNG, err := os.ReadFile(obs.Visual.ScreenshotPath); err != nil {
+			shotErr = err
+		} else if err := os.WriteFile(outFile, canonicalPNG, 0644); err != nil {
+			shotErr = err
 		}
 	}
-
-	// — 加法: --health (console/network/visible_errors 诊断/grader lens) —
+	obs.ID = observationID
+	obs.OperationID = observationID
+	obs.Scenario = string(sessionInfo.Scenario)
+	obs.BindActionHints(snap, browser.Scenario(sessionInfo.Scenario))
+	obs.Deterministic = sessionInfo.Policy.Deterministic
+	if obs.RuntimeRunID == "" {
+		obs.RuntimeRunID = sessionInfo.BrowserRunID
+	}
+	if obs.TargetID == "" {
+		obs.TargetID = sessionInfo.TargetID
+	}
+	obs.Page.ViewportW = int(snap.Viewport.Width)
+	obs.Page.ViewportH = int(snap.Viewport.Height)
+	var contentErr error
+	obs.Channels["content"] = btest.ChannelState{Status: "not-requested"}
+	if contentFormat != "" {
+		obs.Content, contentErr = btest.CollectContent(ctx, impl, contentFormat)
+		if contentErr != nil {
+			obs.Channels["content"] = btest.ChannelState{Status: "unavailable", Reason: contentErr.Error()}
+		} else {
+			obs.Channels["content"] = btest.ChannelState{Status: "captured"}
+		}
+	}
+	obs.Page.Engine = string(sessionInfo.Engine)
+	if obs.Page.Engine == "" {
+		obs.Page.Engine = "chrome"
+	}
 	if wantHealth {
-		health := map[string]interface{}{
-			"console_errors":   []btest.ConsoleEntry{},
-			"network_failures": []btest.NetworkEntry{},
-		}
-		// visible-error scan — on-screen error UI a human sees instantly but
-		// console/network telemetry MISSES (the "errs==0 but red banner" gap).
+		obs.Channels["console"] = btest.ChannelState{Status: "unavailable", Reason: "stateless session has no persistent console collector"}
+		obs.Channels["network"] = btest.ChannelState{Status: "unavailable", Reason: "stateless session has no persistent network collector"}
 		var vis []btest.VisibleErrorEntry
-		if err2 := impl.EvalJS(ctx, visibleErrorScanJS, &vis); err2 == nil && len(vis) > 0 {
-			health["visible_errors"] = vis
+		if scanErr := impl.EvalJS(ctx, visibleErrorScanJS, &vis); scanErr == nil {
+			obs.Telemetry = &btest.TelemetryState{VisibleErrors: vis}
+			obs.Channels["visible_errors"] = btest.ChannelState{Status: "captured"}
+		} else {
+			obs.Channels["visible_errors"] = btest.ChannelState{Status: "unavailable", Reason: scanErr.Error()}
 		}
-		health["_note"] = "console/network require persistent CDP; stateless CLI returns visible_errors (DOM scan) only"
-		output["telemetry"] = health
+	}
+	if err := btest.WriteObservation(artifactPath, obs); err != nil {
+		return CommandResult{}, commandError("observation", exitRunErr, fmt.Errorf("dw-browser observe: artifact: %v\n", err))
 	}
 
-	writeJSONOrStdout(output, jsonOut, "observe")
-	os.Exit(exitOK)
-}
-
-// printObserveHelp 打印 observe 的瘦默认 + 加法 flag 说明。
-func printObserveHelp() {
-	fmt.Fprintln(os.Stderr, "dw-browser observe — 感知当前会话 (SSOT 感知动词, 瘦默认 + 加法 flag)")
-	fmt.Fprintln(os.Stderr, "")
-	fmt.Fprintln(os.Stderr, "用法:")
-	fmt.Fprintln(os.Stderr, "  dw-browser observe --id X            三场景: 当前截图可见 elements@rN + bbox(CSS px)")
-	fmt.Fprintln(os.Stderr, "  dw-browser observe --id X --out m.png + 存截图 → {screenshot:\"<path>\"} (AI Read 图判 UX)")
-	fmt.Fprintln(os.Stderr, "  dw-browser observe --id X --health   + {telemetry:{console_errors,network_failures,visible_errors}}")
-	fmt.Fprintln(os.Stderr, "  dw-browser observe --id X --tree     + {tree:\"<全 a11y 文本>\"} (罕用)")
-	fmt.Fprintln(os.Stderr, "")
-	fmt.Fprintln(os.Stderr, "flag 自由组合 (加法, 非互斥):")
-	fmt.Fprintln(os.Stderr, "  --out <path>    截图落盘路径 (返回 screenshot 字段)")
-	fmt.Fprintln(os.Stderr, "  --annotate      配 --out: 证据标注截图 (chrome 仿真遮挡区红描边; 默认截图无标注)")
-	fmt.Fprintln(os.Stderr, "  --health        附健康通道 (诊断/grader lens)")
-	fmt.Fprintln(os.Stderr, "  --tree          附全 a11y 树文本")
-	fmt.Fprintln(os.Stderr, "  --all           调试: 全文档 census，仅 role/name；无 @rN、不铸新 refs、不可 act")
-	fmt.Fprintln(os.Stderr, "                  (只读普查: 既有 @rN 继续有效, 不因 --all 失效)")
-	fmt.Fprintln(os.Stderr, "  --hit-audit     对 **可见集全量** 做 5 点命中普查 (hit_audit_scope=visible_set,")
-	fmt.Fprintln(os.Stderr, "                  hit_audit_sampled=visible ≠ shown)，仅输出 hit_coverage < 5/5 的警示")
-	fmt.Fprintln(os.Stderr, "  --scope all     配 --hit-audit: 把审计扩到 observe 时因中心被遮挡而落选的元素,")
-	fmt.Fprintln(os.Stderr, "                  逐条给 occluded_by 遮挡者 (它们无 @ref) —— \"看得见却点不到\"的缺陷候选")
-	fmt.Fprintln(os.Stderr, "  --top <N>       elements 上限 (默认 20)")
-	fmt.Fprintln(os.Stderr, "  --budget <B>    elements 输出字节硬上限 (默认 4096)")
-	fmt.Fprintln(os.Stderr, "  --json <path>   整个 JSON 落盘 (默认 stdout)")
-	fmt.Fprintln(os.Stderr, "")
-	fmt.Fprintln(os.Stderr, "三个计数各说各的事 (同时出现, 互相可解释):")
-	fmt.Fprintln(os.Stderr, "  shown   本次真的打印了几个 (受 --top/--budget 约束; 未打印 ≠ 没句柄)")
-	fmt.Fprintln(os.Stderr, "  visible 当前截图可见集全量 = 已铸 @rN 数 = hit_audit 采样域")
-	fmt.Fprintln(os.Stderr, "  total   全文档可交互数; total - visible = offscreen (滚动可达)")
-	fmt.Fprintln(os.Stderr, "  occluded 在屏但中心被别的元素占住 → 落选可见集 (offscreen 的子集口径外,")
-	fmt.Fprintln(os.Stderr, "          既非屏外也非未渲染); --hit-audit --scope all 逐条点名遮挡者")
-	fmt.Fprintln(os.Stderr, "  截断时 omitted_by_role 逐 role 列出被省略数; 打印集按 role 轮转选,")
-	fmt.Fprintln(os.Stderr, "  单个大文案元素无法把别的 role(原生 select/checkbox) 整类挤出清单。")
-	fmt.Fprintln(os.Stderr, "")
-	fmt.Fprintln(os.Stderr, "证据关联: 每次输出带 run_id (会话稳定) + step (单调), 把截图↔a11y↔finding 对齐。")
-	fmt.Fprintln(os.Stderr, "三场景输出 viewport={width,height,dpr,scroll_x,scroll_y}; 截图像素 = CSS px × dpr。")
-	fmt.Fprintln(os.Stderr, "observe 后 act \"click @rN\" 仅接受刚看到且当前仍可见的 ref；看不见先 scroll，再 observe。")
+	if obs.Visual != nil && obs.Channels["structural"].Status == "captured" {
+		if err := browser.SaveObservedSession(sessionInfo, snap, sessionRefsForObservation(sessionInfo, snap, wantAll)); err != nil {
+			return CommandResult{}, commandError("observation", exitRunErr, fmt.Errorf("dw-browser observe: persist observation authority: %v\n", err))
+		}
+	} else {
+		output["actionable"] = false
+	}
+	output["schema"] = "dw.observe.ref.v2"
+	output["observation_id"] = obs.ID
+	output["observation_path"] = artifactPath
+	output["channels"] = obs.Channels
+	output["observation_state"] = obs.State
+	if obs.Content != nil {
+		output["content"] = obs.Content
+	}
+	if obs.Visual != nil {
+		output["screenshot"] = obs.Visual.ScreenshotPath
+	}
+	if shotErr != nil || obs.Visual == nil {
+		if shotErr == nil {
+			shotErr = fmt.Errorf("%s", obs.Channels["visual"].Reason)
+		}
+		return commandResult(output, exitRunErr), commandError("screenshot", exitRunErr, fmt.Errorf("screenshot unavailable: %w (partial artifact %s)", shotErr, artifactPath))
+	}
+	if obs.Channels["structural"].Status != "captured" {
+		return commandResult(output, exitRunErr), commandError("capture", exitRunErr, fmt.Errorf("structural observation pending: %s", obs.Channels["structural"].Reason))
+	}
+	if contentErr != nil {
+		return commandResult(output, exitRunErr), commandError("content", exitRunErr, contentErr)
+	}
+	return commandSuccess(output), nil
 }
 
 // behaviorFromSessionInfo 从 SessionInfo 构建 BehaviorState（无需连接浏览器）。
@@ -891,6 +807,9 @@ func behaviorFromSessionInfo(info *browser.SessionInfo) *btest.BehaviorState {
 	// stateless CLI 中最可靠的信息来源是 info.PageURL + info.Refs 计数。
 	// Tabs 需要通过 FetchChromeTargets 从 CDP 获取实时状态。
 	tabs := fetchTabsFromSession(info)
+	if tabs == nil {
+		return nil
+	}
 
 	activeTabID := ""
 	for _, t := range tabs {
@@ -928,18 +847,25 @@ func fetchTabsFromSession(info *browser.SessionInfo) []btest.TabState {
 
 	targets, err := browser.FetchChromeTargets(info.DebugPort)
 	if err != nil {
-		return []btest.TabState{}
+		return nil
 	}
 
 	tabs := make([]btest.TabState, 0, len(targets))
-	for i, t := range targets {
+	for _, t := range targets {
+		if !browser.IsDevToolsPageTarget(t) {
+			continue
+		}
+		targetURL, _ := t["url"].(string)
+		if !browser.IsUserPageTargetURL(targetURL) {
+			continue
+		}
 		targetID := browser.ExtractDevToolsTargetID(t)
 		url, _ := t["url"].(string)
 		title, _ := t["title"].(string)
 		active := targetID == info.TargetID
 		tabs = append(tabs, btest.TabState{
 			ID:     targetID,
-			Index:  i,
+			Index:  len(tabs),
 			URL:    url,
 			Title:  title,
 			Active: active,
@@ -954,45 +880,19 @@ func fetchTabsFromSession(info *browser.SessionInfo) []btest.TabState {
 
 // runDiff 对比两个 Observation JSON 文件。
 // dw-browser diff before.json after.json [--out diff.json]
-func runDiff(args []string) {
-	var outFile string
-	positional := make([]string, 0, 2)
-
-	for i := 0; i < len(args); i++ {
-		arg := args[i]
-		switch {
-		case arg == "--out" && i+1 < len(args):
-			outFile = args[i+1]
-			i++
-		case strings.HasPrefix(arg, "--out="):
-			outFile = arg[len("--out="):]
-		case arg == "--help" || arg == "-h":
-			fmt.Fprintln(os.Stderr, "usage: dw-browser diff before.json after.json [--out diff.json]")
-			os.Exit(exitOK)
-		default:
-			positional = append(positional, arg)
-		}
+func runDiffResult(args []string) (CommandResult, error) {
+	if len(args) != 2 {
+		return CommandResult{}, commandError("validation", exitRunErr, fmt.Errorf("diff requires exactly two observation paths"))
 	}
-
-	if len(positional) < 2 {
-		fmt.Fprintln(os.Stderr, "dw-browser diff: requires <before.json> <after.json>")
-		os.Exit(exitRunErr)
-	}
-
-	before, err := loadObservationFile(positional[0])
+	before, err := btest.LoadObservation(args[0])
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "dw-browser diff: %v\n", err)
-		os.Exit(exitRunErr)
+		return CommandResult{}, commandError("observation-load", exitRunErr, err)
 	}
-	after, err := loadObservationFile(positional[1])
+	after, err := btest.LoadObservation(args[1])
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "dw-browser diff: %v\n", err)
-		os.Exit(exitRunErr)
+		return CommandResult{}, commandError("observation-load", exitRunErr, err)
 	}
-
-	diff := btest.ComputeDiff(before, after)
-	writeJSONOrStdout(diff, outFile, "diff")
-	os.Exit(exitOK)
+	return commandSuccess(btest.ComputeDiff(before, after)), nil
 }
 
 // ============================================================
@@ -1000,183 +900,103 @@ func runDiff(args []string) {
 // ============================================================
 
 // runCheck 执行断言检查。
-// dw-browser check --id <session-id> --assert "expr" [--out result.json]
-// dw-browser check --id <session-id> --file baselines/app.yaml [--out results.json]
-// dw-browser check --observation obs.json --assert "expr" [--out result.json]
-func runCheck(args []string) {
-	if containsHelp(args) {
-		printTestingHelp()
-		os.Exit(exitOK)
-	}
+// dw-browser check --id <session-id> --assert "expr" [--output result.json]
+// dw-browser check --id <session-id> --file baselines/app.yaml [--output results.json]
+// dw-browser check --observation obs.json --assert "expr" [--output result.json]
+func runCheckResult(args []string) (CommandResult, error) {
 	autoLoadLLMEnv()
 	_, args = parseLLMFlags(args)
-	var assertExpr string
-	var specFile string
-	var obsFile string
-	var outFile string
-	var usingRaw string
-	clean := make([]string, 0, len(args))
-
+	var id, expression, file, observation, using string
 	for i := 0; i < len(args); i++ {
-		arg := args[i]
-		switch {
-		case arg == "--assert" && i+1 < len(args):
-			assertExpr = args[i+1]
-			i++
-		case strings.HasPrefix(arg, "--assert="):
-			assertExpr = arg[len("--assert="):]
-		case arg == "--file" && i+1 < len(args):
-			specFile = args[i+1]
-			i++
-		case strings.HasPrefix(arg, "--file="):
-			specFile = arg[len("--file="):]
-		case arg == "--observation" && i+1 < len(args):
-			obsFile = args[i+1]
-			i++
-		case strings.HasPrefix(arg, "--observation="):
-			obsFile = arg[len("--observation="):]
-		case arg == "--out" && i+1 < len(args):
-			outFile = args[i+1]
-			i++
-		case strings.HasPrefix(arg, "--out="):
-			outFile = arg[len("--out="):]
-		case arg == "--using" && i+1 < len(args):
-			usingRaw = args[i+1]
-			i++
-		case strings.HasPrefix(arg, "--using="):
-			usingRaw = arg[len("--using="):]
+		name, value, inline := strings.Cut(args[i], "=")
+		switch name {
+		case "--id", "--assert", "--file", "--observation", "--using":
 		default:
-			clean = append(clean, arg)
+			return CommandResult{}, commandError("validation", exitRunErr, fmt.Errorf("unsupported argument %q", args[i]))
+		}
+		if !inline {
+			if i+1 >= len(args) {
+				return CommandResult{}, commandError("validation", exitRunErr, fmt.Errorf("%s requires value", name))
+			}
+			i++
+			value = args[i]
+		}
+		switch name {
+		case "--id":
+			id = value
+		case "--assert":
+			expression = value
+		case "--file":
+			file = value
+		case "--observation":
+			observation = value
+		case "--using":
+			using = value
 		}
 	}
-
-	_, flags := parseCommonFlags(clean, "check")
-
-	// Tokenize --using once for consistent visual detection (substring matching
-	// would false-match values like "nonvisual"/"previsual").
+	if (id == "") == (observation == "") || (expression == "") == (file == "") {
+		return CommandResult{}, commandError("validation", exitRunErr, fmt.Errorf("check requires exactly one id/observation and one assert/file"))
+	}
 	var usingSlice []string
-	if usingRaw != "" {
-		for _, p := range strings.Split(usingRaw, ",") {
-			usingSlice = append(usingSlice, strings.TrimSpace(p))
+	if using != "" {
+		for _, part := range strings.Split(using, ",") {
+			usingSlice = append(usingSlice, strings.TrimSpace(part))
 		}
 	}
-
-	// Deterministic hard-lock honors BOTH the CLI flag and the attached session's
-	// persisted Policy.Deterministic (a baseline session locks determinism once at
-	// open). Under deterministic, --using visual is a HARD reject — the vision
-	// oracle is never activated, so a reproducible check can't silently invoke the
-	// internal LLM.
-	// determinism is a property of the attached session's scenario (app-test-baseline
-	// locks it at open); it is no longer a per-command flag.
-	deterministic := false
-	if flags.sessionID != "" {
-		if si, err := browser.LoadSession(flags.sessionID); err == nil && si.Policy.Deterministic {
-			deterministic = true
-		}
-	}
-	if deterministic && cliUsingContainsVisual(usingSlice) {
-		fmt.Fprintln(os.Stderr, "dw-browser check: deterministic mode: internal LLM disabled — --using visual rejected (open the session with --scenario app-test-explore/webvisit to enable the vision oracle)")
-		os.Exit(exitRunErr)
-	}
-
-	// 1. 获取 Observation
-	var obs *btest.Observation
-	if obsFile != "" {
-		var err error
-		obs, err = loadObservationFile(obsFile)
+	var specs []btest.AssertionSpec
+	var err error
+	if file != "" {
+		specs, err = loadAssertionSpecs(file)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "dw-browser check: %v\n", err)
-			os.Exit(exitRunErr)
+			return CommandResult{}, commandError("validation", exitRunErr, err)
 		}
-	} else if flags.sessionID != "" {
-		// observe 当前 session 状态
-		obs = observeSession(flags, "check")
-	} else {
-		fmt.Fprintln(os.Stderr, "dw-browser check: requires --id <session-id> or --observation <file>")
-		os.Exit(exitRunErr)
+	} else if err := btest.ValidateAssertion(expression); err != nil && !cliUsingContainsVisual(usingSlice) {
+		return CommandResult{}, commandError("validation", exitRunErr, err)
 	}
-
+	var obs *btest.Observation
+	if observation != "" {
+		obs, err = btest.LoadObservation(observation)
+	} else {
+		observed, observeErr := runObserveResult([]string{"--id", id})
+		if observeErr != nil {
+			return observed, observeErr
+		}
+		projection, ok := observed.Payload.(map[string]interface{})
+		if !ok {
+			return CommandResult{}, commandError("observation", exitRunErr, fmt.Errorf("observation projection unavailable"))
+		}
+		path, ok := projection["observation_path"].(string)
+		if !ok {
+			return CommandResult{}, commandError("observation", exitRunErr, fmt.Errorf("canonical path unavailable"))
+		}
+		obs, err = btest.LoadObservation(path)
+	}
+	if err != nil {
+		return CommandResult{}, commandError("observation-load", exitRunErr, err)
+	}
+	wantsVision := cliUsingContainsVisual(usingSlice)
+	for _, check := range specs {
+		wantsVision = wantsVision || cliUsingContainsVisual(check.Using)
+	}
+	if obs.Deterministic && wantsVision {
+		return CommandResult{}, commandError("validation", exitRunErr, fmt.Errorf("deterministic observation forbids internal LLM"))
+	}
 	engine := btest.AssertionEngine{}
-	// ROOT-C fix: DW_BROWSER_VISION_* env is CONFIG (where the endpoint is), NOT activation.
-	// Vision activates only on explicit per-call opt-in (--using visual), never from ambient
-	// env, so a deterministic `check` can never silently invoke the LLM oracle. The
-	// !deterministic guard is belt-and-suspenders — deterministic + visual already exited above.
-	if !deterministic && cliUsingContainsVisual(usingSlice) {
+	if wantsVision {
 		engine.Vision = btest.NewVisionOracle()
 	}
-	hasFail := false
-
-	// 2. 执行断言
-	if specFile != "" {
-		// 批量断言：从 baseline YAML 文件加载
-		specs, err := loadAssertionSpecs(specFile)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "dw-browser check: load spec: %v\n", err)
-			os.Exit(exitRunErr)
-		}
+	if file != "" {
 		results := engine.EvaluateAll(obs, specs)
-		for _, r := range results {
-			if r.Status == btest.StatusFail {
-				hasFail = true
-				break
+		var requiredResults []btest.AssertionResult
+		for i, result := range results {
+			if specs[i].Required == nil || *specs[i].Required {
+				requiredResults = append(requiredResults, result)
 			}
 		}
-		writeJSONOrStdout(results, outFile, "check")
-	} else if assertExpr != "" {
-		// 单条断言：--using 已在上方 tokenize，直接复用
-		if !deterministic && engine.Vision == nil && cliUsingContainsVisual(usingSlice) {
-			engine.Vision = btest.NewVisionOracle()
-		}
-		result := engine.EvaluateWithUsing(obs, assertExpr, usingSlice)
-		if result.Status == btest.StatusBlocked &&
-			strings.HasPrefix(result.Reason, "cannot parse assertion expression") &&
-			cliUsingContainsVisual(usingSlice) {
-			result = engine.EvaluateVisualOnly(obs, assertExpr, usingSlice)
-		}
-		if result.Status == btest.StatusFail {
-			hasFail = true
-		}
-		writeJSONOrStdout(result, outFile, "check")
-	} else {
-		fmt.Fprintln(os.Stderr, "dw-browser check: requires --assert <expr> or --file <spec.yaml>")
-		os.Exit(exitRunErr)
+		return commandResult(results, btest.CheckExitCode(requiredResults)), nil
 	}
-
-	if hasFail {
-		os.Exit(exitFail)
-	}
-	os.Exit(exitOK)
-}
-
-// observeSession 复用 observe 逻辑，从已有 session 采集 Observation。
-func observeSession(flags commonFlags, cmdName string) *btest.Observation {
-	sessionInfo, err := browser.LoadSession(flags.sessionID)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "dw-browser %s: %v\n", cmdName, err)
-		os.Exit(exitRunErr)
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	impl := connectSession(ctx, sessionInfo, cmdName, flags)
-	defer closeSessionCore(impl)
-	impl.RestoreRefsFromSession(sessionInfo.Refs)
-
-	snap, err := impl.SnapWithSessionMode(ctx, sessionInfo.SnapEpoch)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "dw-browser %s: snap failed: %v\n", cmdName, err)
-		os.Exit(exitRunErr)
-	}
-
-	screenshotData, _ := impl.Screenshot(ctx, false)
-	behavior := behaviorFromSessionInfo(sessionInfo)
-	telemetry := &btest.TelemetryState{
-		ConsoleErrors:   []btest.ConsoleEntry{},
-		NetworkFailures: []btest.NetworkEntry{},
-	}
-
-	return btest.BuildObservation(flags.sessionID, snap, screenshotData, "", behavior, telemetry)
+	result := engine.EvaluateWithUsing(obs, expression, usingSlice)
+	return commandResult(result, btest.CheckExitCode([]btest.AssertionResult{*result})), nil
 }
 
 // loadAssertionSpecs 从 YAML 文件加载断言规格列表。
@@ -1186,24 +1006,25 @@ func observeSession(flags commonFlags, cmdName string) *btest.Observation {
 func loadAssertionSpecs(path string) ([]btest.AssertionSpec, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("read %s: %w", path, err)
+		return nil, err
 	}
-
-	// 先尝试解析为 AssertionSpec 数组
-	var specs []btest.AssertionSpec
-	if err := yaml.Unmarshal(data, &specs); err == nil && len(specs) > 0 && specs[0].Assert != "" {
-		return specs, nil
+	var checks []btest.AssertionSpec
+	if err := btest.DecodeYAML(data, &checks); err != nil {
+		var baseline btest.BaselineRef
+		if err := btest.DecodeYAML(data, &baseline); err != nil {
+			return nil, err
+		}
+		checks = baseline.Invariants
 	}
-
-	// 再尝试解析为 BaselineRef（含 invariants 字段）
-	var baseline struct {
-		Invariants []btest.AssertionSpec `yaml:"invariants"`
+	if len(checks) == 0 {
+		return nil, fmt.Errorf("assertion file requires nonempty checks")
 	}
-	if err := yaml.Unmarshal(data, &baseline); err == nil && len(baseline.Invariants) > 0 {
-		return baseline.Invariants, nil
+	for _, check := range checks {
+		if err := btest.ValidateAssertion(check.Assert); err != nil {
+			return nil, err
+		}
 	}
-
-	return nil, fmt.Errorf("cannot parse assertion specs from %s: expected []AssertionSpec or baseline with invariants", path)
+	return checks, nil
 }
 
 // ============================================================
@@ -1212,329 +1033,154 @@ func loadAssertionSpecs(path string) ([]btest.AssertionSpec, error) {
 
 // runJourney 执行 BDD 旅程测试。
 // dw-browser journey --file tests/bdd/bs15-smoke.yaml --evidence tests/evidence/run-001 [--fail-fast]
-func runJourney(args []string) {
-	// Auto-source ~/.deepwork/testing-llm.env before flag parsing so vision oracle
-	// and NL planner are available without requiring the caller to source the file.
-	autoLoadLLMEnv()
-	_, args = parseLLMFlags(args)
-	var specFile string
-	var evidenceDir string
-	var baseURLOverride string
+func runJourneyResult(args []string) (output CommandResult, resultErr error) {
+	var file, evidenceRoot, baseURL string
 	failFast := false
-	clean := make([]string, 0, len(args))
-
+	clean := []string{}
 	for i := 0; i < len(args); i++ {
-		arg := args[i]
-		switch {
-		case arg == "--file" && i+1 < len(args):
-			specFile = args[i+1]
-			i++
-		case strings.HasPrefix(arg, "--file="):
-			specFile = arg[len("--file="):]
-		case arg == "--evidence" && i+1 < len(args):
-			evidenceDir = args[i+1]
-			i++
-		case strings.HasPrefix(arg, "--evidence="):
-			evidenceDir = arg[len("--evidence="):]
-		case arg == "--base-url" && i+1 < len(args):
-			baseURLOverride = args[i+1]
-			i++
-		case strings.HasPrefix(arg, "--base-url="):
-			baseURLOverride = arg[len("--base-url="):]
-		case arg == "--fail-fast":
-			failFast = true
-		case arg == "--help" || arg == "-h":
-			fmt.Fprintln(os.Stderr, "usage: dw-browser journey --file <spec.yaml> [--id <session> | --scenario app-test-baseline] [--evidence <dir>] [--base-url <url>] [--fail-fast]")
-			fmt.Fprintln(os.Stderr, "  --file       BDD YAML spec file")
-			fmt.Fprintln(os.Stderr, "               steps default to visual see-to-click; set step `mode: element` for legacy locator+auto-scroll")
-			fmt.Fprintln(os.Stderr, "  --evidence   directory to write evidence (default: evidence/<spec-id>)")
-			fmt.Fprintln(os.Stderr, "  --base-url   override spec environment.base_url (e.g. http://localhost:8080)")
-			fmt.Fprintln(os.Stderr, "  --fail-fast  stop on first step failure")
-			os.Exit(exitOK)
-		default:
-			clean = append(clean, arg)
-		}
-	}
-
-	_, flags := parseCommonFlags(clean, "journey")
-
-	// exit terminates the process. Reassigned once a one-shot ephemeral bc is
-	// created (below) so every exit path — including the ordinary PASS/FAIL
-	// exits, not just errors — actually cleans it up: os.Exit skips defers,
-	// so a bare os.Exit here would silently undo the "TASK C: Chrome-leak
-	// fix" comment further down (that defer only ever catches panics).
-	exit := func(code int) { os.Exit(code) }
-
-	if specFile == "" {
-		fmt.Fprintln(os.Stderr, "dw-browser journey: requires --file <spec.yaml>")
-		exit(exitRunErr)
-	}
-
-	spec, err := btest.LoadSpec(specFile)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "dw-browser journey: %v\n", err)
-		exit(exitRunErr)
-	}
-
-	if baseURLOverride != "" {
-		spec.Environment.BaseURL = baseURLOverride
-	}
-
-	// 从 spec.Environment 覆盖 flags 中未指定的 session mode
-	if !flags.modeExplicit && spec.Environment.Mode != "" {
-		if mode, ok := parseBrowserMode(spec.Environment.Mode); ok {
-			flags.mode = mode
-			flags.headless = mode == browser.ModeHeadless
-		}
-	}
-
-	if evidenceDir == "" {
-		evidenceDir = fmt.Sprintf("evidence/%s-%d", spec.ID, time.Now().UnixMilli())
-	}
-
-	// 决定 session：spec 需要 session（通过 --id 提供）或新建 ephemeral session
-	//
-	// 内部 LLM 激活由 *spec 内容* + 非 deterministic 决定，而非 ambient env
-	// （ROOT-C: env 是端点 CONFIG，不是激活信号）。determinism 需要 LLM 的
-	// spec 硬拒并显式报错，而非静默跳过。
-	//
-	// determinism 由 *附着 session 的持久 Policy.Deterministic* 决定（不再有 CLI flag）：
-	// 一次 app-test-baseline session 在 open 时锁定确定性，journey 复用它时硬锁必须仍然生效。
-	deterministic := false
-	var (
-		oneShotPolicy browser.SessionPolicy
-		oneShotMode   browser.BrowserMode
-	)
-	if flags.sessionID != "" {
-		if si, err := browser.LoadSession(flags.sessionID); err == nil && si.Policy.Deterministic {
-			deterministic = true
-		}
-	} else if spec.Environment.BaseURL != "" || spec.Environment.EntryURL != "" {
-		// Resolve the creating scenario before LLM preflight. Otherwise a new
-		// app-test-baseline journey could accidentally initialize a planner before
-		// its deterministic policy was derived.
-		_, oneShotPolicy, oneShotMode = scenarioPolicyOrExit(&flags, "journey")
-		deterministic = oneShotPolicy.Deterministic
-	}
-	specNeedsPlanner := specHasNLGoal(spec)
-	specNeedsVision := specHasVisualUsing(spec)
-	if deterministic && (specNeedsPlanner || specNeedsVision) {
-		fmt.Fprintln(os.Stderr, "dw-browser journey: deterministic mode: internal LLM disabled but spec requires NL planner / visual oracle")
-		exit(exitRunErr)
-	}
-	// Build planner once — shared across executor calls (both executors reject NL
-	// goals when this is nil). nil unless the spec has NL goal steps and
-	// determinism is off — so under deterministic the executors' planner is nil too.
-	var journeyPlanner *btest.Planner
-	if !deterministic && specNeedsPlanner {
-		journeyPlanner = btest.NewPlanner()
-	}
-
-	var executor btest.ActionExecutor
-	if flags.sessionID != "" {
-		// 连接已有 session
-		sessionInfo, loadErr := browser.LoadSession(flags.sessionID)
-		if loadErr != nil {
-			fmt.Fprintf(os.Stderr, "dw-browser journey: %v\n", loadErr)
-			exit(exitRunErr)
-		}
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-		defer cancel()
-
-		impl := connectSession(ctx, sessionInfo, "journey", flags)
-		impl.RestoreRefsFromSession(sessionInfo.Refs)
-
-		executor = &cliActionExecutor{
-			sessionID:   flags.sessionID,
-			sessionInfo: sessionInfo,
-			impl:        impl,
-			ctx:         ctx,
-			planner:     journeyPlanner,
-		}
-		defer closeSessionCore(impl)
-	} else if spec.Environment.BaseURL != "" || spec.Environment.EntryURL != "" {
-		// 新建 one-shot session（从 spec 的 entry URL）→ 无 --id 继承, 故 --scenario 必选。
-		// 用不改 mode 的 scenarioPolicyOrExit: journey 的 render 仍走 spec.Environment.Mode
-		// / --mode 优先级；仅当二者都未给时, 才落到场景默认 render。
-		if !flags.modeExplicit && spec.Environment.Mode == "" {
-			flags.mode = oneShotMode
-			flags.headless = oneShotMode == browser.ModeHeadless
-		}
-		entryURL := joinURL(spec.Environment.BaseURL, spec.Environment.EntryURL)
-		// resolveProfileID (not a bare Sprintf): --ephemeral must produce an
-		// "ephemeral-"-prefixed profile ID, or cleanupEphemeral below silently
-		// no-ops (RemoveBrowserCLIEphemeralProfile only deletes that prefix) —
-		// runtime-verified this was leaking even after the exit-closure fix,
-		// because the profile was always named "journey-<spec>-<ts>" and never
-		// actually eligible for cleanup regardless of --ephemeral.
-		profileID := resolveProfileID(flags, fmt.Sprintf("journey-%s-%d", spec.ID, time.Now().UnixMilli()))
-		browserOpts := browserOptionsFromFlags(flags)
-		bc := newBrowserCore(profileID, browserOpts...)
-		applyInteractionScenario(bc, flags.scenario)
-		// Mirror dw-browser open: persona device metrics (dpr/mobile emulation)
-		// must be replayed before the first navigation, and browser-chrome sim
-		// enabled, or the journey browser diverges from open on the same persona
-		// (a11y tree, svh/innerHeight facts, keyboard simulation availability).
-		replayViewportProfile(bc, resolveSessionPresetID(flags), flags.viewportW, flags.viewportH, flags.personaTouch, "journey")
-		if bcc, ok := bc.(browser.BrowserChromeCapable); ok {
-			if bcc.EnableBrowserChromeSim() {
-				vfCtx, vfCancel := context.WithTimeout(context.Background(), 30*time.Second)
-				err := bcc.ApplyViewportFacts(vfCtx, false, true)
-				vfCancel()
-				if err != nil {
-					fmt.Fprintf(os.Stderr, "dw-browser journey: establish viewport facts: %v\n", err)
+		name, value, inline := strings.Cut(args[i], "=")
+		switch name {
+		case "--file", "--evidence", "--base-url":
+			if !inline {
+				if i+1 >= len(args) {
+					return output, commandError("validation", exitRunErr, fmt.Errorf("%s requires value", name))
 				}
+				i++
+				value = args[i]
 			}
-		}
-
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-		defer cancel()
-
-		// TASK C: Chrome-leak fix — wrap ephemeral cleanup in a panic-recovering defer.
-		// Without the recover, a panic inside the journey runner would unwind past the
-		// deferred cleanup without executing it, leaving a detached Chrome process behind
-		// and eventually exhausting available CDP ports.
-		defer func() {
-			if r := recover(); r != nil {
-				fmt.Fprintf(os.Stderr, "dw-browser journey: recovered panic, cleaning up Chrome: %v\n", r)
+			switch name {
+			case "--file":
+				file = value
+			case "--evidence":
+				evidenceRoot = value
+			case "--base-url":
+				baseURL = value
 			}
-			bc.Close(ctx)
-			cleanupEphemeral(profileID)
-		}()
-		// The panic-recover defer above only fires on an actual panic — os.Exit
-		// (used by every ordinary PASS/FAIL/error exit below) skips defers
-		// entirely, so it never ran on the common paths. Route all exits
-		// through this closure instead so cleanup is guaranteed either way.
-		exit = func(code int) {
-			bc.Close(ctx)
-			cleanupEphemeral(profileID)
-			os.Exit(code)
-		}
-
-		// FIX-J1: wire telemetry collector BEFORE Navigate so load-time events are captured.
-		// Strategy: prefer the browser-level CDP context (browserCtx) which is the primary
-		// target context and receives events for the initial navigation. The active-target
-		// context from TargetTracker is the same object before first navigation, so either
-		// works — but browserCtx is always non-nil and stable across target switches.
-		var journeyTelemetry *browser.TelemetryCollector
-		if prov, ok := bc.(browser.CDPContextProvider); ok {
-			if cdpCtx := prov.CDPContext(); cdpCtx != nil {
-				journeyTelemetry = browser.NewTelemetryCollector(cdpCtx)
+		case "--fail-fast":
+			if inline {
+				valueBool, err := strconv.ParseBool(value)
+				if err != nil {
+					return output, commandError("validation", exitRunErr, err)
+				}
+				failFast = valueBool
+			} else {
+				failFast = true
 			}
+		default:
+			clean = append(clean, args[i])
 		}
-
-		// 导航到入口 URL
-		navSnap, navErr := bc.Navigate(ctx, entryURL)
-		if navErr != nil {
-			fmt.Fprintf(os.Stderr, "dw-browser journey: navigate to %s: %v\n", entryURL, navErr)
-			exit(exitRunErr)
-		}
-		// 进程内 open→act 路径：policy 由 scenario 导出（无持久 session）。
-		navURL := entryURL
-		if navSnap != nil && navSnap.URL != "" {
-			navURL = navSnap.URL
-		}
-		bc.SetPolicy(oneShotPolicy, navURL)
-
-		executor = &oneshotActionExecutor{impl: bc, ctx: ctx, telemetry: journeyTelemetry, planner: journeyPlanner}
-	} else {
-		fmt.Fprintln(os.Stderr, "dw-browser journey: requires --id <session-id> or spec.environment.base_url")
-		exit(exitRunErr)
 	}
-
-	runner, err := btest.NewRunner(executor, evidenceDir)
+	if file == "" {
+		return output, commandError("validation", exitRunErr, fmt.Errorf("journey requires file"))
+	}
+	spec, err := btest.LoadSpec(file)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "dw-browser journey: create runner: %v\n", err)
-		exit(exitRunErr)
+		return output, commandError("validation", exitRunErr, err)
+	}
+	if baseURL != "" {
+		spec.Environment.BaseURL = baseURL
+	}
+	positional, flags, err := parseCommonFlagsE(clean, "journey")
+	if err != nil || len(positional) != 0 {
+		return output, commandError("validation", exitRunErr, fmt.Errorf("journey arguments: %v %v", positional, err))
+	}
+	if evidenceRoot == "" {
+		evidenceRoot = filepath.Join("evidence", "journeys", spec.ID)
+	}
+	if flags.sessionID != "" && spec.Environment.CleanSession {
+		return output, commandError("validation", exitRunErr, fmt.Errorf("clean_session requires owned fresh creation, not attached session"))
+	}
+	if spec.Environment.CleanSession && flags.profileID != "" {
+		return output, commandError("validation", exitRunErr, fmt.Errorf("clean_session cannot reuse persistent profile"))
+	}
+	ownedID := ""
+	if flags.sessionID == "" {
+		entry := joinURL(spec.Environment.BaseURL, spec.Environment.EntryURL)
+		if entry == "" {
+			return output, commandError("validation", exitRunErr, fmt.Errorf("creation requires environment base_url/entry_url"))
+		}
+		if _, policy, err := resolveScenarioE(&flags, "journey"); err != nil {
+			return output, commandError("validation", exitRunErr, err)
+		} else if policy.Deterministic && specHasVisualUsing(spec) {
+			return output, commandError("validation", exitRunErr, fmt.Errorf("baseline forbids internal LLM"))
+		}
+		ownedID = "journey-" + btest.NewObservationID()
+		creation := append([]string{entry, "--id", ownedID, "--evidence", evidenceRoot}, clean...)
+		if spec.Environment.Mode != "" && !flags.modeExplicit {
+			creation = append(creation, "--mode", spec.Environment.Mode)
+		}
+		if spec.Environment.Client != "" && flags.engine == "" {
+			creation = append(creation, "--engine", spec.Environment.Client)
+		}
+		if spec.Environment.Viewport != "" && !flags.hasViewport {
+			creation = append(creation, "--viewport", spec.Environment.Viewport)
+		}
+		created, err := runOpenResult(creation)
+		if err != nil || created.Code != exitOK {
+			return created, err
+		}
+		flags.sessionID = ownedID
+		defer func() {
+			closed, err := runCloseResult([]string{"--id", ownedID})
+			if err != nil || closed.Code != exitOK {
+				output.Code = exitRunErr
+				resultErr = &CommandError{Phase: "cleanup", DispatchState: "unknown", Recovery: "inspect only owned session " + ownedID, Code: exitRunErr, Cause: fmt.Errorf("owned journey close failed: %v", err)}
+			}
+		}()
+	}
+	info, err := browser.LoadSession(flags.sessionID)
+	if err != nil {
+		return output, commandError("session-load", exitRunErr, err)
+	}
+	if ownedID == "" {
+		if spec.Environment.Mode != "" && spec.Environment.Mode != string(info.Mode) {
+			return output, commandError("environment", exitRunErr, fmt.Errorf("attached mode does not match declared environment"))
+		}
+		if spec.Environment.Client != "" && spec.Environment.Client != string(browser.NormalizeEngine(info.Engine)) {
+			return output, commandError("environment", exitRunErr, fmt.Errorf("attached engine does not match declared environment"))
+		}
+		if spec.Environment.Viewport != "" && spec.Environment.Viewport != fmt.Sprintf("%dx%d", info.ViewportW, info.ViewportH) {
+			return output, commandError("environment", exitRunErr, fmt.Errorf("attached viewport does not match declared environment"))
+		}
+	}
+	wantsVision := specHasVisualUsing(spec)
+	if info.Policy.Deterministic && wantsVision {
+		return output, commandError("validation", exitRunErr, fmt.Errorf("baseline forbids internal LLM"))
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 70*time.Minute)
+	defer cancel()
+	impl, err := connectSessionE(ctx, info, "journey", commonFlags{sessionID: info.SessionID})
+	if err != nil {
+		return output, commandError("attachment", exitRunErr, err)
+	}
+	defer closeSessionCore(impl)
+	executor := &cliActionExecutor{sessionID: info.SessionID, sessionInfo: info, impl: impl, ctx: ctx}
+	runner, err := btest.NewRunner(executor, evidenceRoot)
+	if err != nil {
+		return output, commandError("evidence", exitRunErr, err)
 	}
 	runner.SetFailFast(failFast)
-	// Vision oracle activates only when the spec explicitly opts in (using:[visual])
-	// and determinism is off (CLI flag OR persisted session policy). Deterministic +
-	// visual specs already errored above.
-	if !deterministic && specNeedsVision {
+	if wantsVision {
+		autoLoadLLMEnv()
 		runner.SetVision(btest.NewVisionOracle())
 	}
-
-	// Use a generous timeout (70 min) to accommodate long AI research turns
-	// that can each take 10+ minutes. Individual step timeouts are governed by
-	// spec wait.timeout_ms; this outer deadline is a last-resort safety net.
-	ctx2, cancel2 := context.WithTimeout(context.Background(), 70*time.Minute)
-	defer cancel2()
-
-	result, err := runner.Run(ctx2, spec)
+	result, err := runner.Run(ctx, spec)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "dw-browser journey: run error: %v\n", err)
-		exit(exitRunErr)
+		return commandResult(result, exitRunErr), &CommandError{Phase: "journey", DispatchState: "unknown", Recovery: "inspect canonical evidence; observe before further input; do not replay mutating actions", Code: exitRunErr, Cause: err}
 	}
-
-	enc, _ := json.MarshalIndent(result, "", "  ")
-	fmt.Println(string(enc))
-
+	code := exitRunErr
 	switch result.Status {
-	case btest.StatusPass:
-		exit(exitOK)
+	case btest.StatusPass, btest.StatusDelivered:
+		code = exitOK
 	case btest.StatusFail:
-		exit(exitFail)
-	default:
-		exit(exitRunErr)
+		code = exitFail
 	}
+	return commandResult(result, code), nil
 }
 
 // ============================================================
 // § ActionExecutor 实现 — session 模式
 // ============================================================
-
-// actWithPreDispatchRetry executes attempt and, only while the engine proves
-// the failure died before dispatch (typed validation rejections: stale refs
-// after reload/navigation, targets below the fold), scrolls the named remedy
-// into view, settles for the a11y rebuild, refreshes the observation, and
-// retries. Post-dispatch and unknown-stage failures are never replayed.
-func actWithPreDispatchRetry(
-	ctx context.Context,
-	action string,
-	attempt func() error,
-	impl browser.BrowserCore,
-	snap func() error,
-) error {
-	err := attempt()
-	for retries := 0; err != nil && actionFailedBeforeDispatch(impl) && retries < 5; retries++ {
-		if scrollAction := scrollRecoveryAction(action); scrollAction != "" {
-			// The see-to-click rejection names the remedy: scroll, then observe
-			// again. scrollinto is a view-only gesture; the fresh observation
-			// grants the target into the visible set on its own merits.
-			_, _ = impl.Act(ctx, scrollAction, false)
-		}
-		// Chrome recomputes the a11y tree lazily after a programmatic scroll:
-		// an immediate snapshot can still carry the pre-scroll offscreen tree.
-		time.Sleep(600 * time.Millisecond)
-		if snap != nil {
-			if snapErr := snap(); snapErr != nil {
-				break
-			}
-		}
-		err = attempt()
-	}
-	return err
-}
-
-// scrollRecoveryAction derives the explicit scroll gesture from an action's
-// selector, when the action is a pointable op on a #testid/#id target.
-func scrollRecoveryAction(action string) string {
-	fields := strings.Fields(action)
-	if len(fields) < 2 {
-		return ""
-	}
-	switch fields[0] {
-	case "click", "fill", "type", "hover", "focus", "check", "uncheck", "press", "select":
-	default:
-		return ""
-	}
-	target := fields[1]
-	if strings.HasPrefix(target, "#") && len(target) > 1 && !strings.ContainsAny(target, `'"`) {
-		return "scrollinto " + target
-	}
-	return ""
-}
 
 // cliActionExecutor 连接已有 session 的 ActionExecutor 实现。
 type cliActionExecutor struct {
@@ -1542,351 +1188,100 @@ type cliActionExecutor struct {
 	sessionInfo *browser.SessionInfo
 	impl        browser.SessionCore
 	ctx         context.Context
-	planner     *btest.Planner // nil when LLM not configured; NL goals fail gracefully
 }
 
-func (e *cliActionExecutor) Execute(ctx context.Context, action string) error {
-	return e.executeWithMode(ctx, action, browser.InteractionModeVisual)
+func (e *cliActionExecutor) Execute(ctx context.Context, request browser.Action) (browser.Outcome, error) {
+	return e.ExecuteWithMode(ctx, request, browser.InteractionModeVisual)
 }
-
-func (e *cliActionExecutor) ExecuteWithMode(ctx context.Context, action string, mode browser.InteractionMode) error {
-	return e.executeWithMode(ctx, action, mode)
-}
-
-func (e *cliActionExecutor) executeWithMode(ctx context.Context, action string, mode browser.InteractionMode) error {
-	trimmed := strings.TrimSpace(action)
-
-	// Direct URL navigation — deterministic fast path.
-	if rest, ok := strings.CutPrefix(strings.ToLower(trimmed), "navigate "); ok {
-		target := strings.TrimSpace(trimmed[len(trimmed)-len(rest):]) // preserve original case
-		if strings.HasPrefix(target, "http://") || strings.HasPrefix(target, "https://") || strings.HasPrefix(target, "/") {
-			if _, err := e.impl.Navigate(ctx, target); err != nil {
-				return fmt.Errorf("navigate %s: %w", target, err)
-			}
-			return nil
+func (e *cliActionExecutor) ExecuteWithMode(ctx context.Context, request browser.Action, mode browser.InteractionMode) (browser.Outcome, error) {
+	capability, ok := e.impl.(browser.TypedActionCapable)
+	if !ok {
+		return browser.Outcome{Phase: "validation", DispatchState: "not-dispatched"}, fmt.Errorf("typed action kernel unavailable")
+	}
+	return executePersistedSessionAction(e.sessionInfo, request, func(operationID string) {
+		if setter, ok := e.impl.(interface{ SetSessionOperationID(string) }); ok {
+			setter.SetSessionOperationID(operationID)
 		}
-	}
-	switch strings.ToLower(trimmed) {
-	case "wait", "noop", "none":
-		return nil
-	}
-
-	// NL goal — route through LLM planner when configured. In deterministic /
-	// llm-off mode the planner is nil; reject explicitly rather than silently
-	// feeding a natural-language goal to the structural action engine.
-	if isNLGoal(trimmed) {
-		if e.planner == nil {
-			return fmt.Errorf("deterministic/llm-off: NL goal %q rejected, use structural action", trimmed)
-		}
-		return e.executeNLGoal(ctx, trimmed, mode)
-	}
-
-	return actWithPreDispatchRetry(ctx, action, func() error {
-		return e.executeStructuredActionOnce(ctx, action, mode)
-	}, e.impl, func() error {
-		_, snapErr := e.impl.Snap(ctx)
-		return snapErr
+	}, func() (*browser.Snapshot, browser.Outcome, browser.ActionFidelityReport, error) {
+		snap, outcome, err := capability.ExecuteAction(ctx, request, false, true, mode)
+		return snap, outcome, actionFidelityReport(e.impl), err
 	})
 }
-
-func (e *cliActionExecutor) executeStructuredActionOnce(ctx context.Context, action string, mode browser.InteractionMode) error {
-	if mode == browser.InteractionModeElement {
-		capable, ok := e.impl.(browser.SessionInteractionModeActCapable)
-		if !ok {
-			return fmt.Errorf("mode: element is unavailable for this browser engine")
-		}
-		_, err := capable.ActWithSessionInteractionMode(ctx, action, false, mode)
-		return err
-	}
-	_, err := e.impl.ActWithSessionMode(ctx, action, false)
-	return err
-}
-
-// executeNLGoal decomposes a natural-language goal into browser steps via the
-// LLM Planner (skill-first, planner fallback — same strategy as `dw-browser do`).
-func (e *cliActionExecutor) executeNLGoal(ctx context.Context, goal string, mode browser.InteractionMode) error {
-	snap, _ := e.impl.SnapWithSessionMode(ctx, e.sessionInfo.SnapEpoch)
-	var structural *btest.StructuralState
-	pageURL := e.sessionInfo.PageURL
-	if snap != nil {
-		structural = doStructuralFromSnap(snap)
-		if strings.TrimSpace(snap.URL) != "" {
-			pageURL = snap.URL
-		}
-	}
-
-	var plan *btest.PlanResult
-	if steps := lookupSkillRecipe(pageURL, goal); steps != nil {
-		plan = &btest.PlanResult{Goal: goal, Steps: steps}
-	} else {
-		var err error
-		plan, err = e.planner.Plan(ctx, goal, structural)
-		if err != nil {
-			return fmt.Errorf("nl-plan %q: %w", goal, err)
-		}
-	}
-
-	for _, step := range plan.Steps {
-		switch strings.ToLower(strings.TrimSpace(step.Action)) {
-		case "wait", "noop", "none":
-			// The real synchronization is represented by step.Wait.
-		default:
-			if err := e.executeStructuredActionOnce(ctx, step.Action, mode); err != nil {
-				return fmt.Errorf("nl-exec %q → step %q: %w", goal, step.Description, err)
-			}
-		}
-		if step.Wait != "" {
-			if err := e.Wait(ctx, step.Wait, 10000); err != nil {
-				return fmt.Errorf("nl-exec %q → wait %q: %w", goal, step.Wait, err)
-			}
-		}
-	}
-	return nil
-}
-
-func (e *cliActionExecutor) Wait(ctx context.Context, condition string, timeoutMs int) error {
-	if timeoutMs <= 0 {
-		timeoutMs = 15000
-	}
-	deadline := time.Now().Add(time.Duration(timeoutMs) * time.Millisecond)
-	waitCtx, cancel := context.WithDeadline(ctx, deadline)
-	defer cancel()
-	return runWaitCondition(waitCtx, e.impl, condition)
-}
-
 func (e *cliActionExecutor) Snapshot(ctx context.Context) (*browser.Snapshot, error) {
+	e.sessionInfo.SnapEpoch++
 	return e.impl.SnapWithSessionMode(ctx, e.sessionInfo.SnapEpoch)
 }
-
 func (e *cliActionExecutor) Screenshot(ctx context.Context) ([]byte, error) {
 	return e.impl.Screenshot(ctx, false)
 }
-
-func (e *cliActionExecutor) GetSessionState(_ context.Context) (*btest.BehaviorState, error) {
-	return behaviorFromSessionInfo(e.sessionInfo), nil
+func (e *cliActionExecutor) GetSessionState(context.Context) (*btest.BehaviorState, error) {
+	state := behaviorFromSessionInfo(e.sessionInfo)
+	if state == nil {
+		return nil, fmt.Errorf("session behavior unavailable")
+	}
+	return state, nil
 }
-
-func (e *cliActionExecutor) GetTelemetry(_ context.Context) (*btest.TelemetryState, error) {
-	// TODO: session-mode telemetry — requires a persistent CDP connection across stateless CLI calls.
-	// P1: telemetry requires persistent CDP connection, not available in stateless CLI mode.
-	return &btest.TelemetryState{
-		ConsoleErrors:   []btest.ConsoleEntry{},
-		NetworkFailures: []btest.NetworkEntry{},
-	}, nil
+func (e *cliActionExecutor) GetTelemetry(context.Context) (*btest.TelemetryState, error) {
+	return nil, fmt.Errorf("stateless session telemetry unavailable")
 }
-
 func (e *cliActionExecutor) CollectRegions(ctx context.Context) ([]btest.RegionSnap, error) {
-	return btest.CollectRegionsViaEval(func(expr string, result interface{}) error {
-		return e.impl.EvalJS(ctx, expr, result)
+	return btest.CollectRegionsViaEval(func(expr string, result any) error { return e.impl.EvalJS(ctx, expr, result) })
+}
+func (e *cliActionExecutor) PrepareObservation(ctx context.Context, snap *browser.Snapshot, id, path string) error {
+	if identity, ok := e.impl.(interface {
+		SessionDocumentIdentity(context.Context) (int64, error)
+	}); ok && snap.DocumentID == 0 {
+		documentID, err := identity.SessionDocumentIdentity(ctx)
+		if err != nil {
+			return err
+		}
+		snap.DocumentID = documentID
+	}
+	return browser.BindSessionObservation(e.sessionInfo, snap, id, path)
+}
+func (e *cliActionExecutor) CommitObservation(ctx context.Context, snap *browser.Snapshot) error {
+	return browser.SaveObservedSession(e.sessionInfo, snap, browser.SessionRefsFromSnapshot(snap, true))
+}
+func (e *cliActionExecutor) ResizeViewport(ctx context.Context, w, h int) error {
+	if syncer, ok := e.impl.(browser.LiveViewportSyncer); ok {
+		if err := syncer.SetLiveViewport(w, h, 1, false); err != nil {
+			return err
+		}
+		e.sessionInfo.ViewportW = w
+		e.sessionInfo.ViewportH = h
+		browser.InvalidateSessionObservation(e.sessionInfo)
+		return browser.SaveSession(e.sessionInfo)
+	}
+	return fmt.Errorf("viewport mutation unavailable")
+}
+func (e *cliActionExecutor) CollectProbe(ctx context.Context, p btest.ProbeSpec) (btest.ProbeFact, error) {
+	return btest.CollectProbe(ctx, p, func(script string, result any) error { return e.impl.EvalJS(ctx, script, result) }, func() error {
+		info, err := browser.LoadSession(e.sessionID)
+		if err != nil {
+			return err
+		}
+		if err := browser.SessionAllowsAIInput(info); err != nil {
+			return err
+		}
+		var url string
+		if err := e.impl.EvalJS(ctx, "window.location.href", &url); err != nil {
+			return err
+		}
+		decision := info.Policy.EvaluateAct("eval", url)
+		if !decision.Allowed {
+			return fmt.Errorf("%s", decision.Reason)
+		}
+		if err := browser.ApplySessionIntervention(e.sessionInfo, fmt.Sprintf("probe-%s-%d", p.ID, time.Now().UnixNano()), p.Kind); err != nil {
+			return err
+		}
+		return browser.SaveSession(e.sessionInfo)
+	}, func() (bool, error) {
+		info, err := browser.LoadSession(e.sessionID)
+		if err != nil {
+			return true, err
+		}
+		return info.RedactFormValues, nil
 	})
-}
-
-// ============================================================
-// § ActionExecutor 实现 — one-shot 模式
-// ============================================================
-
-// oneshotActionExecutor 包装 BrowserCore 的 ActionExecutor 实现（无 session 文件）。
-type oneshotActionExecutor struct {
-	impl      browser.BrowserCore
-	ctx       context.Context
-	telemetry *browser.TelemetryCollector
-	planner   *btest.Planner // nil when LLM not configured
-}
-
-func (e *oneshotActionExecutor) Execute(ctx context.Context, action string) error {
-	return e.executeWithMode(ctx, action, browser.InteractionModeVisual)
-}
-
-func (e *oneshotActionExecutor) ExecuteWithMode(ctx context.Context, action string, mode browser.InteractionMode) error {
-	return e.executeWithMode(ctx, action, mode)
-}
-
-func (e *oneshotActionExecutor) executeWithMode(ctx context.Context, action string, mode browser.InteractionMode) error {
-	trimmed := strings.TrimSpace(action)
-
-	// Direct URL navigation — deterministic fast path.
-	if rest, ok := strings.CutPrefix(strings.ToLower(trimmed), "navigate "); ok {
-		target := strings.TrimSpace(trimmed[len(trimmed)-len(rest):]) // preserve original case
-		if strings.HasPrefix(target, "http://") || strings.HasPrefix(target, "https://") || strings.HasPrefix(target, "/") {
-			if _, err := e.impl.Navigate(ctx, target); err != nil {
-				return fmt.Errorf("navigate %s: %w", target, err)
-			}
-			return nil
-		}
-	}
-	switch strings.ToLower(trimmed) {
-	case "wait", "noop", "none":
-		return nil
-	}
-
-	// NL goal — route through LLM planner when configured. In deterministic /
-	// llm-off mode the planner is nil; reject explicitly rather than silently
-	// feeding a natural-language goal to the structural action engine.
-	if isNLGoal(trimmed) {
-		if e.planner == nil {
-			return fmt.Errorf("deterministic/llm-off: NL goal %q rejected, use structural action", trimmed)
-		}
-		return e.executeNLGoal(ctx, trimmed, mode)
-	}
-
-	return actWithPreDispatchRetry(ctx, action, func() error {
-		return e.executeStructuredActionOnce(ctx, action, mode)
-	}, e.impl, func() error {
-		_, snapErr := e.impl.Snap(ctx)
-		return snapErr
-	})
-}
-
-func (e *oneshotActionExecutor) executeStructuredActionOnce(ctx context.Context, action string, mode browser.InteractionMode) error {
-	if mode == browser.InteractionModeElement {
-		capable, ok := e.impl.(browser.InteractionModeActCapable)
-		if !ok {
-			return fmt.Errorf("mode: element is unavailable for this browser engine")
-		}
-		_, err := capable.ActWithInteractionMode(ctx, action, false, mode)
-		return err
-	}
-	_, err := e.impl.Act(ctx, action, false)
-	return err
-}
-
-// executeNLGoal decomposes a natural-language goal into browser steps via the Planner.
-func (e *oneshotActionExecutor) executeNLGoal(ctx context.Context, goal string, mode browser.InteractionMode) error {
-	snap, _ := e.impl.Snap(ctx)
-	var structural *btest.StructuralState
-	if snap != nil {
-		structural = doStructuralFromSnap(snap)
-	}
-
-	plan, err := e.planner.Plan(ctx, goal, structural)
-	if err != nil {
-		return fmt.Errorf("nl-plan %q: %w", goal, err)
-	}
-
-	for _, step := range plan.Steps {
-		switch strings.ToLower(strings.TrimSpace(step.Action)) {
-		case "wait", "noop", "none":
-			// The real synchronization is represented by step.Wait.
-		default:
-			if err := e.executeStructuredActionOnce(ctx, step.Action, mode); err != nil {
-				return fmt.Errorf("nl-exec %q → step %q: %w", goal, step.Description, err)
-			}
-		}
-		if step.Wait != "" {
-			if err := e.Wait(ctx, step.Wait, 10000); err != nil {
-				return fmt.Errorf("nl-exec %q → wait %q: %w", goal, step.Wait, err)
-			}
-		}
-	}
-	return nil
-}
-
-func (e *oneshotActionExecutor) Wait(ctx context.Context, condition string, timeoutMs int) error {
-	if timeoutMs <= 0 {
-		timeoutMs = 15000
-	}
-	deadline := time.Now().Add(time.Duration(timeoutMs) * time.Millisecond)
-	waitCtx, cancel := context.WithDeadline(ctx, deadline)
-	defer cancel()
-	return runWaitCondition(waitCtx, e.impl, condition)
-}
-
-// ResizeViewport implements btest.MutationExecutor so the journey runner uses
-// a clean viewport resize path instead of falling back to the JS-based path
-// (which fails because ParseAction lowercases the entire action string,
-// corrupting "javascript:window.resizeTo(…)" → unknown operation). [FIX-J3b]
-func (e *oneshotActionExecutor) ResizeViewport(ctx context.Context, width, height int) error {
-	// Prefer SetLiveViewport when the impl supports it (concrete browserCoreImpl does).
-	if lvs, ok := e.impl.(browser.LiveViewportSyncer); ok {
-		return lvs.SetLiveViewport(width, height, 1.0, false)
-	}
-	// Fallback: use EvalJS with the JS snippet case preserved.
-	return e.impl.EvalJS(ctx, fmt.Sprintf("window.resizeTo(%d,%d)", width, height), nil)
-}
-
-func (e *oneshotActionExecutor) Snapshot(ctx context.Context) (*browser.Snapshot, error) {
-	return e.impl.Snap(ctx)
-}
-
-func (e *oneshotActionExecutor) Screenshot(ctx context.Context) ([]byte, error) {
-	return e.impl.Screenshot(ctx, false)
-}
-
-func (e *oneshotActionExecutor) GetSessionState(ctx context.Context) (*btest.BehaviorState, error) {
-	// FIX-J2: derive behavior from live snapshot.
-	snap, _ := e.impl.Snap(ctx)
-	url, title := "", ""
-	if snap != nil {
-		url = snap.URL
-		title = snap.PageTitle
-	}
-	tab := btest.TabState{
-		ID:     "oneshot-0",
-		Index:  0,
-		URL:    url,
-		Title:  title,
-		Active: true,
-	}
-	return &btest.BehaviorState{
-		URL:         url,
-		Title:       title,
-		Tabs:        []btest.TabState{tab},
-		ActiveTabID: tab.ID,
-		TabCount:    1,
-		LoadState:   "idle",
-	}, nil
-}
-
-func (e *oneshotActionExecutor) CollectRegions(ctx context.Context) ([]btest.RegionSnap, error) {
-	return btest.CollectRegionsViaEval(func(expr string, result interface{}) error {
-		return e.impl.EvalJS(ctx, expr, result)
-	})
-}
-
-func (e *oneshotActionExecutor) GetTelemetry(_ context.Context) (*btest.TelemetryState, error) {
-	// FIX-J1: return real telemetry from the CDP collector when available.
-	return convertTelemetry(
-		func() []browser.ConsoleError {
-			if e.telemetry != nil {
-				return e.telemetry.GetConsoleErrors()
-			}
-			return nil
-		}(),
-		func() []browser.NetworkFailure {
-			if e.telemetry != nil {
-				return e.telemetry.GetNetworkFailures()
-			}
-			return nil
-		}(),
-	), nil
-}
-
-// convertTelemetry maps browser-layer telemetry to btest.TelemetryState.
-// Always returns non-nil slices.
-func convertTelemetry(ce []browser.ConsoleError, nf []browser.NetworkFailure) *btest.TelemetryState {
-	consoleEntries := make([]btest.ConsoleEntry, 0, len(ce))
-	for _, c := range ce {
-		consoleEntries = append(consoleEntries, btest.ConsoleEntry{
-			Level:  c.Level,
-			Text:   c.Text,
-			Source: c.Source,
-			URL:    c.URL,
-			Line:   c.Line,
-		})
-	}
-	networkEntries := make([]btest.NetworkEntry, 0, len(nf))
-	for _, n := range nf {
-		networkEntries = append(networkEntries, btest.NetworkEntry{
-			URL:        n.URL,
-			Method:     n.Method,
-			StatusCode: n.StatusCode,
-			Error:      n.Error,
-		})
-	}
-	return &btest.TelemetryState{
-		ConsoleErrors:   consoleEntries,
-		NetworkFailures: networkEntries,
-	}
 }
 
 // ============================================================
@@ -1894,47 +1289,7 @@ func convertTelemetry(ce []browser.ConsoleError, nf []browser.NetworkFailure) *b
 // ============================================================
 
 // loadObservationFile 从 JSON 文件加载 Observation。
-func loadObservationFile(path string) (*btest.Observation, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, fmt.Errorf("read observation %s: %w", path, err)
-	}
-	var obs btest.Observation
-	if err := json.Unmarshal(data, &obs); err != nil {
-		return nil, fmt.Errorf("parse observation %s: %w", path, err)
-	}
-	return &obs, nil
-}
-
-// writeJSONOrStdout 将 v 序列化为 JSON，输出到 outFile 或 stdout。
-func writeJSONOrStdout(v any, outFile, cmdName string) {
-	enc, err := json.MarshalIndent(v, "", "  ")
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "dw-browser %s: marshal output: %v\n", cmdName, err)
-		os.Exit(exitRunErr)
-	}
-	if outFile != "" {
-		if err := os.MkdirAll(dirOf(outFile), 0o755); err != nil {
-			fmt.Fprintf(os.Stderr, "dw-browser %s: mkdir for output: %v\n", cmdName, err)
-			os.Exit(exitRunErr)
-		}
-		if err := os.WriteFile(outFile, enc, 0o644); err != nil {
-			fmt.Fprintf(os.Stderr, "dw-browser %s: write output: %v\n", cmdName, err)
-			os.Exit(exitRunErr)
-		}
-		return
-	}
-	fmt.Println(string(enc))
-}
-
-// dirOf 返回路径的父目录（如 "a/b/c.json" → "a/b"，"file.json" → "."）。
-func dirOf(path string) string {
-	idx := strings.LastIndex(path, "/")
-	if idx < 0 {
-		return "."
-	}
-	return path[:idx]
-}
+func loadObservationFile(path string) (*btest.Observation, error) { return btest.LoadObservation(path) }
 
 // joinURL joins a base URL and an entry path. If entry is empty, returns base.
 // If entry is already absolute (has scheme), returns entry. Otherwise joins
@@ -2023,27 +1378,20 @@ func lookupSkillRecipe(pageURL, goal string) []btest.PlannedStep {
 // recipeToPlannedSteps parses the ```dw-browser fenced block from a skill section
 // and returns each non-empty line as a PlannedStep.
 func recipeToPlannedSteps(actionName, section string) []btest.PlannedStep {
-	var steps []btest.PlannedStep
-	inBlock := false
-	stepNum := 0
-	for _, line := range strings.Split(section, "\n") {
-		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "```dw-browser") {
-			inBlock = true
-			continue
-		}
-		if inBlock && strings.HasPrefix(trimmed, "```") {
-			break
-		}
-		if inBlock && trimmed != "" {
-			stepNum++
-			steps = append(steps, btest.PlannedStep{
-				Description: fmt.Sprintf("%s step %d", actionName, stepNum),
-				Action:      trimmed,
-			})
-		}
+	start := strings.Index(section, "```dw-browser-plan")
+	if start < 0 {
+		return nil
 	}
-	return steps
+	body := section[start+len("```dw-browser-plan"):]
+	end := strings.Index(body, "```")
+	if end < 0 {
+		return nil
+	}
+	plan, err := btest.ParsePlan([]byte(strings.TrimSpace(body[:end])))
+	if err != nil {
+		return nil
+	}
+	return plan.Steps
 }
 
 // doStructuralFromSnap converts a browser.Snapshot to btest.StructuralState (minimal, for do command).
@@ -2063,3 +1411,113 @@ func doStructuralFromSnap(snap *browser.Snapshot) *btest.StructuralState {
 
 // runGetNL 执行 NL get 查询：observe 当前 session 状态，Getter 提取字段。
 // dw-browser get --id <session-id> "active tab url"
+
+// runWaitV2 routes duration and assertion waits through the one condition kernel.
+func runWaitResult(args []string) (CommandResult, error) {
+	var id, assert, timeoutRaw, durationRaw string
+	for i := 0; i < len(args); i++ {
+		name, value, inline := strings.Cut(args[i], "=")
+		switch name {
+		case "--id", "--assert", "--timeout", "--duration":
+		default:
+			return CommandResult{}, commandError("validation", exitRunErr, fmt.Errorf("unsupported argument %q", args[i]))
+		}
+		if !inline {
+			if i+1 >= len(args) {
+				return CommandResult{}, commandError("validation", exitRunErr, fmt.Errorf("%s requires value", name))
+			}
+			i++
+			value = args[i]
+		}
+		switch name {
+		case "--id":
+			id = value
+		case "--assert":
+			assert = value
+		case "--timeout":
+			timeoutRaw = value
+		case "--duration":
+			durationRaw = value
+		}
+	}
+	parseDuration := func(raw string) (int, error) {
+		if raw == "" {
+			return 0, nil
+		}
+		value, err := time.ParseDuration(raw)
+		if err != nil || value <= 0 || value.Milliseconds() <= 0 {
+			return 0, fmt.Errorf("invalid positive duration %q", raw)
+		}
+		return int(value.Milliseconds()), nil
+	}
+	timeout, err := parseDuration(timeoutRaw)
+	if err != nil {
+		return CommandResult{}, commandError("validation", exitRunErr, err)
+	}
+	duration, err := parseDuration(durationRaw)
+	if err != nil {
+		return CommandResult{}, commandError("validation", exitRunErr, err)
+	}
+	spec := btest.WaitSpec{Assert: assert, TimeoutMs: timeout, DurationMs: duration}
+	if id == "" {
+		return CommandResult{}, commandError("validation", exitRunErr, fmt.Errorf("wait requires id"))
+	}
+	if err := spec.Validate(); err != nil {
+		return CommandResult{}, commandError("validation", exitRunErr, err)
+	}
+	info, err := browser.LoadSession(id)
+	if err != nil {
+		return CommandResult{}, commandError("session-load", exitRunErr, err)
+	}
+	start := time.Now()
+	ctx := context.Background()
+	var read btest.ObservationReader
+	if spec.Assert != "" {
+		waitCtx, cancel := context.WithTimeout(ctx, time.Duration(spec.TimeoutMs)*time.Millisecond)
+		defer cancel()
+		ctx = waitCtx
+		impl, err := connectSessionE(ctx, info, "wait", commonFlags{sessionID: id})
+		if err != nil {
+			return CommandResult{}, commandError("attachment", exitRunErr, err)
+		}
+		defer closeSessionCore(impl)
+		read = func(readCtx context.Context) (*btest.Observation, error) {
+			snap, err := impl.SnapWithSessionMode(readCtx, info.SnapEpoch)
+			if err != nil {
+				return nil, err
+			}
+			return btest.BuildObservation(id, snap, nil, "", behaviorFromSessionInfo(info), nil), nil
+		}
+	}
+	err = btest.WaitForAssertion(ctx, spec, read)
+	status := btest.StatusDelivered
+	reason := "declared duration or condition delivered"
+	code := exitOK
+	if err != nil {
+		status = btest.StatusBlocked
+		reason = err.Error()
+		code = exitRunErr
+	}
+	return commandResult(map[string]any{"schema": "dw.wait.v2", "status": status, "reason": reason, "elapsed_ms": time.Since(start).Milliseconds()}, code), nil
+}
+func (e *cliActionExecutor) LastActionFidelity() browser.ActionFidelityReport {
+	return actionFidelityReport(e.impl)
+}
+
+func validateReadSessionArgsE(args []string, cmd string) error {
+	for i := 0; i < len(args); i++ {
+		if args[i] == "--id" && i+1 < len(args) && args[i+1] != "" {
+			i++
+			continue
+		}
+		if strings.HasPrefix(args[i], "--id=") && len(args[i]) > 5 {
+			continue
+		}
+		return fmt.Errorf("%s: unsupported or incomplete argument %q", cmd, args[i])
+	}
+	return nil
+}
+
+func (e *cliActionExecutor) ObservationContext() btest.ObservationContext {
+	return btest.ObservationContext{SessionID: e.sessionID, RuntimeRunID: e.sessionInfo.BrowserRunID, TargetID: e.sessionInfo.TargetID, Scenario: string(e.sessionInfo.Scenario), Deterministic: e.sessionInfo.Policy.Deterministic}
+}

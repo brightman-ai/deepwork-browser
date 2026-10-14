@@ -2,6 +2,7 @@ package browser
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"runtime"
 	"strings"
@@ -155,44 +156,44 @@ func TestInferFingerprintPresetID(t *testing.T) {
 // ============================================================
 
 // TC-09-U-05: 合法 action 语法解析正确（click/type/scroll）。
-func TestParseAction_ValidSyntax(t *testing.T) {
+func TestTypedRequest_ValidSyntax(t *testing.T) {
 	// TC-ID: TC-09-U-05
 	cases := []struct {
-		input   string
+		input   Action
 		wantOp  string
 		wantRef string
 		wantVal string
 	}{
-		{"click e3", "click", "e3", ""},
-		{"clickat #browser-liveview 92% 8%", "clickat", "#browser-liveview", ""},
-		{"clickat #browser-takeover-layer 0.5 0.5", "clickat", "#browser-takeover-layer", ""},
-		{"dblclickat css=#cell 30% 40%", "dblclickat", "css=#cell", ""},
-		{"rclickat css=#chart 30% 40%", "rclickat", "css=#chart", ""},
-		{"hoverat #chart 50% 40%", "hoverat", "#chart", ""},
-		{"hoverat #chart 0.5 0.4", "hoverat", "#chart", ""},
-		{"dragat #chart 20% 50% 80% 50%", "dragat", "#chart", ""},
-		{"dragat #chart 0.2 0.5 0.8 0.5", "dragat", "#chart", ""},
-		{"swipeat css=#chart 80% 50% 20% 50%", "swipeat", "css=#chart", ""},
-		{"wheelat css=#chart 50% 50% -240", "wheelat", "css=#chart", ""},
-		{"wheelat css=#chart 50% 50% 120 -30", "wheelat", "css=#chart", ""},
-		{"tap button:'接管'", "tap", "button:'接管'", ""},
-		{"tapat #browser-liveview 92% 8%", "tapat", "#browser-liveview", ""},
-		{"type e5 'hello'", "type", "e5", "hello"},
-		{"scroll down", "scroll", "down", ""},
-		{"scroll up", "scroll", "up", ""},
-		{"hover e7", "hover", "e7", ""},
-		{"select e4 'opt2'", "select", "e4", "opt2"},
-		{"type e1 'hello world'", "type", "e1", "hello world"},
-		{"fill #notes ''", "fill", "#notes", ""},
-		{"fill #notes '   '", "fill", "#notes", "   "},
-		{"select #preset ''", "select", "#preset", ""},
+		{Action{Verb: "click", Target: fixtureRef("@ofixture-r3")}, "click", "@ofixture-r3", ""},
+		{Action{Verb: "click", Target: fixtureRelative("css=[data-testid=\"browser-liveview\"]", 92.0, 8.0)}, "clickat", "css=[data-testid=\"browser-liveview\"]", ""},
+		{Action{Verb: "click", Target: fixtureRelative("css=[data-testid=\"browser-takeover-layer\"]", 50.0, 50.0)}, "clickat", "css=[data-testid=\"browser-takeover-layer\"]", ""},
+		{Action{Verb: "click", Target: fixtureRelative("css=#cell", 30.0, 40.0), Count: 2}, "dblclickat", "css=#cell", ""},
+		{Action{Verb: "click", Target: fixtureRelative("css=#chart", 30.0, 40.0), Button: "right"}, "rclickat", "css=#chart", ""},
+		{Action{Verb: "hover", Target: fixtureRelative("css=[data-testid=\"chart\"]", 50.0, 40.0)}, "hoverat", "css=[data-testid=\"chart\"]", ""},
+		{Action{Verb: "hover", Target: fixtureRelative("css=[data-testid=\"chart\"]", 50.0, 40.0)}, "hoverat", "css=[data-testid=\"chart\"]", ""},
+		{Action{Verb: "drag", Target: fixtureRelative("css=[data-testid=\"chart\"]", 20.0, 50.0), End: fixtureEnd(80.0, 50.0)}, "dragat", "css=[data-testid=\"chart\"]", ""},
+		{Action{Verb: "drag", Target: fixtureRelative("css=[data-testid=\"chart\"]", 20.0, 50.0), End: fixtureEnd(80.0, 50.0)}, "dragat", "css=[data-testid=\"chart\"]", ""},
+		{Action{Verb: "swipe", Target: fixtureRelative("css=#chart", 80.0, 50.0), End: fixtureEnd(20.0, 50.0)}, "swipeat", "css=#chart", ""},
+		{Action{Verb: "scroll", Target: fixtureRelative("css=#chart", 50.0, 50.0), DeltaY: -240}, "wheelat", "css=#chart", ""},
+		{Action{Verb: "scroll", Target: fixtureRelative("css=#chart", 50.0, 50.0), DeltaY: 120, DeltaX: -30}, "wheelat", "css=#chart", ""},
+		{Action{Verb: "tap", Target: fixtureLocator("role=button[name*=\"接管\"]")}, "tap", "role=button[name*=\"接管\"]", ""},
+		{Action{Verb: "tap", Target: fixtureRelative("css=[data-testid=\"browser-liveview\"]", 92.0, 8.0)}, "tapat", "css=[data-testid=\"browser-liveview\"]", ""},
+		{Action{Verb: "type", Target: fixtureRef("@ofixture-r5"), Text: "hello"}, "type", "@ofixture-r5", "hello"},
+		{Action{Verb: "scroll", Direction: "down"}, "scroll", "", ""},
+		{Action{Verb: "scroll", Direction: "up"}, "scroll", "", ""},
+		{Action{Verb: "hover", Target: fixtureRef("@ofixture-r7")}, "hover", "@ofixture-r7", ""},
+		{Action{Verb: "select", Target: fixtureRef("@ofixture-r4"), Value: "opt2"}, "select", "@ofixture-r4", "opt2"},
+		{Action{Verb: "type", Target: fixtureRef("@ofixture-r1"), Text: "hello world"}, "type", "@ofixture-r1", "hello world"},
+		{Action{Verb: "fill", Target: fixtureLocator("css=[data-testid=\"notes\"]"), Text: ""}, "fill", "css=[data-testid=\"notes\"]", ""},
+		{Action{Verb: "fill", Target: fixtureLocator("css=[data-testid=\"notes\"]"), Text: "   "}, "fill", "css=[data-testid=\"notes\"]", "   "},
+		{Action{Verb: "select", Target: fixtureLocator("css=[data-testid=\"preset\"]"), Value: ""}, "select", "css=[data-testid=\"preset\"]", ""},
 	}
 
 	for _, tc := range cases {
-		t.Run(tc.input, func(t *testing.T) {
-			parsed, err := ParseAction(tc.input)
+		t.Run(tc.wantOp+tc.wantRef, func(t *testing.T) {
+			parsed, err := tc.input.executionRequest()
 			if err != nil {
-				t.Fatalf("ParseAction(%q) returned error: %v", tc.input, err)
+				t.Fatalf("TypedAction(%+v) returned error: %v", tc.input, err)
 			}
 			if parsed.Op != tc.wantOp {
 				t.Errorf("Op: got %q, want %q", parsed.Op, tc.wantOp)
@@ -223,13 +224,13 @@ func TestParseAction_ValidSyntax(t *testing.T) {
 
 // TC-09-U-05b: canvas 坐标动作（hoverat/dragat）的坐标解析为精确归一值。
 // 回归: dw-browser 早期只能 DOM 寻址，echarts canvas 命中需真实坐标指针事件。
-func TestParseAction_CanvasCoordinateActions(t *testing.T) {
+func TestTypedRequest_CanvasCoordinateActions(t *testing.T) {
 	t.Run("hoverat", func(t *testing.T) {
-		parsed, err := ParseAction("hoverat #chart 50% 40%")
+		parsed, err := (Action{Verb: "hover", Target: fixtureRelative("css=[data-testid=\"chart\"]", 50.0, 40.0)}).executionRequest()
 		if err != nil {
-			t.Fatalf("ParseAction hoverat returned error: %v", err)
+			t.Fatalf("TypedRequest hoverat returned error: %v", err)
 		}
-		if parsed.Op != "hoverat" || parsed.Ref != "#chart" {
+		if parsed.Op != "hoverat" || parsed.Ref != "css=[data-testid=\"chart\"]" {
 			t.Fatalf("hoverat: got op=%q ref=%q", parsed.Op, parsed.Ref)
 		}
 		if parsed.CoordX != 0.5 || parsed.CoordY != 0.4 {
@@ -238,11 +239,11 @@ func TestParseAction_CanvasCoordinateActions(t *testing.T) {
 	})
 
 	t.Run("dragat", func(t *testing.T) {
-		parsed, err := ParseAction("dragat #chart 20% 50% 80% 50%")
+		parsed, err := (Action{Verb: "drag", Target: fixtureRelative("css=[data-testid=\"chart\"]", 20.0, 50.0), End: fixtureEnd(80.0, 50.0)}).executionRequest()
 		if err != nil {
-			t.Fatalf("ParseAction dragat returned error: %v", err)
+			t.Fatalf("TypedRequest dragat returned error: %v", err)
 		}
-		if parsed.Op != "dragat" || parsed.Ref != "#chart" {
+		if parsed.Op != "dragat" || parsed.Ref != "css=[data-testid=\"chart\"]" {
 			t.Fatalf("dragat: got op=%q ref=%q", parsed.Op, parsed.Ref)
 		}
 		if parsed.CoordX != 0.2 || parsed.CoordY != 0.5 {
@@ -254,9 +255,9 @@ func TestParseAction_CanvasCoordinateActions(t *testing.T) {
 	})
 
 	t.Run("wheelat_deltaY_only", func(t *testing.T) {
-		parsed, err := ParseAction("wheelat css=#chart 50% 50% -240")
+		parsed, err := (Action{Verb: "scroll", Target: fixtureRelative("css=#chart", 50.0, 50.0), DeltaY: -240}).executionRequest()
 		if err != nil {
-			t.Fatalf("ParseAction wheelat returned error: %v", err)
+			t.Fatalf("TypedRequest wheelat returned error: %v", err)
 		}
 		if parsed.Op != "wheelat" || parsed.Ref != "css=#chart" {
 			t.Fatalf("wheelat: got op=%q ref=%q", parsed.Op, parsed.Ref)
@@ -270,9 +271,9 @@ func TestParseAction_CanvasCoordinateActions(t *testing.T) {
 	})
 
 	t.Run("wheelat_both_deltas", func(t *testing.T) {
-		parsed, err := ParseAction("wheelat css=#chart 50% 50% 120 -30")
+		parsed, err := (Action{Verb: "scroll", Target: fixtureRelative("css=#chart", 50.0, 50.0), DeltaY: 120, DeltaX: -30}).executionRequest()
 		if err != nil {
-			t.Fatalf("ParseAction wheelat returned error: %v", err)
+			t.Fatalf("TypedRequest wheelat returned error: %v", err)
 		}
 		if parsed.DeltaY != 120 || parsed.DeltaX != -30 {
 			t.Errorf("wheelat deltas: got dx=%v dy=%v, want -30 120", parsed.DeltaX, parsed.DeltaY)
@@ -280,20 +281,20 @@ func TestParseAction_CanvasCoordinateActions(t *testing.T) {
 	})
 
 	t.Run("dblclick_rclick_swipe_ops", func(t *testing.T) {
-		for _, in := range []string{
-			"dblclickat css=#cell 30% 40%",
-			"rclickat css=#chart 30% 40%",
-			"swipeat css=#chart 80% 50% 20% 50%",
+		for _, in := range []Action{
+			Action{Verb: "click", Target: fixtureRelative("css=#cell", 30.0, 40.0), Count: 2},
+			Action{Verb: "click", Target: fixtureRelative("css=#chart", 30.0, 40.0), Button: "right"},
+			Action{Verb: "swipe", Target: fixtureRelative("css=#chart", 80.0, 50.0), End: fixtureEnd(20.0, 50.0)},
 		} {
-			if _, err := ParseAction(in); err != nil {
-				t.Errorf("ParseAction(%q) returned error: %v", in, err)
+			if _, err := in.executionRequest(); err != nil {
+				t.Errorf("TypedAction(%+v) returned error: %v", in, err)
 			}
 		}
 	})
 }
 
 // TC-09-U-06: 非法语法返回 ErrActFailed，不 panic。
-func TestParseAction_InvalidSyntax_ReturnsErrActFailed(t *testing.T) {
+func TestTypedRequest_InvalidSyntax_ReturnsErrActFailed(t *testing.T) {
 	// TC-ID: TC-09-U-06
 	cases := []string{
 		"",
@@ -319,9 +320,9 @@ func TestParseAction_InvalidSyntax_ReturnsErrActFailed(t *testing.T) {
 
 	for _, input := range cases {
 		t.Run(input, func(t *testing.T) {
-			parsed, err := ParseAction(input)
+			parsed, err := (Action{Verb: input}).executionRequest()
 			if err == nil {
-				t.Errorf("ParseAction(%q) should return error, got parsed=%+v", input, parsed)
+				t.Errorf("TypedRequest(%q) should return error, got parsed=%+v", input, parsed)
 				return
 			}
 			if !strings.Contains(err.Error(), ErrActFailed.Error()) {
@@ -331,36 +332,40 @@ func TestParseAction_InvalidSyntax_ReturnsErrActFailed(t *testing.T) {
 	}
 }
 
-func TestParseNormalizedCoordinate(t *testing.T) {
+func TestTypedPointNormalization(t *testing.T) {
 	cases := []struct {
-		input   string
+		input   Point
 		want    float64
 		wantErr bool
 	}{
-		{"0", 0, false},
-		{"0.5", 0.5, false},
-		{"1", 1, false},
-		{"92%", 0.92, false},
-		{"100%", 1, false},
-		{"120%", 0, true},
-		{"1.2", 0, true},
-		{"92", 0, true},
+		{Point{X: 0 * 100, Y: 0, Unit: "percent", Frame: "target", ObservationID: "fixture"}, 0, false},
+		{Point{X: 0.5 * 100, Y: 0, Unit: "percent", Frame: "target", ObservationID: "fixture"}, 0.5, false},
+		{Point{X: 1 * 100, Y: 0, Unit: "percent", Frame: "target", ObservationID: "fixture"}, 1, false},
+		{Point{X: 92, Y: 0, Unit: "percent", Frame: "target", ObservationID: "fixture"}, 0.92, false},
+		{Point{X: 100, Y: 0, Unit: "percent", Frame: "target", ObservationID: "fixture"}, 1, false},
+		{Point{X: 120, Y: 0, Unit: "percent", Frame: "target", ObservationID: "fixture"}, 0, true},
+		{Point{X: 1.2 * 100, Y: 0, Unit: "percent", Frame: "target", ObservationID: "fixture"}, 0, true},
+		{Point{X: 92 * 100, Y: 0, Unit: "percent", Frame: "target", ObservationID: "fixture"}, 0, true},
 	}
 
 	for _, tc := range cases {
-		t.Run(tc.input, func(t *testing.T) {
-			got, err := parseNormalizedCoordinate(tc.input)
+		t.Run(fmt.Sprint(tc.input.X), func(t *testing.T) {
+			request, err := (Action{Verb: "hover", Target: Target{Kind: "locator", Locator: "css=#chart", Point: &tc.input}}).executionRequest()
+			got := 0.0
+			if request != nil {
+				got = request.CoordX
+			}
 			if tc.wantErr {
 				if err == nil {
-					t.Fatalf("parseNormalizedCoordinate(%q) should fail", tc.input)
+					t.Fatalf("typedPoint(%+v) should fail", tc.input)
 				}
 				return
 			}
 			if err != nil {
-				t.Fatalf("parseNormalizedCoordinate(%q) returned error: %v", tc.input, err)
+				t.Fatalf("typedPoint(%+v) returned error: %v", tc.input, err)
 			}
 			if got != tc.want {
-				t.Fatalf("parseNormalizedCoordinate(%q) = %v, want %v", tc.input, got, tc.want)
+				t.Fatalf("typedPoint(%+v) = %v, want %v", tc.input, got, tc.want)
 			}
 		})
 	}
@@ -487,12 +492,12 @@ func TestSnapshotEngine_RefNotFound(t *testing.T) {
 	}
 }
 
-// TC-09-U-28: observe=false 语义 — ParseAction 正常解析（不依赖 observe 参数）。
-func TestParseAction_ObserveFalse_StillParses(t *testing.T) {
+// TC-09-U-28: observe=false 语义 — TypedRequest 正常解析（不依赖 observe 参数）。
+func TestTypedRequest_ObserveFalse_StillParses(t *testing.T) {
 	// TC-ID: TC-09-U-28
-	parsed, err := ParseAction("click e3")
+	parsed, err := (Action{Verb: "click", Target: fixtureRef("@ofixture-r3")}).executionRequest()
 	if err != nil {
-		t.Fatalf("ParseAction should not error: %v", err)
+		t.Fatalf("TypedRequest should not error: %v", err)
 	}
 	if parsed.Op != "click" {
 		t.Errorf("Op should be click, got %q", parsed.Op)

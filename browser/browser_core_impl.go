@@ -340,6 +340,7 @@ type browserCoreImpl struct {
 	supervisor         *chromeSupervisorImpl
 	chromePID          int
 	wsURL              string
+	runtimeInputKey    string // input identity only; conveys no process ownership
 	liveViewActive     bool
 	liveViewportW      int
 	liveViewportH      int
@@ -380,7 +381,7 @@ func (impl *browserCoreImpl) SetPolicy(p SessionPolicy, currentURL string) {
 	}
 }
 
-// checkActPolicy 在执行前对单个 action 做远程写门控。它是 policy.go SSOT 的唯一
+// checkActionPolicy 在执行前对单个 action 做远程写门控。它是 policy.go SSOT 的唯一
 // 强制点：解析 op → 用当前 top-level origin 评估。解析失败时返回 nil，交由执行器
 // 报原生错误。takeover-forwarded act 早在 Act/ActWithSessionMode 入口即被 ErrTakeoverActive
 // 拒绝，永不到达此处，故无需坐标/takeover 特判。
@@ -389,19 +390,12 @@ func (impl *browserCoreImpl) SetPolicy(p SessionPolicy, currentURL string) {
 // Navigate 之间自导航(JS 重定向 / 点击跳到远程站)，若沿用旧 lastURL(如 localhost)
 // 会把远程写误判为可信。故这里现场 EvalJS(window.location.href) 取实时 URL；取不到
 // 时才回退 lastURL；两者皆空 → origin "" → 保守阻断。
-func (impl *browserCoreImpl) checkActPolicy(ctx context.Context, action string) error {
+func (impl *browserCoreImpl) checkActionPolicy(ctx context.Context, action Action) error {
 	impl.policyMu.RLock()
-	policy := impl.policy
-	lastURL := impl.lastURL
+	policy, lastURL := impl.policy, impl.lastURL
 	impl.policyMu.RUnlock()
-
-	// 不持锁调用 ParseAction/EvaluateAct/EvalJS，避免与 Act 的 RLock 嵌套。
-	parsed, err := ParseAction(action)
-	if err != nil {
-		return nil
-	}
 	// 读操作恒放行——跳过实时 URL 取用，省一次 CDP 往返。
-	if !IsMutatingOp(parsed.Op) {
+	if !IsMutatingOp(action.Verb) {
 		return nil
 	}
 	curURL := impl.liveTopURL(ctx)
@@ -413,7 +407,7 @@ func (impl *browserCoreImpl) checkActPolicy(ctx context.Context, action string) 
 		impl.lastURL = curURL
 		impl.policyMu.Unlock()
 	}
-	if d := policy.EvaluateAct(parsed.Op, URLOrigin(curURL)); !d.Allowed {
+	if d := policy.EvaluateAct(action.Verb, URLOrigin(curURL)); !d.Allowed {
 		// P3 TODO: RemoteWriteConfirm 命中时（d.NeedsConfirm）本轮最小实现——
 		// confirm 与 deny 一样阻断（无 scenario 会映射到 confirm, 故此分支当前不可达）。
 		return fmt.Errorf("dw-browser: %s", d.Reason)
@@ -422,7 +416,7 @@ func (impl *browserCoreImpl) checkActPolicy(ctx context.Context, action string) 
 }
 
 // liveTopURL best-effort 取活跃 target 的实时 top-level URL，供 origin 分类。
-// ctx 为 nil 或 eval 失败/为空时返回 ""，让 checkActPolicy 回退 lastURL（并最终
+// ctx 为 nil 或 eval 失败/为空时返回 ""，让 checkActionPolicy 回退 lastURL（并最终
 // fail-closed）。用活跃 target 的 window.location.href——act 也作用于该 target，
 // 语义一致（新 tab / 自导航都被捕获）。
 func (impl *browserCoreImpl) liveTopURL(ctx context.Context) string {
@@ -557,7 +551,6 @@ func NewBrowserCore(ctx context.Context, profileID string, optFns ...BrowserOpti
 		})
 		tracker.SetNoFrontMode(true)
 	}
-	tracker.SetupListeners(browserCtx)
 
 	impl := &browserCoreImpl{
 		allocCtx:          allocCtx,
@@ -601,9 +594,21 @@ func NewBrowserCore(ctx context.Context, profileID string, optFns ...BrowserOpti
 
 	// 输入派发窗口的第二把锁按浏览器实例键控 —— 两个会话可能坐在同一个浏览器上
 	// (mux-host 多 tab),前台归属必须在一次输入的生命周期内不被抢走。
-	actEngine.setBrowserInputKey(impl.wsURL, impl.chromePID)
+	impl.bindRuntimeInputIdentity(impl.wsURL, impl.chromePID)
+	tracker.SetupListeners(browserCtx)
 
 	return impl, nil
+}
+
+// All owned, attached and pooled cores bind input serialization and capture
+// runtime identity from the same browser instance. Tracker-only binding cannot
+// protect action dispatch or populate snapshot provenance.
+func (impl *browserCoreImpl) bindRuntimeInputIdentity(wsURL string, inputPID int) {
+	impl.runtimeInputKey = BrowserInputKey(wsURL, inputPID)
+	impl.actEngine.bindBrowserInputKey(impl.runtimeInputKey)
+	if impl.targetTracker != nil {
+		impl.targetTracker.bindBrowserInputKey(impl.runtimeInputKey)
+	}
 }
 
 type controlledBrowserCoreLaunchOptions struct {
@@ -840,6 +845,9 @@ func (impl *browserCoreImpl) handleCrash(ctx context.Context) {
 
 // Navigate 导航到 URL，返回 A11y 快照。
 func (impl *browserCoreImpl) Navigate(ctx context.Context, url string) (*Snapshot, error) {
+	if err := ValidateNavigationURL(url); err != nil {
+		return nil, err
+	}
 	impl.mu.RLock()
 	defer impl.mu.RUnlock()
 	targetID, targetCtx := impl.currentTargetRef()
@@ -923,7 +931,7 @@ func (impl *browserCoreImpl) Navigate(ctx context.Context, url string) (*Snapsho
 	// 之前无条件回切 root target，会让新 tab / auth target 的 URL 输入回车误导航 root tab，
 	// 直接破坏多 tab 基本语义，也会让 ChatGPT/Apple 登录流程回错标签。
 	snapshotStart := time.Now()
-	snap, err := impl.snapEngine.GetSnapshot(runCtx)
+	snap, err := impl.snapEngine.captureSnapshot(runCtx)
 	if snap != nil {
 		snap.TargetID = targetID
 	}
@@ -1041,66 +1049,6 @@ func (impl *browserCoreImpl) Snap(ctx context.Context) (*Snapshot, error) {
 	runCtx, cancel := deriveTargetContext(ctx, targetCtx)
 	defer cancel()
 	return impl.snapEngine.GetSnapshot(runCtx)
-}
-
-// Act 执行操作，observe=false 时不返回 Snapshot。
-func (impl *browserCoreImpl) Act(ctx context.Context, action string, observe bool) (*Snapshot, error) {
-	return impl.actWithInteractionMode(ctx, action, observe, InteractionModeVisual)
-}
-
-// ActWithInteractionMode applies a journey step's explicit fidelity without
-// mutating the scenario-level default.
-func (impl *browserCoreImpl) ActWithInteractionMode(ctx context.Context, action string, observe bool, mode InteractionMode) (*Snapshot, error) {
-	return impl.actWithInteractionMode(ctx, action, observe, mode)
-}
-
-func (impl *browserCoreImpl) actWithInteractionMode(ctx context.Context, action string, observe bool, mode InteractionMode) (*Snapshot, error) {
-	// 接管模式下，AI 操作被拒绝 [TC-09-U-11]
-	if impl.takeoverCtrl.IsTakeover() {
-		return nil, ErrTakeoverActive
-	}
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	// 用同一 ctx 取实时 origin 做远程写门控（须在 nil 保护之后）。
-	if err := impl.checkActPolicy(ctx, action); err != nil {
-		return nil, err
-	}
-
-	impl.mu.RLock()
-	targetCtx := impl.currentCtx()
-	runCtx, cancelRun := deriveTargetContext(ctx, targetCtx)
-
-	type actionResult struct {
-		snap *Snapshot
-		err  error
-	}
-	done := make(chan actionResult, 1)
-	go func() {
-		defer impl.mu.RUnlock()
-		snap, err := impl.actEngine.ExecuteWithInteractionMode(runCtx, action, observe, false, mode)
-		done <- actionResult{snap: snap, err: err}
-	}()
-	defer cancelRun()
-
-	timeout := 20 * time.Second
-	if deadline, ok := ctx.Deadline(); ok {
-		if remain := time.Until(deadline); remain <= 0 {
-			return nil, ctx.Err()
-		} else if remain < timeout {
-			timeout = remain
-		}
-	}
-	timer := time.NewTimer(timeout)
-	defer timer.Stop()
-	select {
-	case result := <-done:
-		return result.snap, result.err
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	case <-timer.C:
-		return nil, fmt.Errorf("browser: action %q timed out after %s", action, timeout)
-	}
 }
 
 // Text 提取当前页面纯文本。
@@ -1459,6 +1407,11 @@ func (impl *browserCoreImpl) DisableTakeover(ctx context.Context) error {
 
 // DispatchInput 在接管模式下转发输入事件。
 func (impl *browserCoreImpl) DispatchInput(ctx context.Context, event *InputEvent) error {
+	lock, err := AcquireBrowserInputLock(impl.runtimeInputKey, DefaultBrowserInputLockWait)
+	if err != nil {
+		return err
+	}
+	defer lock.Release()
 	return impl.takeoverCtrl.DispatchInput(ctx, event)
 }
 
@@ -1737,28 +1690,6 @@ func (impl *browserCoreImpl) SnapWithOptions(ctx context.Context, opts SnapOptio
 	return impl.snapEngine.SnapWithOptions(runCtx, opts)
 }
 
-// ActWithSessionMode 执行操作（session 模式，允许 @rN ref）。
-func (impl *browserCoreImpl) ActWithSessionMode(ctx context.Context, action string, observe bool) (*Snapshot, error) {
-	return impl.ActWithSessionInteractionMode(ctx, action, observe, InteractionModeVisual)
-}
-
-// ActWithSessionInteractionMode is the session-ref variant of the per-step
-// journey fidelity escape hatch.
-func (impl *browserCoreImpl) ActWithSessionInteractionMode(ctx context.Context, action string, observe bool, mode InteractionMode) (*Snapshot, error) {
-	if impl.takeoverCtrl.IsTakeover() {
-		return nil, ErrTakeoverActive
-	}
-	if err := impl.checkActPolicy(ctx, action); err != nil {
-		return nil, err
-	}
-	impl.mu.RLock()
-	defer impl.mu.RUnlock()
-	targetCtx := impl.currentCtx()
-	runCtx, cancel := deriveTargetContext(ctx, targetCtx)
-	defer cancel()
-	return impl.actEngine.ExecuteWithInteractionMode(runCtx, action, observe, true, mode)
-}
-
 // RestoreRefsFromSession 从 session 文件恢复 ref 表（供 act 命令使用）。
 func (impl *browserCoreImpl) RestoreRefsFromSession(refs []SessionRef) {
 	impl.mu.Lock()
@@ -1901,7 +1832,7 @@ func NewBrowserCoreFromSession(ctx context.Context, wsURL string, targetID strin
 	}
 
 	// 附着已有会话时同样键控到那个浏览器实例(此路径 chromePID 未知,ws_url 就是键)。
-	actEngine.setBrowserInputKey(impl.wsURL, impl.chromePID)
+	impl.bindRuntimeInputIdentity(impl.wsURL, impl.chromePID)
 
 	return impl, nil
 }

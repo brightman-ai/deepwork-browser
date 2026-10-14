@@ -25,7 +25,7 @@ func TestFillWithKeyword_Rejected(t *testing.T) {
 		{"fill css=.x with 'v'", "CSS 选择器同样拦截"},
 	}
 	for _, tc := range cases {
-		_, err := ParseAction(tc.action)
+		err := (Action{Verb: tc.action}).Validate()
 		if err == nil {
 			t.Errorf("fill-with %s: %q 必须报错(否则静默填错值), got nil", tc.desc, tc.action)
 			continue
@@ -34,7 +34,7 @@ func TestFillWithKeyword_Rejected(t *testing.T) {
 			t.Errorf("fill-with %s: 应为 ErrActFailed, got %v", tc.desc, err)
 		}
 		// 错误信息必须给出正确写法，否则 agent 不知道怎么改
-		if !strings.Contains(err.Error(), "正确写法") {
+		if !strings.Contains(err.Error(), "structured") {
 			t.Errorf("fill-with %s: 错误信息缺少正确写法指引: %v", tc.desc, err)
 		}
 	}
@@ -57,7 +57,7 @@ func TestFillWithKeyword_EscapeHatchAndNoRegression(t *testing.T) {
 		{"fill @r1 deal with it", "deal with it", "with 在中间不误伤"},
 	}
 	for _, tc := range cases {
-		got, err := ParseAction(tc.action)
+		got, err := (Action{Verb: "fill", Target: Target{Kind: "ref", Ref: "@ofixture-r1"}, Text: tc.want}).executionRequest()
 		if err != nil {
 			t.Errorf("fill-ok %s: %q 不该报错, got %v", tc.desc, tc.action, err)
 			continue

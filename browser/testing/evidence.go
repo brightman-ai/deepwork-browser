@@ -3,6 +3,8 @@ package testing
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/brightman-ai/deepwork-browser/browser"
+	"gopkg.in/yaml.v3"
 	"os"
 	"path/filepath"
 	"strings"
@@ -17,11 +19,17 @@ type EvidenceStore struct {
 
 type replayAction struct {
 	StepID  string
-	Command string // full dw-browser command line
+	Request *RecordedAction
 }
 
 // NewEvidenceStore creates the evidence directory tree and returns the store.
 func NewEvidenceStore(dir string) (*EvidenceStore, error) {
+	var err error
+	dir, err = filepath.Abs(dir)
+	if err != nil {
+		return nil, err
+	}
+	dir = filepath.Join(dir, "run-"+NewObservationID())
 	if err := os.MkdirAll(filepath.Join(dir, "steps"), 0o755); err != nil {
 		return nil, fmt.Errorf("evidence store: mkdir: %w", err)
 	}
@@ -81,9 +89,14 @@ func (e *EvidenceStore) SaveScreenshot(stepID, phase string, data []byte) error 
 	return os.WriteFile(filepath.Join(dir, name), data, 0o644)
 }
 
-// RecordAction appends a dw-browser command to the replay log.
-func (e *EvidenceStore) RecordAction(stepID, command string) {
-	e.actions = append(e.actions, replayAction{StepID: stepID, Command: command})
+// RecordAction records typed requests, redacting sensitive text.
+func (e *EvidenceStore) RecordAction(stepID string, action browser.Action) error {
+	e.actions = append(e.actions, replayAction{StepID: stepID, Request: safeAction(&action)})
+	data, err := json.MarshalIndent(e.actions, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(e.dir, "actions.json"), data, 0600)
 }
 
 // SaveTrace writes the full JourneyResult to trace.json.
@@ -95,30 +108,24 @@ func (e *EvidenceStore) SaveTrace(result *JourneyResult) error {
 	return os.WriteFile(filepath.Join(e.dir, "trace.json"), data, 0o644)
 }
 
-// GenerateReplay writes a self-contained replay.sh that re-runs the journey.
-func (e *EvidenceStore) GenerateReplay(sessionID string) error {
-	var b strings.Builder
-
-	journeyID := sessionID
-	b.WriteString("#!/bin/bash\n")
-	fmt.Fprintf(&b, "# Replay script for journey: %s\n", journeyID)
-	fmt.Fprintf(&b, "# Generated: %s\n", time.Now().UTC().Format(time.RFC3339))
-	b.WriteString("set -e\n\n")
-	b.WriteString(`SESSION_ID="${1:-replay-$(date +%s)}"` + "\n")
-	b.WriteString(`dw-browser session start --id "$SESSION_ID" --scenario app-test-baseline` + "\n")
-
-	for _, a := range e.actions {
-		fmt.Fprintf(&b, "\n# Step: %s\n", a.StepID)
-		fmt.Fprintf(&b, "%s\n", a.Command)
+// GenerateReplay preserves the typed specification; replay invokes the only runner.
+func (e *EvidenceStore) GenerateReplay(spec *JourneySpec) error {
+	if err := spec.Validate(); err != nil {
+		return fmt.Errorf("replay specification: %w", err)
 	}
-
-	b.WriteString(`\ndw-browser session close --id "$SESSION_ID"` + "\n")
-
-	path := filepath.Join(e.dir, "replay.sh")
-	if err := os.WriteFile(path, []byte(b.String()), 0o755); err != nil {
-		return fmt.Errorf("replay: write: %w", err)
+	data, err := yaml.Marshal(spec)
+	if err != nil {
+		return err
 	}
-	return nil
+	if err := os.WriteFile(filepath.Join(e.dir, "replay.journey.yaml"), data, 0600); err != nil {
+		return err
+	}
+	script := `#!/bin/sh
+set -eu
+DW_REPLAY_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+exec dw-browser journey --file "$DW_REPLAY_DIR/replay.journey.yaml" --scenario app-test-baseline --evidence "$DW_REPLAY_DIR/replayed"
+`
+	return os.WriteFile(filepath.Join(e.dir, "replay.sh"), []byte(script), 0755)
 }
 
 // GenerateReport writes a human-readable markdown report to report.md.
@@ -127,13 +134,22 @@ func (e *EvidenceStore) GenerateReport(result *JourneyResult) error {
 
 	fmt.Fprintf(&b, "# Journey Report: %s\n", result.Name)
 	fmt.Fprintf(&b, "**Status**: %s\n", result.Status)
+	fmt.Fprintf(&b, "**Assurance**: %s\n", result.Assurance)
+	fmt.Fprintf(&b, "**Listed conditions verified**: %d\n", len(result.VerifiedChecks))
+	if len(result.ExecutionOnlySteps) > 0 {
+		fmt.Fprintf(&b, "**Execution-only steps**: %s\n", strings.Join(result.ExecutionOnlySteps, ", "))
+	}
 	fmt.Fprintf(&b, "**Duration**: %dms\n", result.DurationMs)
 	fmt.Fprintf(&b, "**Date**: %s\n\n", time.Now().UTC().Format(time.RFC3339))
 
 	b.WriteString("## Steps\n")
 	for i, step := range result.Steps {
 		fmt.Fprintf(&b, "\n### %d. %s [%s]\n", i+1, step.StepID, step.Status)
-		fmt.Fprintf(&b, "- Action: %s\n", step.Action)
+		if step.Action != nil {
+			data, _ := json.Marshal(step.Action)
+			fmt.Fprintf(&b, "- Action: %s\n", data)
+		}
+		fmt.Fprintf(&b, "- Fidelity: %s\n", step.Fidelity)
 
 		total := len(step.Checks)
 		passed := 0
@@ -157,4 +173,16 @@ func (e *EvidenceStore) GenerateReport(result *JourneyResult) error {
 	}
 
 	return os.WriteFile(filepath.Join(e.dir, "report.md"), []byte(b.String()), 0o644)
+}
+
+func (e *EvidenceStore) SaveReferenceDiffs(stepID string, references []ReferenceDiff) error {
+	data, err := json.MarshalIndent(references, "", "  ")
+	if err != nil {
+		return err
+	}
+	dir := filepath.Join(e.dir, "steps", stepID)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(dir, "reference-diffs.json"), data, 0644)
 }

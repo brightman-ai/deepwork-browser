@@ -86,7 +86,7 @@ func TestClickOnBackgroundTargetSucceedsAndReportsBroughtToFront(t *testing.T) {
 	session, impl, ctx := openFrontmostSession(t, true)
 
 	started := time.Now()
-	if _, err := session.ActWithSessionMode(ctx, "click 140,90", false); err != nil {
+	if _, err := executeFixtureAction(ctx, session, Action{Verb: "click", Target: fixtureViewport(140, 90)}, false, true); err != nil {
 		t.Fatalf("后台 target 上 click 失败: %v", err)
 	}
 	elapsed := time.Since(started)
@@ -114,7 +114,7 @@ func TestHoverOnBackgroundTargetNoLongerHangs(t *testing.T) {
 	session, impl, ctx := openFrontmostSession(t, true)
 
 	started := time.Now()
-	if _, err := session.ActWithSessionMode(ctx, "hoverat 140,190", false); err != nil {
+	if _, err := executeFixtureAction(ctx, session, Action{Verb: "hover", Target: fixtureViewport(140, 190)}, false, true); err != nil {
 		t.Fatalf("后台 target 上 hover 失败: %v", err)
 	}
 	elapsed := time.Since(started)
@@ -146,10 +146,13 @@ func TestHoverOnBackgroundTargetNoLongerHangs(t *testing.T) {
 func TestSecondActionOnAlreadyFrontTargetDoesNotReportBroughtToFront(t *testing.T) {
 	session, impl, ctx := openFrontmostSession(t, false)
 
-	if _, err := session.ActWithSessionMode(ctx, "click 140,90", false); err != nil {
+	if _, err := executeFixtureAction(ctx, session, Action{Verb: "click", Target: fixtureViewport(140, 90)}, false, true); err != nil {
 		t.Fatalf("第一次 click 失败: %v", err)
 	}
-	if _, err := session.ActWithSessionMode(ctx, "click 140,90", false); err != nil {
+	if _, err := session.SnapWithSessionMode(ctx, 2); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := executeFixtureAction(ctx, session, Action{Verb: "click", Target: fixtureViewport(140, 90)}, false, true); err != nil {
 		t.Fatalf("第二次 click 失败: %v", err)
 	}
 	if impl.LastActionFidelity().BroughtToFront {

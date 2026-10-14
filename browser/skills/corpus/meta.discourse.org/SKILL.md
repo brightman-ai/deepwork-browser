@@ -10,6 +10,8 @@ verified_at: 2026-05-01
 
 # Discourse
 
+Protocol syntax migrated to v2; the prior verified_at date is historical site evidence, not current UI validation. Adapt visible names/selectors before accepting a baseline. Publishing/sending requires the user task to authorize that operation. Plans do not execute themselves.
+
 ## Site
 - Server-rendered forum UI with progressive enhancement.
 - Auth may be required for reply/publish actions.
@@ -18,8 +20,8 @@ verified_at: 2026-05-01
 ## capture-thread
 intent: Capture current thread context as evidence
 
-```dw-browser
-snap
+```sh
+dw-browser observe --id NAME
 ```
 
 - Fast mode is enough because this action only records visible browser context.
@@ -28,19 +30,48 @@ snap
 ## open-reply
 intent: Open the reply composer without submitting
 
-```dw-browser
-click button:'Reply'
-wait "textarea, [contenteditable=true]" --timeout 10
+```dw-browser-plan
+{
+  "steps": [
+    {
+      "action": {
+        "kind": "click",
+        "target": {
+          "kind": "locator",
+          "locator": "role=button[name=\"Reply\"]"
+        }
+      }
+    },
+    {
+      "wait": {
+        "assert": "exists(role='textbox')",
+        "timeout_ms": 10000
+      }
+    }
+  ]
+}
 ```
 
 - Opening the composer is reversible; publishing remains a separate confirmed action.
-- If login is required, switch to Trusted mode before retrying.
+- If login is required, switch to webvisit with the explicit authorized --allow-host before retrying.
 
 ## quote-post
 intent: Quote selected post text into a local draft
 
-```dw-browser
-click button:'Quote'
+```dw-browser-plan
+{
+  "steps": [
+    {
+      "action": {
+        "kind": "click",
+        "target": {
+          "kind": "locator",
+          "locator": "role=button[name=\"Quote\"]"
+        }
+      }
+    }
+  ]
+}
 ```
 
 - Treat this as an assisted copy/insert step.
@@ -49,9 +80,21 @@ click button:'Quote'
 ## publish-reply
 intent: Publish the prepared reply after Human confirmation
 
-```dw-browser
-click button:'Reply'
+```dw-browser-plan
+{
+  "steps": [
+    {
+      "action": {
+        "kind": "click",
+        "target": {
+          "kind": "locator",
+          "locator": "role=button[name=\"Reply\"]"
+        }
+      }
+    }
+  ]
+}
 ```
 
-- Requires Trusted mode and explicit Human confirmation.
-- Browser Sidebar Standard mode must block silent publish attempts.
+- Requires webvisit with the explicit authorized --allow-host and explicit Human confirmation.
+- Browser Sidebar default origin-gated webvisit must block silent publish attempts.

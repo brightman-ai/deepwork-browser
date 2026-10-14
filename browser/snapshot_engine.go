@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
@@ -22,6 +24,11 @@ import (
 
 // snapshotEngine 实现 A11y 快照获取与 Fallback 链 [IR-07]。
 type snapshotEngine struct {
+	humanFocusBackendID atomic.Int64
+	redactFormValues    bool
+	runtimeRunID        string
+	ownerSource         func(context.Context) (*SessionInfo, error)
+	authority           *observationAuthority
 	// refTable 当前快照的 Ref → BackendNodeID 映射（每次 snap 后重建）
 	refTable map[string]int64
 	// refMeta Ref → ElementRef 完整信息（DOM 发现的 clickable 用 name 做 CSS 选择器回退）
@@ -157,7 +164,31 @@ func (e *snapshotEngine) LookupRefMeta(ref string) (*ElementRef, bool) {
 //  2. A11y Refs < 3 → DOM fallback，SnapshotType="dom_fallback" [TC-09-U-03]
 //  3. DOM 也空 → screenshot fallback，SnapshotType="screenshot_fallback" [TC-09-U-04]
 //  4. 页面正在水合/挑战/启动且 fallback 暂不可用 → progressive_loading，调用方稍后重试
-func (e *snapshotEngine) GetSnapshot(ctx context.Context) (*Snapshot, error) {
+func (e *snapshotEngine) captureSnapshot(ctx context.Context) (snapshot *Snapshot, captureErr error) {
+	var presence documentPresenceProbe
+	presenceCaptured := false
+	if e.ownerSource != nil {
+		if info, err := e.ownerSource(ctx); err == nil && info != nil {
+			e.redactFormValues = e.redactFormValues || info.RedactFormValues
+		} else {
+			e.redactFormValues = true
+		}
+	}
+	e.revokeObservationAuthority()
+	defer func() {
+		e.revokeObservationAuthority()
+		if snapshot != nil {
+			_ = e.captureControlStates(ctx, snapshot.Refs)
+			if presenceCaptured {
+				snapshot.DocumentText = presence.Text
+				snapshot.DocumentTextComplete = presence.Complete
+			}
+			snapshot.ObservationID = ""
+			for i := range snapshot.Refs {
+				snapshot.Refs[i].Observed = false
+			}
+		}
+	}()
 	// 步骤 1: 获取当前 URL 和 Title
 	var currentURL, title string
 	basicCtx, basicCancel := context.WithTimeout(ctx, snapshotBasicTimeout)
@@ -188,7 +219,8 @@ func (e *snapshotEngine) GetSnapshot(ctx context.Context) (*Snapshot, error) {
 	refs := extractInteractableRefs(axNodes)
 
 	// 步骤 3.5: 文档级在场证据（testid 清单 + 渲染文本）——断言层证据，与动作普查分离
-	presence, _ := probeDocumentPresence(ctx)
+	presence, captureErr = probeDocumentPresence(ctx, e.redactFormValues)
+	presenceCaptured = captureErr == nil
 
 	// 步骤 4: 检查 Refs 数量，< 3 时走 fallback [IR-07, TC-09-U-03]。
 	// explore 的可见集允许只有 1-2 个控件（空状态/确认页很常见），且还需先
@@ -282,18 +314,20 @@ func (e *snapshotEngine) GetSnapshot(ctx context.Context) (*Snapshot, error) {
 		Census:                     census,
 		DocumentTestIDs:            presence.TestIDs,
 		DocumentText:               presence.Text,
+		DocumentTextComplete:       presence.Complete,
 	}, nil
 }
 
 type documentPresenceProbe struct {
-	TestIDs []string `json:"testids"`
-	Text    string   `json:"text"`
+	TestIDs  []string `json:"testids"`
+	Text     string   `json:"text"`
+	Complete bool     `json:"complete"`
 }
 
 // probeDocumentPresence enumerates every data-testid in the document and the
 // rendered visible text (innerText, capped at 256KiB). Failure leaves presence
 // facts empty and the assertion layer fails closed, never a false witness.
-func probeDocumentPresence(ctx context.Context) (documentPresenceProbe, error) {
+func probeDocumentPresence(ctx context.Context, redactFormValues bool) (documentPresenceProbe, error) {
 	var probe documentPresenceProbe
 	probeCtx, cancel := context.WithTimeout(ctx, a11yProbeTimeout)
 	defer cancel()
@@ -305,8 +339,12 @@ func probeDocumentPresence(ctx context.Context) (documentPresenceProbe, error) {
 		});
 		// innerText excludes form control values; editors hold canonical content
 		// in textarea/input values, which are equally rendered human-visible text.
-		const formText = [...document.querySelectorAll('input, textarea')]
-			.filter((el) => {
+		const redactAll = `+fmt.Sprintf("%t", redactFormValues)+`;
+ let omitted=false;
+ const formText = [...document.querySelectorAll('input, textarea')]
+
+            .filter((el) => {
+                if(redactAll||(`+intrinsicSensitiveControlJS+`)(el)){if(el.value)omitted=true;return false;}
 				const r = el.getBoundingClientRect();
 				const cs = getComputedStyle(el);
 				return r.width > 0 && r.height > 0 && cs.visibility !== 'hidden' && cs.display !== 'none';
@@ -315,7 +353,7 @@ func probeDocumentPresence(ctx context.Context) (documentPresenceProbe, error) {
 			.filter(Boolean)
 			.join('\n');
 		const text = (((document.body && document.body.innerText) || '') + '\n' + formText);
-		return { testids: [...seen], text: text.slice(0, 262144) };
+		return { testids: [...seen], text: text.slice(0, 262144),complete:!omitted&&text.length<=262144 };
 	})()`, &probe))
 	if err != nil {
 		return documentPresenceProbe{}, err
@@ -330,7 +368,7 @@ func (e *snapshotEngine) domFallback(ctx context.Context, url, title, reason str
 	err := chromedp.Run(domCtx, chromedp.Evaluate(`(() => {
 		const body = document.body;
 		if (!body) return "";
-		const text = (body.innerText || body.textContent || "").trim();
+		const text = (body.innerText || "").trim();
 		return text.slice(0, 12000);
 	})()`, &rawText))
 	domCancel()
@@ -484,7 +522,7 @@ func probePageLoadState(ctx context.Context) (pageLoadProbe, error) {
 	defer cancel()
 	js := `(() => {
 		const body = document.body;
-		const text = body ? ((body.innerText || body.textContent || '').trim()) : '';
+		const text = body ? ((body.innerText || '').trim()) : '';
 		return {
 			url: location.href || '',
 			title: document.title || '',
@@ -545,7 +583,7 @@ func (e *snapshotEngine) GetText(ctx context.Context, focus *string) (string, er
 	err := chromedp.Run(ctx, chromedp.Evaluate(`(() => {
 		const body = document.body;
 		if (!body) return "";
-		return body.innerText || body.textContent || "";
+		return body.innerText || "";
 	})()`, &bodyText))
 	if err == nil && strings.TrimSpace(bodyText) != "" {
 		return bodyText, nil
@@ -902,9 +940,9 @@ func extractInteractableRefs(nodes []*accessibility.Node) []ElementRef {
 					NameFull:      name,
 					NameShort:     nameShort,
 					Placeholder:   placeholder,
-					Value:         getAXValue(node),
-					Interactable:  true,
-					ModalRank:     modalRank,
+
+					Interactable: true,
+					ModalRank:    modalRank,
 				})
 			}
 		}
@@ -949,8 +987,8 @@ func extractInteractableRefs(nodes []*accessibility.Node) []ElementRef {
 				NameFull:      name,
 				NameShort:     nameShort,
 				Placeholder:   placeholder,
-				Value:         getAXValue(node),
-				Interactable:  true,
+
+				Interactable: true,
 			})
 		}
 	}
@@ -1249,31 +1287,43 @@ func discoverClickableDOMViaJS(ctx context.Context, existingRefs []ElementRef, v
 	return supplementary
 }
 
-// computeRecommendedLocator 计算元素的推荐定位器。
+// RecommendedLocatorForElement emits only canonical executable locator syntax.
+// Ambiguous role/name matches deliberately have no fabricated nth index.
+func RecommendedLocatorForElement(ref ElementRef) string {
+	if ref.TestID != "" && !strings.ContainsRune(ref.TestID, 0) {
+		return "css=[data-testid=" + cssStringLiteral(ref.TestID) + "]"
+	}
+	if ref.Role == "" {
+		return ""
+	}
+	locator := "role=" + ref.Role
+	if ref.Name != "" {
+		locator += "[name=" + strconv.Quote(ref.Name) + "]"
+	}
+	return locator
+}
 func computeRecommendedLocator(ref *ElementRef) string {
-	// 优先: testid
-	if ref.TestID != "" {
-		return "#" + ref.TestID
+	if ref == nil {
+		return ""
 	}
-	// 唯一 role+name: 简写
-	if ref.MatchCount == 1 && ref.Name != "" {
-		return ref.Role + ":'" + ref.Name + "'"
-	}
-	// 歧义 role+name: canonical + nth
-	if ref.MatchCount > 1 && ref.Name != "" {
-		// We'll use the ref number to determine nth
-		// Extract numeric suffix from ref
-		nth := extractRefNth(ref.Ref)
-		if nth > 0 {
-			return fmt.Sprintf("role=%s[name=\"%s\"][nth=%d]", ref.Role, ref.Name, nth)
+	return RecommendedLocatorForElement(*ref)
+}
+func cssStringLiteral(value string) string {
+	var result strings.Builder
+	result.WriteByte('"')
+	for _, char := range value {
+		switch {
+		case char == '"' || char == '\\':
+			result.WriteByte('\\')
+			result.WriteRune(char)
+		case char < 32 || char == 127:
+			fmt.Fprintf(&result, "\\%x ", char)
+		default:
+			result.WriteRune(char)
 		}
-		return fmt.Sprintf("role=%s[name*=\"%s\"]", ref.Role, ref.Name)
 	}
-	// Bare role fallback
-	if ref.Role != "" {
-		return ref.Role
-	}
-	return ref.Ref
+	result.WriteByte('"')
+	return result.String()
 }
 
 // extractRefNth extracts the numeric index from a ref string like "e3" or "@r3".
@@ -1315,7 +1365,7 @@ func buildCompactTextWithMode(refs []ElementRef, sessionMode bool) string {
 	var sb strings.Builder
 	for i, ref := range refs {
 		sb.WriteString("[")
-		if sessionMode && strings.HasPrefix(ref.Ref, "@r") {
+		if sessionMode && strings.HasPrefix(ref.Ref, "@o") {
 			// Session mode: use @rN ref
 			sb.WriteString(ref.Ref)
 		} else {
@@ -1352,36 +1402,16 @@ func buildCompactTextWithMode(refs []ElementRef, sessionMode bool) string {
 	return strings.TrimSpace(sb.String())
 }
 
-// GetSnapshotWithSessionMode 获取快照，session 模式下使用 @rN ref。
-func (e *snapshotEngine) GetSnapshotWithSessionMode(ctx context.Context, snapEpoch int) (*Snapshot, error) {
-	snap, err := e.GetSnapshot(ctx)
+// GetSnapshot is the explicit observation boundary shared by all adapters.
+func (e *snapshotEngine) GetSnapshot(ctx context.Context) (*Snapshot, error) {
+	snap, err := e.captureSnapshot(ctx)
 	if err != nil {
 		return nil, err
 	}
-	if len(snap.Refs) == 0 {
-		return snap, nil
-	}
-	// Remap refs to @rN format and rebuild tables
-	for i := range snap.Refs {
-		oldRef := snap.Refs[i].Ref
-		newRef := fmt.Sprintf("@r%d", i+1)
-		snap.Refs[i].Ref = newRef
-		// Update refTable and refMeta
-		if nodeID, ok := e.refTable[oldRef]; ok {
-			e.refTable[newRef] = nodeID
-			delete(e.refTable, oldRef)
-		}
-		if meta, ok := e.refMeta[oldRef]; ok {
-			meta.Ref = newRef
-			e.refMeta[newRef] = meta
-			delete(e.refMeta, oldRef)
-		}
-		// Recompute recommended locator with new ref
-		snap.Refs[i].RecommendedLocator = computeRecommendedLocator(&snap.Refs[i])
-	}
-	// Rebuild compact text in session mode
-	snap.Text = buildCompactTextWithMode(snap.Refs, true)
-	return snap, nil
+	return e.authorizeSnapshot(ctx, snap)
+}
+func (e *snapshotEngine) GetSnapshotWithSessionMode(ctx context.Context, _ int) (*Snapshot, error) {
+	return e.GetSnapshot(ctx)
 }
 
 // estimateTokens 估算文本的 token 数（约 4 字符/token）。
@@ -1472,7 +1502,17 @@ var compactInteractableRoles = map[string]bool{
 // SnapWithOptions 获取快照并应用 SnapOptions 过滤/格式化 [SC-20, SC-21]。
 // 若 opts.Selector != ""，使用 CDP DOM.querySelector 定位根节点，再用
 // accessibility.GetPartialAXTree 获取该子树的 A11y 数据。
-func (e *snapshotEngine) SnapWithOptions(ctx context.Context, opts SnapOptions) (*Snapshot, error) {
+func (e *snapshotEngine) snapshotWithOptionsRaw(ctx context.Context, opts SnapOptions) (snapshot *Snapshot, captureErr error) {
+	e.revokeObservationAuthority()
+	defer func() {
+		e.revokeObservationAuthority()
+		if snapshot != nil {
+			snapshot.ObservationID = ""
+			for i := range snapshot.Refs {
+				snapshot.Refs[i].Observed = false
+			}
+		}
+	}()
 	// 步骤 1: 获取 URL / Title
 	var currentURL, title string
 	basicCtx, basicCancel := context.WithTimeout(ctx, snapshotBasicTimeout)
@@ -1610,7 +1650,7 @@ func (e *snapshotEngine) SnapWithOptions(ctx context.Context, opts SnapOptions) 
 	}
 
 	// No selector: full-page snap with optional compact/max-depth
-	snap, err := e.GetSnapshot(ctx)
+	snap, err := e.captureSnapshot(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -1706,4 +1746,20 @@ func applyMaxDepthText(refs []ElementRef, maxDepth int, sessionMode bool) string
 	hidden := len(refs) - threshold
 	text := buildCompactTextWithMode(visible, sessionMode)
 	return text + fmt.Sprintf(" [... %d children]", hidden)
+}
+
+func (e *snapshotEngine) SnapWithOptions(ctx context.Context, opts SnapOptions) (*Snapshot, error) {
+	snap, err := e.snapshotWithOptionsRaw(ctx, opts)
+	if err != nil {
+		return nil, err
+	}
+	snap, err = e.authorizeSnapshot(ctx, snap)
+	if err != nil {
+		return nil, err
+	}
+	if opts.MaxDepth > 0 {
+		snap.Text = applyMaxDepthText(snap.Refs, opts.MaxDepth, true)
+		snap.TokenEst = estimateTokens(snap.Text)
+	}
+	return snap, nil
 }

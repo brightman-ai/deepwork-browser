@@ -142,11 +142,24 @@ func TestStrictHumanFillTypePressSelectAndHitCoverage(t *testing.T) {
 	choiceRef := refByTestID("choice")
 	partialRef := refByTestID("partial")
 	shadowRef := refByName("Shadow Field")
+	refreshObservation := func() {
+		var err error
+		snap, err = sessionCore.SnapWithSessionMode(ctx, 1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		fieldRef = refByTestID("field")
+		otherRef = refByTestID("other")
+		choiceRef = refByTestID("choice")
+		partialRef = refByTestID("partial")
+		shadowRef = refByName("Shadow Field")
+	}
 
-	if _, err := sessionCore.ActWithSessionMode(ctx, "press "+otherRef+" End", false); err == nil || !strings.Contains(err.Error(), "run click "+otherRef+" first") {
+	if _, err := executeFixtureAction(ctx, sessionCore, Action{Verb: "press", Target: fixtureRef(otherRef), Key: "End"}, false, true); err == nil || !strings.Contains(err.Error(), "run click "+otherRef+" first") {
 		t.Fatalf("strict press without human focus error=%v", err)
 	}
-	if _, err := sessionCore.ActWithSessionMode(ctx, "fill "+fieldRef+" 'Human'", false); err != nil {
+	refreshObservation()
+	if _, err := executeFixtureAction(ctx, sessionCore, Action{Verb: "fill", Target: fixtureRef(fieldRef), Text: "Human"}, false, true); err != nil {
 		t.Fatalf("strict fill: %v", err)
 	}
 	report := core.(ActionFidelityCapable).LastActionFidelity()
@@ -155,10 +168,12 @@ func TestStrictHumanFillTypePressSelectAndHitCoverage(t *testing.T) {
 		t.Fatalf("fill fidelity report=%+v", report)
 	}
 
-	if _, err := sessionCore.ActWithSessionMode(ctx, "type "+fieldRef+" '!'", false); err != nil {
+	refreshObservation()
+	if _, err := executeFixtureAction(ctx, sessionCore, Action{Verb: "type", Target: fixtureRef(fieldRef), Text: "!"}, false, true); err != nil {
 		t.Fatalf("strict type: %v", err)
 	}
-	if _, err := sessionCore.ActWithSessionMode(ctx, "press "+fieldRef+" End", false); err != nil {
+	refreshObservation()
+	if _, err := executeFixtureAction(ctx, sessionCore, Action{Verb: "press", Target: fixtureRef(fieldRef), Key: "End"}, false, true); err != nil {
 		t.Fatalf("strict press after human focus: %v", err)
 	}
 	if report = core.(ActionFidelityCapable).LastActionFidelity(); !report.FocusUpdated || report.FocusedBackend == 0 {
@@ -198,7 +213,8 @@ func TestStrictHumanFillTypePressSelectAndHitCoverage(t *testing.T) {
 		t.Fatalf("strict path lacks trusted click/input evidence: %+v", state.Events)
 	}
 
-	if _, err := sessionCore.ActWithSessionMode(ctx, "fill "+shadowRef+" 'Shadow'", false); err != nil {
+	refreshObservation()
+	if _, err := executeFixtureAction(ctx, sessionCore, Action{Verb: "fill", Target: fixtureRef(shadowRef), Text: "Shadow"}, false, true); err != nil {
 		t.Fatalf("strict shadow fill: %v", err)
 	}
 	var nested struct {
@@ -294,7 +310,8 @@ func TestStrictHumanFillTypePressSelectAndHitCoverage(t *testing.T) {
 	if !foundPartial {
 		t.Fatalf("hit audit missed partial target: %+v", findings)
 	}
-	if _, err := sessionCore.ActWithSessionMode(ctx, "click "+partialRef, false); err != nil {
+	refreshObservation()
+	if _, err := executeFixtureAction(ctx, sessionCore, Action{Verb: "click", Target: fixtureRef(partialRef)}, false, true); err != nil {
 		t.Fatalf("partial-center click should succeed: %v", err)
 	}
 	report = core.(ActionFidelityCapable).LastActionFidelity()
@@ -302,7 +319,8 @@ func TestStrictHumanFillTypePressSelectAndHitCoverage(t *testing.T) {
 		t.Fatalf("partial click report=%+v", report)
 	}
 
-	if _, err := sessionCore.ActWithSessionMode(ctx, "select "+choiceRef+" 'Beta'", false); err != nil {
+	refreshObservation()
+	if _, err := executeFixtureAction(ctx, sessionCore, Action{Verb: "select", Target: fixtureRef(choiceRef), Value: "Beta"}, false, true); err != nil {
 		t.Fatalf("strict synthetic select: %v", err)
 	}
 	report = core.(ActionFidelityCapable).LastActionFidelity()
@@ -311,7 +329,8 @@ func TestStrictHumanFillTypePressSelectAndHitCoverage(t *testing.T) {
 	}
 
 	capable.SetInteractionScenario(ScenarioWebVisit)
-	if _, err := sessionCore.ActWithSessionMode(ctx, "select "+choiceRef+" 'Alpha'", false); err != nil {
+	refreshObservation()
+	if _, err := executeFixtureAction(ctx, sessionCore, Action{Verb: "select", Target: fixtureRef(choiceRef), Value: "Alpha"}, false, true); err != nil {
 		t.Fatalf("utility synthetic select: %v", err)
 	}
 	report = core.(ActionFidelityCapable).LastActionFidelity()
@@ -323,7 +342,7 @@ func TestStrictHumanFillTypePressSelectAndHitCoverage(t *testing.T) {
 func TestStrictHumanRejectsElementMode(t *testing.T) {
 	engine := newActionEngine(newSnapshotEngine())
 	engine.setInteractionPolicy(ScenarioInteractionPolicy(ScenarioAppTestExplore))
-	_, err := engine.ExecuteWithInteractionMode(context.Background(), "click button", false, true, InteractionModeElement)
+	_, err := executeFixtureEngine(context.Background(), engine, Action{Verb: "click", Target: fixtureLocator("role=button")}, false, true, InteractionModeElement)
 	if err == nil || !strings.Contains(err.Error(), "unavailable in strict-human") {
 		t.Fatalf("strict element mode error=%v", err)
 	}

@@ -1,9 +1,9 @@
 # BrowserAct Article Test Cases
 
-Status: active baseline
+Status: typed v2 authored fixtures; current live execution pending
 Source: user-provided text from `https://mp.weixin.qq.com/s/Q5eWBCIXQ8MjJPKijJqrLw`
 
-Latest local verified report: `tests/browseract-article/reports/20260528-023606-93463/summary.md`
+Historical v1 local report (does not verify the current v2 runtime): `tests/browseract-article/reports/20260528-023606-93463/summary.md`
 (`reports/` contains generated run artifacts and is intentionally not part of the source baseline.)
 
 Jina read result on 2026-05-28 returned the WeChat environment verification page only:
@@ -37,13 +37,22 @@ The article describes BrowserAct as an AI-agent browser automation CLI with thes
 
 ## Test Routes
 
-`run_comparison.sh` runs four approaches against the same non-trivial local fixture:
+`run_comparison.sh` runs two typed authored journeys and one informational visual check against the local fixture. Set `DW` to the candidate executable; the script writes a new report directory and preserves historical artifacts.
 
 | Route | Purpose | Gate |
 |---|---|---|
-| A11y deterministic | Stable structural controls and article facts | Required |
-| NL step journey | Natural-language step inside BDD journey | Informational-to-required once stable |
-| Plan/do | Direct planner output + execution boundary | Required for AI-native CLI viability |
-| Vision LLM | Screenshot-level oracle over a rendered page | Informational; reports BLOCKED when provider unavailable |
+| Deterministic article journey | Filter, clear, switch layer, generate summary | Required |
+| Caller-authored typed journey | Filter remote-assist, assert one card, generate summary | Required |
+| Visual advice | Screenshot review with explicit provider evidence | Informational |
 
-The fixture intentionally contains a dense article layout, search/filter interaction, disclosure panels, a comparison table, and a fake video block. It is more complex than a static `example.com` smoke page while remaining deterministic enough to isolate `dw-browser` behavior.
+`journeys/nl-step.yaml` retains its historical filename for callers but contains explicit typed actions. Runtime NL planning and `plan/do` are retired. A caller may author a typed plan from natural-language intent before submitting a journey; `app-test-baseline` invokes no internal LLM.
+
+Plain headings/cards are verified through rendered regions. The summary assertion checks the previously empty output region, rather than the permanent button label containing the same words. A CSS probe checks the exact filter status. Initial-load telemetry is not claimed as zero without collection evidence.
+
+Run:
+
+```bash
+DW=/path/to/candidate tests/browseract-article/run_comparison.sh
+```
+
+The fixture contains a dense article layout, search/filter interaction, disclosure panels, comparison table and fake video block. These cases validate local browser behavior, not BrowserAct's external anti-detection or captcha claims.

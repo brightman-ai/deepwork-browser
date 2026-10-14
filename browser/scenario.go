@@ -65,6 +65,17 @@ func (p InteractionPolicy) StrictHuman() bool {
 	return p.Fidelity == InteractionFidelityStrictHuman
 }
 
+// Validate requires a recognized scenario-derived posture before public action
+// execution. An unbound core must not silently use a weaker input mechanism.
+func (p InteractionPolicy) Validate() error {
+	for _, scenario := range ScenarioValues {
+		if p == ScenarioInteractionPolicy(scenario) {
+			return nil
+		}
+	}
+	return fmt.Errorf("%w: interaction scenario is missing or unknown; call SetInteractionScenario with a recognized scenario before ExecuteAction", ErrActFailed)
+}
+
 // ScenarioInteractionPolicy is the SSOT for scenario interaction semantics.
 func ScenarioInteractionPolicy(s Scenario) InteractionPolicy {
 	switch s {

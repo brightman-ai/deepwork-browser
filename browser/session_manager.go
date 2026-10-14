@@ -28,6 +28,22 @@ const (
 
 // SessionInfo Chrome セッション情報（ファイルに永続化）。
 type SessionInfo struct {
+	RedactFormValues       bool    `json:"redact_form_values,omitempty"`
+	EvidenceRoot           string  `json:"evidence_root,omitempty"`
+	ObservationID          string  `json:"observation_id,omitempty"`
+	ObservationPath        string  `json:"observation_path,omitempty"`
+	ObservationRunID       string  `json:"observation_run_id,omitempty"`
+	ObservationTargetID    string  `json:"observation_target_id,omitempty"`
+	ObservationDocumentID  int64   `json:"observation_document_id,omitempty"`
+	ObservationPageURL     string  `json:"observation_page_url,omitempty"`
+	ObservationValid       bool    `json:"observation_valid"`
+	ObservationScrollX     float64 `json:"observation_scroll_x"`
+	ObservationScrollY     float64 `json:"observation_scroll_y"`
+	ObservationDPR         float64 `json:"observation_dpr"`
+	ObservationViewportW   int     `json:"observation_viewport_w,omitempty"`
+	ObservationViewportH   int     `json:"observation_viewport_h,omitempty"`
+	AuthorityPreviousOwner string  `json:"authority_previous_owner,omitempty"`
+
 	SessionID        string             `json:"session_id"`
 	BrowserSessionID string             `json:"browser_session_id,omitempty"`
 	SessionKind      BrowserSessionKind `json:"session_kind,omitempty"`
@@ -56,10 +72,15 @@ type SessionInfo struct {
 	Refs             []SessionRef       `json:"refs"`       // Ref table from last snap
 	// LastActionOutcome is a crash/timeout fence for persisted ref authority.
 	// "in_progress" and "unknown" mean no ref may be trusted until observe.
-	LastActionOutcome string `json:"last_action_outcome,omitempty"`
+	LastActionOperationID       string `json:"last_action_operation_id,omitempty"`
+	InterventionCount           int    `json:"intervention_count"`
+	LastInterventionOperationID string `json:"last_intervention_operation_id,omitempty"`
+	LastInterventionKind        string `json:"last_intervention_kind,omitempty"`
+	LastInterventionAt          string `json:"last_intervention_at,omitempty"`
+	LastActionOutcome           string `json:"last_action_outcome,omitempty"`
 	// HumanFocus* proves that a strict-human press target was focused by a real
 	// pointer action in this exact persisted snapshot epoch. A later observe
-	// advances SnapEpoch and therefore invalidates the proof.
+	// revalidates the prior native proof before advancing its observation epoch.
 	HumanFocusBackendNodeID int64  `json:"human_focus_backend_node_id,omitempty"`
 	HumanFocusPageURL       string `json:"human_focus_page_url,omitempty"`
 	HumanFocusEpoch         int    `json:"human_focus_epoch,omitempty"`
@@ -189,16 +210,24 @@ func SaveSession(info *SessionInfo) error {
 // replacement. In particular, set reconciled before SaveSession normalizes an
 // unknown/in-progress session, otherwise normalization correctly revokes the
 // newly observed refs along with the stale generation.
-func SaveObservedSession(info *SessionInfo, snap *Snapshot, refs []SessionRef) error {
+func ApplyObservedSession(info *SessionInfo, snap *Snapshot, refs []SessionRef) error {
 	if info == nil {
 		return fmt.Errorf("session observation: nil session")
 	}
 	if snap == nil {
 		return fmt.Errorf("session observation: nil snapshot")
 	}
+	revalidateSessionHumanFocus(info, snap)
 	info.Refs = append([]SessionRef(nil), refs...)
 	info.PageURL = snap.URL
 	info.LastActionOutcome = SessionActionOutcomeReconciled
+	return nil
+}
+
+func SaveObservedSession(info *SessionInfo, snap *Snapshot, refs []SessionRef) error {
+	if err := ApplyObservedSession(info, snap, refs); err != nil {
+		return err
+	}
 	return SaveSession(info)
 }
 
@@ -471,4 +500,31 @@ func FetchChromeTargets(port int) ([]map[string]interface{}, error) {
 		return nil, fmt.Errorf("session_manager: decode targets: %w", err)
 	}
 	return targets, nil
+}
+
+// revalidateSessionHumanFocus carries a prior native proof through a new capture.
+// A DOM-focused node alone never establishes proof. Bind calls this before it
+// replaces the prior capture identity; Apply calls it for adapters without Bind.
+func revalidateSessionHumanFocus(info *SessionInfo, snap *Snapshot) {
+	verified := false
+	if info.HumanFocusBackendNodeID > 0 && (info.AuthorityState == AuthorityAgentic || info.AuthorityState == AuthorityShared) &&
+		info.LastActionOutcome != SessionActionOutcomeUnknown && info.LastActionOutcome != "in_progress" &&
+		info.ObservationDocumentID > 0 && info.ObservationDocumentID == snap.DocumentID &&
+		info.ObservationRunID != "" && info.ObservationRunID == snap.RuntimeRunID && snap.RuntimeRunID == info.BrowserRunID &&
+		info.ObservationTargetID != "" && info.ObservationTargetID == snap.TargetID && snap.TargetID == info.TargetID {
+		for _, ref := range snap.Refs {
+			if ref.BackendNodeID == info.HumanFocusBackendNodeID && ref.HumanFocusVerified {
+				verified = true
+				break
+			}
+		}
+	}
+	if verified {
+		info.HumanFocusEpoch = info.SnapEpoch
+		info.HumanFocusPageURL = snap.URL
+	} else {
+		info.HumanFocusBackendNodeID = 0
+		info.HumanFocusEpoch = 0
+		info.HumanFocusPageURL = ""
+	}
 }

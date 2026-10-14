@@ -139,45 +139,17 @@ type skillMeta struct {
 // ============================================================
 
 // runSkills handles: dw-browser skills {list|read|write} [args...]
-func runSkills(args []string) {
-	if len(args) == 1 && wantsHelp(args) {
-		printCommandUsage("skills")
-		os.Exit(exitOK)
-	}
-	if len(args) < 1 {
-		fmt.Fprintln(os.Stderr, "dw-browser skills: requires subcommand (list, read, write)")
-		os.Exit(exitRunErr)
-	}
-
-	sub := args[0]
-	switch sub {
-	case "list":
-		runSkillsList()
-	case "read":
-		runSkillsRead(args[1:])
-	case "write":
-		runSkillsWrite(args[1:])
-	default:
-		fmt.Fprintf(os.Stderr, "dw-browser skills: unknown subcommand %q (use: list, read, write)\n", sub)
-		os.Exit(exitRunErr)
-	}
-}
-
-// ============================================================
-// § skills list
-// ============================================================
-
-func runSkillsList() {
+func runSkillsListResult(args []string) (commandOutput CommandResult, resultErr error) {
 	baseDir := skillsBaseDir()
 	if baseDir == "" {
-		fmt.Fprintln(os.Stderr, "dw-browser skills list: cannot resolve home directory")
-		os.Exit(exitRunErr)
+		commandOutput.note("%v\n", "dw-browser skills list: cannot resolve home directory")
+		return finishCommand(commandOutput, exitRunErr)
 	}
 
 	entries, err := os.ReadDir(baseDir)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "dw-browser skills list: %v\n", err)
-		os.Exit(exitRunErr)
+		commandOutput.note("dw-browser skills list: %v\n", err)
+		return finishCommand(commandOutput, exitRunErr)
 	}
 
 	type skillEntry struct {
@@ -203,29 +175,33 @@ func runSkillsList() {
 		return skillList[i].dirName < skillList[j].dirName
 	})
 
+	skillRows := []map[string]any{}
 	for _, s := range skillList {
 		domain := s.meta.Domain
 		if domain == "" {
 			domain = "(generic)"
 		}
 		actions := formatYAMLInlineArray(s.meta.Actions)
-		fmt.Printf("%-18s %-14s %s\n", s.dirName, domain, actions)
+		skillRows = append(skillRows, map[string]any{"name": s.dirName, "domain": domain, "actions": actions})
 	}
-	os.Exit(exitOK)
+	commandOutput.Payload = map[string]any{"skills": skillRows}
+	return finishCommand(commandOutput, exitOK)
+
+	return commandOutput, nil
 }
 
 // ============================================================
 // § skills read
 // ============================================================
 
-func runSkillsRead(args []string) {
+func runSkillsReadResult(args []string) (commandOutput CommandResult, resultErr error) {
 	if wantsHelp(args) {
-		printCommandUsage("skills")
-		os.Exit(exitOK)
+		commandOutput.Payload = generatedHelp("skills")
+		return finishCommand(commandOutput, exitOK)
 	}
 	if len(args) < 1 {
-		fmt.Fprintln(os.Stderr, "dw-browser skills read: requires skill name")
-		os.Exit(exitRunErr)
+		commandOutput.note("%v\n", "dw-browser skills read: requires skill name")
+		return finishCommand(commandOutput, exitRunErr)
 	}
 
 	name := args[0]
@@ -251,8 +227,8 @@ func runSkillsRead(args []string) {
 		embedPath := "corpus/" + name + "/SKILL.md"
 		embedded, embedErr := skills.ReadEmbedded(embedPath)
 		if embedErr != nil {
-			fmt.Fprintf(os.Stderr, "dw-browser skills read: skill %q not found (%s)\n", name, skillFile)
-			os.Exit(exitRunErr)
+			commandOutput.note("dw-browser skills read: skill %q not found (%s)\n", name, skillFile)
+			return finishCommand(commandOutput, exitRunErr)
 		}
 		data = embedded
 		skillFile = "[embed]" + embedPath
@@ -260,33 +236,35 @@ func runSkillsRead(args []string) {
 
 	if actionName == "" {
 		// Print full content
-		fmt.Print(string(data))
-		os.Exit(exitOK)
+		commandOutput.Payload = map[string]any{"content": string(data)}
+		return finishCommand(commandOutput, exitOK)
 	}
 
 	// Extract specific action section via library
 	_, body := parseSkillFrontmatter(string(data))
 	section, found := extractSection(body, actionName)
 	if !found {
-		fmt.Fprintf(os.Stderr, "dw-browser skills read: action %q not found in skill %q\n", actionName, name)
-		os.Exit(exitRunErr)
+		commandOutput.note("dw-browser skills read: action %q not found in skill %q\n", actionName, name)
+		return finishCommand(commandOutput, exitRunErr)
 	}
-	fmt.Printf("## %s\n%s", actionName, section)
-	os.Exit(exitOK)
+	commandOutput.appendContent(fmt.Sprintf("## %s\n%s", actionName, section))
+	return finishCommand(commandOutput, exitOK)
+
+	return commandOutput, nil
 }
 
 // ============================================================
 // § skills write
 // ============================================================
 
-func runSkillsWrite(args []string) {
+func runSkillsWriteResult(args []string) (commandOutput CommandResult, resultErr error) {
 	if wantsHelp(args) {
-		printCommandUsage("skills")
-		os.Exit(exitOK)
+		commandOutput.Payload = generatedHelp("skills")
+		return finishCommand(commandOutput, exitOK)
 	}
 	if len(args) < 1 {
-		fmt.Fprintln(os.Stderr, "dw-browser skills write: requires skill name")
-		os.Exit(exitRunErr)
+		commandOutput.note("%v\n", "dw-browser skills write: requires skill name")
+		return finishCommand(commandOutput, exitRunErr)
 	}
 
 	name := args[0]
@@ -304,15 +282,18 @@ func runSkillsWrite(args []string) {
 		}
 	}
 	if actionName == "" {
-		fmt.Fprintln(os.Stderr, "dw-browser skills write: --action is required")
-		os.Exit(exitRunErr)
+		commandOutput.note("%v\n", "dw-browser skills write: --action is required")
+		return finishCommand(commandOutput, exitRunErr)
 	}
 
 	// Read stdin
-	stdinContent := readStdin()
+	stdinContent, stdinErr := readStdinE()
+	if stdinErr != nil {
+		return commandOutput, commandError("validation", exitRunErr, stdinErr)
+	}
 	if stdinContent == "" {
-		fmt.Fprintln(os.Stderr, "dw-browser skills write: no input on stdin")
-		os.Exit(exitRunErr)
+		commandOutput.note("%v\n", "dw-browser skills write: no input on stdin")
+		return finishCommand(commandOutput, exitRunErr)
 	}
 
 	// Parse stdin fields: intent, recipe, gotcha
@@ -344,14 +325,14 @@ func runSkillsWrite(args []string) {
 		// Rebuild file
 		newContent := buildSkillFile(meta, body)
 		if err := os.WriteFile(skillFile, []byte(newContent), 0644); err != nil {
-			fmt.Fprintf(os.Stderr, "dw-browser skills write: %v\n", err)
-			os.Exit(exitRunErr)
+			commandOutput.note("dw-browser skills write: %v\n", err)
+			return finishCommand(commandOutput, exitRunErr)
 		}
 	} else {
 		// New skill: create directory + file
 		if err := os.MkdirAll(skillDir, 0755); err != nil {
-			fmt.Fprintf(os.Stderr, "dw-browser skills write: %v\n", err)
-			os.Exit(exitRunErr)
+			commandOutput.note("dw-browser skills write: %v\n", err)
+			return finishCommand(commandOutput, exitRunErr)
 		}
 
 		domain := name // name is already the dotted domain (e.g. "chatgpt.com")
@@ -364,24 +345,26 @@ func runSkillsWrite(args []string) {
 		body := "\n# " + domain + "\n\n## Site\n\n" + "## " + actionName + "\n" + sectionContent + "\n"
 		newContent := buildSkillFile(meta, body)
 		if err := os.WriteFile(skillFile, []byte(newContent), 0644); err != nil {
-			fmt.Fprintf(os.Stderr, "dw-browser skills write: %v\n", err)
-			os.Exit(exitRunErr)
+			commandOutput.note("dw-browser skills write: %v\n", err)
+			return finishCommand(commandOutput, exitRunErr)
 		}
 	}
 
-	fmt.Printf("dw-browser: wrote action %q to skill %q\n", actionName, name)
-	os.Exit(exitOK)
+	commandOutput.appendContent(fmt.Sprintf("dw-browser: wrote action %q to skill %q\n", actionName, name))
+	return finishCommand(commandOutput, exitOK)
+
+	return commandOutput, nil
 }
 
 // readStdin reads all content from stdin.
-func readStdin() string {
+func readStdinE() (string, error) {
 	scanner := bufio.NewScanner(os.Stdin)
 	scanner.Buffer(make([]byte, 64*1024), 64*1024)
 	var lines []string
 	for scanner.Scan() {
 		lines = append(lines, scanner.Text())
 	}
-	return strings.Join(lines, "\n")
+	return strings.Join(lines, "\n"), scanner.Err()
 }
 
 // parseWriteInput parses the stdin format:
