@@ -3,6 +3,7 @@ package testing
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"github.com/brightman-ai/deepwork-browser/browser"
 	"image"
 	"image/png"
@@ -158,5 +159,26 @@ func TestCanonicalActionHintsRespectCapturedControlState(t *testing.T) {
 	refs := loaded.Structural.Refs
 	if !slices.Contains(refs[0].AllowedActions, "fill") || slices.Contains(refs[1].AllowedActions, "fill") || slices.Contains(refs[2].AllowedActions, "click") || !slices.Contains(refs[3].AllowedActions, "select") {
 		t.Fatalf("canonical hints ignored captured controls: %+v", refs)
+	}
+}
+
+func TestObservationPreservesScreenshotCaptureFailure(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "screen.png")
+	captureErr := fmt.Errorf("screenshot timed out; document_ready=loading has_body=false")
+	obs := BuildObservation("s", &browser.Snapshot{URL: "https://example.test"}, nil, path, nil, nil, captureErr)
+	if obs.State != "unavailable" || obs.Visual != nil || obs.Channels["visual"].Status != "unavailable" || obs.Channels["visual"].Reason != captureErr.Error() {
+		t.Fatalf("capture failure lost: %+v", obs)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("failed capture wrote image: %v", err)
+	}
+	// Even supplied bytes cannot turn an explicitly failed capture into success.
+	var data bytes.Buffer
+	if err := png.Encode(&data, image.NewRGBA(image.Rect(0, 0, 1, 1))); err != nil {
+		t.Fatal(err)
+	}
+	obs = BuildObservation("s", nil, data.Bytes(), path, nil, nil, captureErr)
+	if obs.Visual != nil || obs.Channels["visual"].Reason != captureErr.Error() {
+		t.Fatalf("failed capture accepted bytes: %+v", obs)
 	}
 }

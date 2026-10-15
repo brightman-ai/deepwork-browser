@@ -23,6 +23,7 @@ import (
 //   - screenshotPath: 截图保存路径（screenshotData 非 nil 时必填）
 //   - behavior:       行为状态（nil 时跳过 behavior）
 //   - telemetry:      遥测状态（nil 时跳过 telemetry）
+//   - captureErrors: optional screenshot capture failure; takes precedence over decoding bytes.
 //
 // 调用方负责在调用前完成截图写盘（或传入 screenshotPath 后由本函数写盘）。
 // 为保持简洁，本函数接管写盘职责：若 screenshotData 非空且 screenshotPath 非空，
@@ -34,6 +35,7 @@ func BuildObservation(
 	screenshotPath string,
 	behavior *BehaviorState,
 	telemetry *TelemetryState,
+	captureErrors ...error,
 ) *Observation {
 	obs := &Observation{
 		Schema:    "dw.observe.v2",
@@ -76,7 +78,9 @@ func BuildObservation(
 	if screenshotPath != "" {
 		obs.Channels["visual"] = ChannelState{Status: "unavailable", Reason: "screenshot missing or write failed"}
 		obs.State = "unavailable"
-		if decoded, _, err := image.Decode(bytes.NewReader(screenshotData)); err == nil {
+		if len(captureErrors) > 0 && captureErrors[0] != nil {
+			obs.Channels["visual"] = ChannelState{Status: "unavailable", Reason: captureErrors[0].Error()}
+		} else if decoded, _, err := image.Decode(bytes.NewReader(screenshotData)); err == nil {
 			var encoded bytes.Buffer
 			if err := png.Encode(&encoded, decoded); err != nil {
 				obs.Channels["visual"] = ChannelState{Status: "unavailable", Reason: err.Error()}

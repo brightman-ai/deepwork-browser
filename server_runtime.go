@@ -324,7 +324,7 @@ func (s *Server) handleObserve(w http.ResponseWriter, r *http.Request) {
 	observation.Deterministic = bound.Info.Policy.Deterministic
 	observation.BindActionHints(snap, browser.Scenario(bound.Info.Scenario))
 	if observation.ID != snap.ObservationID || observation.Visual == nil || observation.Channels["visual"].Status != "captured" {
-		writeHTTPError(w, http.StatusServiceUnavailable, browser.Outcome{Phase: "screenshot", DispatchState: "not-dispatched"}, fmt.Errorf("canonical visual capture unavailable"))
+		writeHTTPError(w, http.StatusServiceUnavailable, browser.Outcome{Phase: "screenshot", DispatchState: "not-dispatched"}, fmt.Errorf("canonical visual capture unavailable: %s", observation.Channels["visual"].Reason))
 		return
 	}
 	bound.Info.PageURL = snap.URL

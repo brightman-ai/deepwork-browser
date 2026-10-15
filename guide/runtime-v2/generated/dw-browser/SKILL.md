@@ -3,7 +3,7 @@ name: dw-browser
 description: Observe and operate real browser sessions with the DW-Browser v2 CLI, preserving visible evidence, Human control and deterministic journey assertions. Use for browser tasks through this tool; ordinary software editing does not need it.
 ---
 
-# DW-Browser 0.12.0-v2 tool protocol
+# DW-Browser 0.12.1-v2 tool protocol
 
 Create with `open URL --id NAME --scenario app-test-explore --persona desktop --mode headless --evidence DIR`. Creation environment is inherited by every later process. `open` rejects an existing ID. Use `session viewport --id NAME --size 880x720` to resize the same browser.
 

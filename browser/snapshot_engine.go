@@ -88,18 +88,20 @@ const (
 )
 
 type pageLoadProbe struct {
-	URL              string  `json:"url"`
-	Title            string  `json:"title"`
-	ReadyState       string  `json:"readyState"`
-	VisibilityState  string  `json:"visibilityState"`
-	HasBody          bool    `json:"hasBody"`
-	BodyTextLength   int     `json:"bodyTextLength"`
-	BodyChildCount   int     `json:"bodyChildCount"`
-	ViewportWidth    int     `json:"viewportWidth"`
-	ViewportHeight   int     `json:"viewportHeight"`
-	DevicePixelRatio float64 `json:"devicePixelRatio"`
-	ScrollX          float64 `json:"scrollX"`
-	ScrollY          float64 `json:"scrollY"`
+	URL                string  `json:"url"`
+	Title              string  `json:"title"`
+	ReadyState         string  `json:"readyState"`
+	VisibilityState    string  `json:"visibilityState"`
+	HasBody            bool    `json:"hasBody"`
+	BodyTextLength     int     `json:"bodyTextLength"`
+	BodyChildCount     int     `json:"bodyChildCount"`
+	ViewportWidth      int     `json:"viewportWidth"`
+	ViewportHeight     int     `json:"viewportHeight"`
+	DevicePixelRatio   float64 `json:"devicePixelRatio"`
+	ScrollX            float64 `json:"scrollX"`
+	ScrollY            float64 `json:"scrollY"`
+	PaintCount         int     `json:"paintCount"`
+	PendingStylesheets int     `json:"pendingStylesheets"`
 }
 
 // newSnapshotEngine 创建 SnapshotEngine 实例。
@@ -181,7 +183,19 @@ func (e *snapshotEngine) captureSnapshot(ctx context.Context) (snapshot *Snapsho
 			_ = e.captureControlStates(ctx, snapshot.Refs)
 			if presenceCaptured {
 				snapshot.DocumentText = presence.Text
-				snapshot.DocumentTextComplete = presence.Complete
+				snapshot.DocumentTextComplete = presence.Complete && !snapshot.Progressive
+			}
+			// Visible refs may all disappear during viewport filtering. Empty facts
+			// are not proof that a document has finished its initial render.
+			if snapshot.LoadState == loadStateActionable && len(snapshot.Refs) == 0 && strings.TrimSpace(snapshot.DocumentText) == "" {
+				probe, err := probePageLoadState(ctx)
+				if err != nil {
+					snapshot = e.progressiveFallbackFromProbe(probe, snapshot.URL, snapshot.PageTitle, "empty_visible_facts:page_state_unavailable", err)
+				} else if probe.initialRenderPending() {
+					snapshot = e.progressiveFallbackFromProbe(probe, snapshot.URL, snapshot.PageTitle, "initial_render_pending", nil)
+				} else {
+					snapshot, captureErr = e.screenshotFallback(ctx, snapshot.URL, snapshot.PageTitle, "empty_visible_facts", nil)
+				}
 			}
 			snapshot.ObservationID = ""
 			for i := range snapshot.Refs {
@@ -353,7 +367,7 @@ func probeDocumentPresence(ctx context.Context, redactFormValues bool) (document
 			.filter(Boolean)
 			.join('\n');
 		const text = (((document.body && document.body.innerText) || '') + '\n' + formText);
-		return { testids: [...seen], text: text.slice(0, 262144),complete:!omitted&&text.length<=262144 };
+		return { testids: [...seen], text: text.slice(0, 262144),complete:!!document.body&&document.readyState!=='loading'&&!omitted&&text.length<=262144 };
 	})()`, &probe))
 	if err != nil {
 		return documentPresenceProbe{}, err
@@ -436,6 +450,10 @@ func (e *snapshotEngine) screenshotFallback(ctx context.Context, url, title, rea
 
 func (e *snapshotEngine) progressiveFallback(ctx context.Context, url, title, reason string, cause error) *Snapshot {
 	probe, _ := probePageLoadState(ctx)
+	return e.progressiveFallbackFromProbe(probe, url, title, reason, cause)
+}
+
+func (e *snapshotEngine) progressiveFallbackFromProbe(probe pageLoadProbe, url, title, reason string, cause error) *Snapshot {
 	if probe.URL != "" {
 		url = probe.URL
 	}
@@ -444,13 +462,15 @@ func (e *snapshotEngine) progressiveFallback(ctx context.Context, url, title, re
 	}
 	loadState := deriveProgressiveLoadState(probe)
 	diagnostics := map[string]interface{}{
-		"reason":           reason,
-		"document_ready":   probe.ReadyState,
-		"body_text_length": probe.BodyTextLength,
-		"body_child_count": probe.BodyChildCount,
-		"has_body":         probe.HasBody,
-		"viewport_width":   probe.ViewportWidth,
-		"viewport_height":  probe.ViewportHeight,
+		"reason":              reason,
+		"document_ready":      probe.ReadyState,
+		"body_text_length":    probe.BodyTextLength,
+		"body_child_count":    probe.BodyChildCount,
+		"has_body":            probe.HasBody,
+		"paint_count":         probe.PaintCount,
+		"pending_stylesheets": probe.PendingStylesheets,
+		"viewport_width":      probe.ViewportWidth,
+		"viewport_height":     probe.ViewportHeight,
 	}
 	if probe.VisibilityState != "" {
 		diagnostics["visibility_state"] = probe.VisibilityState
@@ -516,11 +536,13 @@ func viewportFactsFromPageLoadProbe(probe pageLoadProbe) ViewportFacts {
 	}
 }
 
-func probePageLoadState(ctx context.Context) (pageLoadProbe, error) {
-	var probe pageLoadProbe
-	probeCtx, cancel := context.WithTimeout(ctx, pageStateProbeTimeout)
-	defer cancel()
-	js := `(() => {
+// initialRenderPending is deliberately conservative: a finished static or
+// image-only document remains eligible for genuine visual evidence.
+func (probe pageLoadProbe) initialRenderPending() bool {
+	return !probe.HasBody || (probe.ReadyState == "loading" && probe.PaintCount == 0 && (probe.BodyTextLength == 0 || probe.PendingStylesheets > 0))
+}
+
+const pageLoadProbeJS = `(() => {
 		const body = document.body;
 		const text = body ? ((body.innerText || '').trim()) : '';
 		return {
@@ -535,10 +557,18 @@ func probePageLoadState(ctx context.Context) (pageLoadProbe, error) {
 			viewportHeight: window.innerHeight || 0,
 			devicePixelRatio: window.devicePixelRatio || 1,
 			scrollX: window.scrollX || 0,
-			scrollY: window.scrollY || 0
+			scrollY: window.scrollY || 0,
+			paintCount: performance.getEntriesByType('paint').length,
+			pendingStylesheets: [...document.querySelectorAll('link[rel~="stylesheet"]')].filter(el => !el.disabled && (!el.media || matchMedia(el.media).matches) && !el.sheet).length
 		};
 	})()`
-	err := chromedp.Run(probeCtx, chromedp.Evaluate(js, &probe))
+
+func probePageLoadState(ctx context.Context) (pageLoadProbe, error) {
+	var probe pageLoadProbe
+	probeCtx, cancel := context.WithTimeout(ctx, pageStateProbeTimeout)
+	defer cancel()
+
+	err := chromedp.Run(probeCtx, chromedp.Evaluate(pageLoadProbeJS, &probe))
 	return probe, err
 }
 
@@ -563,6 +593,18 @@ func valueOrUnknown(value string) string {
 	return value
 }
 
+type documentTextProbe struct {
+	HasBody bool   `json:"hasBody"`
+	Text    string `json:"text"`
+}
+
+func (probe documentTextProbe) textResult() (string, error) {
+	if !probe.HasBody {
+		return "", fmt.Errorf("browser: text unavailable: document body absent (initial render pending)")
+	}
+	return probe.Text, nil
+}
+
 // GetText 提取当前页面纯文本（~500-800 tok）[Ref: T5-B4]。
 func (e *snapshotEngine) GetText(ctx context.Context, focus *string) (string, error) {
 	if focus != nil && *focus != "" {
@@ -578,24 +620,17 @@ func (e *snapshotEngine) GetText(ctx context.Context, focus *string) (string, er
 		}
 	}
 
-	// 全页面文本
-	var bodyText string
+	// One read-only sample distinguishes an absent document from a genuinely
+	// empty page. Waiting for a visible body here hides initial render failure.
+	var probe documentTextProbe
 	err := chromedp.Run(ctx, chromedp.Evaluate(`(() => {
 		const body = document.body;
-		if (!body) return "";
-		return body.innerText || "";
-	})()`, &bodyText))
-	if err == nil && strings.TrimSpace(bodyText) != "" {
-		return bodyText, nil
-	}
-	if ctx.Err() != nil {
-		return "", fmt.Errorf("browser: text extraction failed: %w", ctx.Err())
-	}
-	err = chromedp.Run(ctx, chromedp.Text("body", &bodyText, chromedp.ByQuery))
+		return {hasBody: !!body, text: body ? (body.innerText || "") : ""};
+	})()`, &probe))
 	if err != nil {
 		return "", fmt.Errorf("browser: text extraction failed: %w", err)
 	}
-	return bodyText, nil
+	return probe.textResult()
 }
 
 // Screenshot 截图，annotate=true 时叠加 Element Ref 标注（当前 Phase 不支持标注）。

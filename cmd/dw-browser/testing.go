@@ -716,7 +716,7 @@ func runObserveResult(args []string) (CommandResult, error) {
 		return CommandResult{}, commandError("observation", exitRunErr, fmt.Errorf("%s", fmt.Sprint(err)))
 	}
 	shot, shotErr := impl.Screenshot(ctx, wantAnnotate)
-	obs := btest.BuildObservation(flags.sessionID, snap, shot, filepath.Join(evidenceDir, observationID+".png"), behaviorFromSessionInfo(sessionInfo), nil)
+	obs := btest.BuildObservation(flags.sessionID, snap, shot, filepath.Join(evidenceDir, observationID+".png"), behaviorFromSessionInfo(sessionInfo), nil, shotErr)
 	if obs.Visual != nil && outFile != obs.Visual.ScreenshotPath {
 		if err := os.MkdirAll(filepath.Dir(outFile), 0755); err != nil {
 			shotErr = err

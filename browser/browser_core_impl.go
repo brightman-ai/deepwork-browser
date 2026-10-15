@@ -1204,62 +1204,114 @@ func (e *directTargetExecutor) Execute(ctx context.Context, method string, param
 	}
 }
 
-// captureScreenshotOnFreshConnection is an isolated evidence transaction:
-// dial the existing page target directly, capture once, then disconnect. Conn
-// reads do not observe context cancellation, so the timeout watcher closes the
-// socket to make the bound real.
-func captureScreenshotOnFreshConnection(
-	parent context.Context,
-	browserWSURL string,
-	targetID string,
-	timeout time.Duration,
-) ([]byte, error) {
+// screenshotCaptureError preserves the capture cause and the read-only page
+// state sampled after capture failure (or explicitly marked unavailable).
+type screenshotCaptureError struct {
+	cause    error
+	probe    pageLoadProbe
+	probeErr error
+}
+
+func (e *screenshotCaptureError) Error() string {
+	if e.probeErr != nil {
+		return fmt.Sprintf("%v; page_state=unavailable probe_error=%v", e.cause, e.probeErr)
+	}
+	state := "render_state_unknown"
+	if e.probe.initialRenderPending() {
+		state = "initial_render_pending"
+	}
+	return fmt.Sprintf("%v; page_state=%s document_ready=%s has_body=%t visibility_state=%s paint_count=%d pending_stylesheets=%d page_state_sample=%s", e.cause, state, valueOrUnknown(e.probe.ReadyState), e.probe.HasBody, valueOrUnknown(e.probe.VisibilityState), e.probe.PaintCount, e.probe.PendingStylesheets, "after_capture_failure")
+}
+func (e *screenshotCaptureError) Unwrap() error { return e.cause }
+
+func screenshotRetryUseful(err error) bool {
+	var captureErr *screenshotCaptureError
+	return !(errors.Is(err, errScreenshotTimeout) && errors.As(err, &captureErr) && captureErr.probeErr == nil && captureErr.probe.initialRenderPending())
+}
+
+// withFreshTargetConnection owns only a socket for an existing page target.
+// Closing the socket makes the timeout real even when Transport.Read ignores
+// context cancellation. The closer is joined before returning.
+func withFreshTargetConnection(parent context.Context, browserWSURL, targetID string, timeout time.Duration, action func(context.Context) ([]byte, error)) ([]byte, error) {
 	if parent == nil {
 		parent = context.Background()
-	}
-	if timeout <= 0 {
-		timeout = browserScreenshotAttemptTimeout
 	}
 	targetURL, err := targetWebSocketURL(browserWSURL, targetID)
 	if err != nil {
 		return nil, err
 	}
-	attemptCtx, attemptCancel := context.WithTimeout(parent, timeout)
-	defer attemptCancel()
+	attemptCtx, cancel := context.WithTimeout(parent, timeout)
+	defer cancel()
 	conn, err := chromedp.DialContext(attemptCtx, targetURL)
 	if err != nil {
 		if attemptCtx.Err() != nil {
-			return nil, fmt.Errorf("%w after %s", errScreenshotTimeout, timeout)
+			return nil, attemptCtx.Err()
 		}
-		return nil, fmt.Errorf("browser: connect screenshot target: %w", err)
+		return nil, fmt.Errorf("browser: connect evidence target: %w", err)
 	}
-	stopCloser := make(chan struct{})
+	stopCloser, closerDone := make(chan struct{}), make(chan struct{})
 	go func() {
+		defer close(closerDone)
 		select {
 		case <-attemptCtx.Done():
 			_ = conn.Close()
 		case <-stopCloser:
 		}
 	}()
-	defer close(stopCloser)
-	defer conn.Close()
+	defer func() { close(stopCloser); _ = conn.Close(); <-closerDone }()
+	data, err := action(cdp.WithExecutor(attemptCtx, &directTargetExecutor{transport: conn}))
+	if attemptCtx.Err() != nil {
+		return nil, attemptCtx.Err()
+	}
+	return data, err
+}
 
-	executor := &directTargetExecutor{transport: conn}
-	captureCtx := cdp.WithExecutor(attemptCtx, executor)
-	data, err := page.CaptureScreenshot().
-		WithFormat(page.CaptureScreenshotFormatJpeg).
-		WithQuality(80).
-		Do(captureCtx)
+func captureScreenshotOnFreshConnection(parent context.Context, browserWSURL, targetID string, timeout time.Duration) ([]byte, error) {
+	if timeout <= 0 {
+		timeout = browserScreenshotAttemptTimeout
+	}
+	data, err := withFreshTargetConnection(parent, browserWSURL, targetID, timeout, func(ctx context.Context) ([]byte, error) {
+		return page.CaptureScreenshot().WithFormat(page.CaptureScreenshotFormatJpeg).WithQuality(80).Do(ctx)
+	})
+	if errors.Is(err, context.DeadlineExceeded) {
+		return nil, fmt.Errorf("%w after %s", errScreenshotTimeout, timeout)
+	}
 	if err != nil {
-		if attemptCtx.Err() != nil {
-			if errors.Is(attemptCtx.Err(), context.DeadlineExceeded) {
-				return nil, fmt.Errorf("%w after %s", errScreenshotTimeout, timeout)
-			}
-			return nil, attemptCtx.Err()
-		}
 		return nil, fmt.Errorf("browser: screenshot failed: %w", err)
 	}
 	return data, nil
+}
+
+func probePageLoadOnFreshConnection(parent context.Context, browserWSURL, targetID string) (pageLoadProbe, error) {
+	var probe pageLoadProbe
+	data, err := withFreshTargetConnection(parent, browserWSURL, targetID, pageStateProbeTimeout, func(ctx context.Context) ([]byte, error) {
+		result, exception, err := cdpruntime.Evaluate(pageLoadProbeJS).WithReturnByValue(true).Do(ctx)
+		if err != nil {
+			return nil, err
+		}
+		if exception != nil {
+			return nil, fmt.Errorf("page state evaluation: %s", exception.Text)
+		}
+		if result == nil {
+			return nil, fmt.Errorf("page state evaluation returned no result")
+		}
+		return result.Value, nil
+	})
+	if err == nil {
+		err = json.Unmarshal(data, &probe)
+	}
+	return probe, err
+}
+
+// Diagnostics are best effort and only requested after a real capture failure.
+// A busy Runtime must never prevent a working compositor from supplying an image.
+func captureWithFailureDiagnostics(capture func() ([]byte, error), probe func() (pageLoadProbe, error)) ([]byte, error) {
+	data, err := capture()
+	if err == nil {
+		return data, nil
+	}
+	state, probeErr := probe()
+	return nil, &screenshotCaptureError{cause: err, probe: state, probeErr: probeErr}
 }
 
 func (impl *browserCoreImpl) captureScreenshotForTarget(
@@ -1270,14 +1322,21 @@ func (impl *browserCoreImpl) captureScreenshotForTarget(
 	annotate bool,
 ) ([]byte, error) {
 	if browserWSURL != "" && targetID != "" {
-		data, firstErr := captureScreenshotOnFreshConnection(ctx, browserWSURL, targetID, browserScreenshotAttemptTimeout)
+		capture := func() ([]byte, error) {
+			return captureWithFailureDiagnostics(func() ([]byte, error) {
+				return captureScreenshotOnFreshConnection(ctx, browserWSURL, targetID, browserScreenshotAttemptTimeout)
+			}, func() (pageLoadProbe, error) {
+				return probePageLoadOnFreshConnection(ctx, browserWSURL, targetID)
+			})
+		}
+		data, firstErr := capture()
 		if firstErr == nil {
 			return data, nil
 		}
-		if ctx != nil && ctx.Err() != nil {
+		if !screenshotRetryUseful(firstErr) || (ctx != nil && ctx.Err() != nil) {
 			return nil, firstErr
 		}
-		data, retryErr := captureScreenshotOnFreshConnection(ctx, browserWSURL, targetID, browserScreenshotAttemptTimeout)
+		data, retryErr := capture()
 		if retryErr != nil {
 			return nil, fmt.Errorf("browser: screenshot recovery failed (first attempt: %v): %w", firstErr, retryErr)
 		}
@@ -1287,10 +1346,15 @@ func (impl *browserCoreImpl) captureScreenshotForTarget(
 
 	// Pool-owned legacy cores do not always expose Chrome's browser WebSocket.
 	// Preserve their existing target executor path, but keep the call bounded.
-	capture := func(captureCtx context.Context) ([]byte, error) {
-		return impl.snapEngine.Screenshot(captureCtx, annotate)
-	}
-	return runScreenshotWithTimeout(ctx, targetCtx, browserScreenshotAttemptTimeout, capture)
+	return captureWithFailureDiagnostics(func() ([]byte, error) {
+		return runScreenshotWithTimeout(ctx, targetCtx, browserScreenshotAttemptTimeout, func(captureCtx context.Context) ([]byte, error) {
+			return impl.snapEngine.Screenshot(captureCtx, annotate)
+		})
+	}, func() (pageLoadProbe, error) {
+		probeCtx, cancel := deriveTargetContext(ctx, targetCtx)
+		defer cancel()
+		return probePageLoadState(probeCtx)
+	})
 }
 
 // Screenshot 截图。chrome 仿真会话在此合成 Safari chrome 层（页面外绘制，

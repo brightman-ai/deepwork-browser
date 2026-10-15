@@ -26,13 +26,13 @@ func CollectContent(ctx context.Context, core browser.BrowserCore, format string
 		state.Text = &text
 	case "list":
 		items := []string{}
-		if err := core.EvalJS(ctx, `Array.from(document.querySelectorAll('li')).map(li=>li.innerText.trim()).filter(Boolean)`, &items); err != nil {
+		if err := core.EvalJS(ctx, documentContentJS(`Array.from(document.querySelectorAll('li')).map(li=>li.innerText.trim()).filter(Boolean)`), &items); err != nil {
 			return nil, err
 		}
 		state.Items = &items
 	case "table":
 		tables := [][][]string{}
-		if err := core.EvalJS(ctx, `Array.from(document.querySelectorAll('table')).map(tbl=>Array.from(tbl.querySelectorAll('tr')).map(tr=>Array.from(tr.querySelectorAll('th,td')).map(td=>td.innerText.trim())))`, &tables); err != nil {
+		if err := core.EvalJS(ctx, documentContentJS(`Array.from(document.querySelectorAll('table')).map(tbl=>Array.from(tbl.querySelectorAll('tr')).map(tr=>Array.from(tr.querySelectorAll('th,td')).map(td=>td.innerText.trim())))`), &tables); err != nil {
 			return nil, err
 		}
 		state.Tables = &tables
@@ -40,4 +40,9 @@ func CollectContent(ctx context.Context, core browser.BrowserCore, format string
 		return nil, fmt.Errorf("unsupported content format %q (text/list/table)", format)
 	}
 	return state, nil
+}
+
+// Keep document availability and extraction in the same read-only sample.
+func documentContentJS(expression string) string {
+	return `(() => { if (!document.body) throw new Error("browser: content unavailable: document body absent (initial render pending)"); return ` + expression + `; })()`
 }

@@ -1,4 +1,4 @@
-# DW-Browser 0.12.0-v2 command contract
+# DW-Browser 0.12.1-v2 command contract
 
 Generated from executable declarations. Flags on attached sessions inherit creation environment. `--output` is JSON; `--screenshot` is PNG. Absolute and locator-relative points require `--observation-id` from the exact capture; opaque ref-relative points supply capture identity in the token. Gesture endpoints share that identity.
 
