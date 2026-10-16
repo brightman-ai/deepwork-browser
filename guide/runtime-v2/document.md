@@ -26,7 +26,7 @@ Successful stdout is one JSON object with schema `dw.document.v1` and exit 0:
 | `requested_url` | The caller's URL |
 | `url` | Actual CDP main-frame URL, including fragment, checked across the DOM read |
 | `declared_canonical_url` | Optional resolved canonical link from the DOM; an untrusted hint that is never fetched or treated as verified navigation |
-| `content_type` | Observed main response Content-Type (including charset); DOM contentType is the fallback when no header is exposed |
+| `content_type` | Normalized main response Content-Type (including charset); equivalent repeated declarations collapse to one value, conflicting declarations fail; DOM contentType is the fallback when no header is exposed |
 | `readiness` | Main document `interactive` or `complete`; `dom_ready: true` |
 | `content`, `representation` | Complete `documentElement.outerHTML` at that observation, including site changes already made; representation is `dom-html` |
 | `policy` | Applied isolation and budgets, plus settled proxy counters |

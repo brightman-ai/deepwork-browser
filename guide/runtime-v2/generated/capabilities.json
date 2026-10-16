@@ -3735,5 +3735,5 @@
     }
   ],
   "schema_version": "dw.capabilities.v2",
-  "version": "0.13.0-v2"
+  "version": "0.13.1-v2"
 }

@@ -7,9 +7,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"mime"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/chromedp/cdproto/page"
@@ -81,8 +81,12 @@ func (e *UnsupportedDocumentContentError) Error() string {
 }
 
 func documentIsHTML(contentType string) bool {
-	mediaType, _, err := mime.ParseMediaType(contentType)
-	return err == nil && (mediaType == "text/html" || mediaType == "application/xhtml+xml")
+	canonical, err := normalizeDocumentContentType(contentType)
+	if err != nil {
+		return false
+	}
+	mediaType, _, _ := strings.Cut(canonical, ";")
+	return mediaType == "text/html" || mediaType == "application/xhtml+xml"
 }
 
 func normalizeDocumentRequest(r DocumentRequest) (DocumentRequest, error) {
@@ -304,6 +308,10 @@ func fetchDocumentWithNetwork(parent context.Context, request DocumentRequest, n
 	contentType := documentCoreContentType(core)
 	if contentType == "" {
 		contentType = payload.ContentType
+	}
+	contentType, err = normalizeDocumentContentType(contentType)
+	if err != nil {
+		return nil, err
 	}
 	if !documentIsHTML(contentType) {
 		return nil, &UnsupportedDocumentContentError{URL: finalURL, ContentType: contentType}

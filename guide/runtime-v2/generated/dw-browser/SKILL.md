@@ -3,7 +3,7 @@ name: dw-browser
 description: Observe and operate real browser sessions with the DW-Browser v2 CLI, preserving visible evidence, Human control and deterministic journey assertions. Use for browser tasks through this tool; ordinary software editing does not need it.
 ---
 
-# DW-Browser 0.13.0-v2 tool protocol
+# DW-Browser 0.13.1-v2 tool protocol
 
 Choose by task: UI experience, screenshots and interaction use `open` → `observe` → `act` (or `once` for one capture); deterministic acceptance uses `journey`; background public DOM acquisition uses `document URL --timeout 30s --max-html-bytes 8388608 --max-network-bytes 33554432`. `document` returns `dw.document.v1` with `content` and `representation=dom-html`, without screenshots or caller JavaScript. XML/RSS/Atom return an `unsupported_content_type` reason instead of a browser viewer masquerading as source. It owns an isolated disposable headless browser, never attaches a session or user profile, and grants no arbitrary eval. Its `page-requests-public-only` policy covers webpage requests through one Chrome-wide DNS-pinned proxy; it is not an OS firewall. Child targets are not paused or reattached. Chrome's own sandbox stays enabled. Windows fails before launch because verified process-tree cleanup is unavailable. The returned `url` is the actual main-frame location; `declared_canonical_url` is only an untrusted DOM hint. DOM-ready is not a promise that site-specific async content is complete. Budgets fail rather than truncate.
 

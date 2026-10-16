@@ -1,9 +1,11 @@
 # Document acquisition acceptance — 0.13.0-v2
 
 Verified on 2026-10-16, macOS arm64, Chrome 155.0.8059.80, Go 1.26.
-The installed executable is a regular binary at `~/.local/bin/dw-browser`.
-SHA-256: `f2c241feb27cdbb64ca20aee0fffe78e7f4806382226c6534852bc4689905d16`.
-The preceding 0.12.1 binary was preserved before atomic replacement.
+The executable is a regular binary at `~/.local/bin/dw-browser`. The original
+0.13.0 release SHA-256 is
+`f2c241feb27cdbb64ca20aee0fffe78e7f4806382226c6534852bc4689905d16`.
+Earlier binaries were preserved before atomic replacement. The current patch
+and its installation fingerprint are recorded below.
 
 ## User scenario and outcome
 
@@ -95,3 +97,39 @@ Chrome child-sandbox failure did not become a fallback or runtime dependency.
 Windows fails before launch; Linux and other Chrome versions require their own
 live platform evidence. No user windows, tabs, profile, microphone or clipboard
 were used by the document checks.
+
+## Content-Type compatibility patch — 0.13.1-v2
+
+Production integration exposed a general metadata bug: CDP joins repeated
+HTTP fields using LF. The WeChat sample returned two identical declarations,
+`text/html; charset=UTF-8`, separated by an actual LF. Parsing that entire string
+as one MIME value incorrectly produced `unsupported_content_type`.
+
+One normalizer now handles observed response metadata, DOM fallback and HTML
+classification. It accepts equivalent media types and parameter names, normalizes
+charset case, merges non-conflicting parameters and preserves unknown values.
+All case-insensitive occurrences of the response header are collected together;
+map iteration order cannot select an arbitrary declaration. Conflicting media
+types or parameter values return `DocumentContentTypeError`, preserving the raw
+observed value. They cannot become an unsupported-format reroute receipt.
+
+RED→GREEN unit tests cover the original LF case, CRLF/case variations, partial
+parameter declarations, unknown parameters, quoted commas and conflicts. Pure
+document/network race tests passed (3.062s), and root/CLI/journey packages passed.
+Five real Chrome repeated-header cases also passed under race (9.93s test time,
+11.432s package time), covering three accepted equivalents and two rejected
+media-type/charset conflicts. The actual WeChat URL then returned HTML successfully
+with normalized `text/html; charset=utf-8`, rather than a format error. Article
+qualification remains the consumer's responsibility.
+
+The installed 0.13.1 binary SHA-256 is
+`9dee0bf8bcca0e993a57d88cb21195e339edbb9a8ef76dd4a2ff0033eb7d0af0`.
+The 0.13.0 binary is retained in the local backup directory.
+Installation smoke returned 3,588,734 bytes from the original WeChat URL in
+4.410s with exit 0; the real HN RSS sample retained exit 2 and a settled
+unsupported-format receipt in 3.815s. Browser, profile and network cleanup were
+all confirmed in both installed-command results.
+
+```sh
+GOMAXPROCS=2 go test -race -tags integration -p 2 ./browser -run '^TestDocumentDuplicateContentTypeLive$' -count=1 -v -timeout=90s
+```

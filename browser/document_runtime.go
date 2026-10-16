@@ -124,16 +124,31 @@ func (impl *browserCoreImpl) configureDocumentRuntime() error {
 				return
 			}
 			contentType := response.Response.MimeType
+			var observed []string
 			for key, value := range response.Response.Headers {
 				if strings.EqualFold(key, "Content-Type") {
-					if header, ok := value.(string); ok {
-						contentType = header
+					header, ok := value.(string)
+					if !ok {
+						policy.fail(&DocumentContentTypeError{Value: fmt.Sprint(value), Err: errors.New("header is not a string")})
+						return
 					}
+					observed = append(observed, header)
 				}
 				if strings.HasPrefix(response.Response.URL, "http://") && strings.EqualFold(key, PublicNetworkErrorHeader) {
 					policy.fail(errors.New("main document rejected by network guard"))
 					return
 				}
+			}
+			if len(observed) > 0 {
+				contentType = strings.Join(observed, "\n")
+			}
+			if contentType != "" || len(observed) > 0 {
+				canonical, err := normalizeDocumentContentType(contentType)
+				if err != nil {
+					policy.fail(err)
+					return
+				}
+				contentType = canonical
 			}
 			policy.mu.Lock()
 			policy.contentType = contentType
