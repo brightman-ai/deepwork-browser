@@ -1,4 +1,4 @@
-# Public resource fetch acceptance — 0.17.0-v2
+# Public resource fetch acceptance — 0.17.1-v2
 
 The typed fetch and explicit DNS contracts passed independent source review and
 owned transport tests on macOS/arm64. **Hugging Face nine-image coverage remains
@@ -54,11 +54,22 @@ https://cdn-uploads.huggingface.co/production/uploads/640e21ef3c82bd463ee5a76d/a
    This establishes link-wide variability at that time, rather than a DW-only
    body-copy failure. Earlier fast results do not guarantee a 20-second transfer.
 
-The nine-image research run retains the 8 MiB per-body and 32 MiB aggregate
-network limits and records full GET/hash/image decoding under an explicitly
-longer timeout. Its results are research completeness evidence only. Consumers
+The nine-image research run completed all nine GETs, SHA-256 checks and full
+image decoding with 10,943,729 body bytes and 11,202,612 guard bytes, within the
+unchanged 8 MiB per-body and 32 MiB aggregate network limits. Its explicit
+600-second per-job timeout is research-only: the 8,009,386-byte GIF took 513.094
+seconds (all 40 frames decoded); the other GIF took 105.121 seconds (18 frames).
+The 1,322,097-byte PNG took 38.132 seconds. All nine cleanup receipts reported
+network closed, and no child process was sampled under their CLI jobs.
+These results establish completeness, not default production latency. Consumers
 must retain their production deadlines, truthful placeholders and explicit
 bounded retries; no failed or incomplete file becomes a cache hit.
+
+An installed 0.17.0 binary also fetched a 56,465-byte PNG in 6.631 seconds under
+the default 20-second budget, with matching hash and successful image decoding.
+0.17.1 changes only AI protocol ordering and evidence guidance: the UI task
+chooser and interaction workflow come first; auxiliary reads cannot substitute
+for required screenshot or interaction evidence. Acquisition behavior is unchanged.
 
 The independent WeChat long-link challenge case also remains open; this release
 does not change URLs, read user profiles or bypass site challenges.
