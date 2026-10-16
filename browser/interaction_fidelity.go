@@ -34,12 +34,13 @@ func (s SelectionState) MarshalJSON() ([]byte, error) {
 // SelectionEvidence describes the final observed state and non-atomic native
 // attempts. KeySteps counts selecting key dispatch attempts, excluding Escape.
 type SelectionEvidence struct {
-	Before   SelectionState `json:"before"`
-	After    SelectionState `json:"after"`
-	Verified bool           `json:"verified"`
-	KeySteps int            `json:"key_steps"`
-	Partial  bool           `json:"partial,omitempty"`
-	Note     string         `json:"note,omitempty"`
+	MatchedBy string         `json:"matched_by,omitempty"`
+	Before    SelectionState `json:"before"`
+	After     SelectionState `json:"after"`
+	Verified  bool           `json:"verified"`
+	KeySteps  int            `json:"key_steps"`
+	Partial   bool           `json:"partial,omitempty"`
+	Note      string         `json:"note,omitempty"`
 }
 
 // ActionFidelityReport keeps requested policy separate from actual execution.

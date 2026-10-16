@@ -54,8 +54,9 @@ type SelectFacts struct {
 // Raw SelectFacts.Options stays unchanged for identity/fact comparisons.
 type SelectOptionCapability struct {
 	SelectOption
-	Selectable bool   `json:"selectable"`
-	Reason     string `json:"reason,omitempty"`
+	Option     *SelectOptionSelector `json:"option,omitempty"`
+	Selectable bool                  `json:"selectable"`
+	Reason     string                `json:"reason,omitempty"`
 }
 
 type SelectCapability struct {
@@ -148,7 +149,12 @@ func PlanSelectCapability(f SelectFacts, baselineElement bool) SelectCapability 
 	hasInputPath := false
 	used := 2 // JSON array brackets; include commas below.
 	for index, o := range f.Options {
-		plan, err := planSelectOption(f, index, baselineElement)
+		selector := SelectByLabel(o.Label)
+		match, matchErr := matchNativeSelectOption(f.Options, selector)
+		if matchErr != nil || match.Index != index {
+			selector = SelectByValue(o.Value)
+		}
+		plan, err := PlanSelect(f, selector, baselineElement)
 		reason := ""
 		if c.Reason != "" {
 			reason = c.Reason
@@ -162,6 +168,9 @@ func PlanSelectCapability(f SelectFacts, baselineElement bool) SelectCapability 
 		}
 		o.Selected = index == f.SelectedIndex
 		projected := SelectOptionCapability{SelectOption: o, Selectable: reason == "", Reason: reason}
+		if projected.Selectable {
+			projected.Option = selector
+		}
 		if projected.Selectable && plan.NoOp {
 			projected.Reason = "already selected; state-only no-op"
 		}
@@ -208,11 +217,11 @@ func planSelectOption(f SelectFacts, index int, baselineElement bool) (SelectPla
 	return p, nil
 }
 
-func PlanSelect(f SelectFacts, query string, baselineElement bool) (SelectPlan, error) {
+func PlanSelect(f SelectFacts, option *SelectOptionSelector, baselineElement bool) (SelectPlan, error) {
 	if reason := selectControlReason(f, baselineElement); reason != "" {
 		return SelectPlan{}, fmt.Errorf("%w: %s", ErrActFailed, reason)
 	}
-	match, err := matchNativeSelectOption(f.Options, query)
+	match, err := matchNativeSelectOption(f.Options, option)
 	if err != nil {
 		return SelectPlan{}, err
 	}
@@ -256,45 +265,39 @@ func formatNativeSelectOptions(options []SelectOption) string {
 	return result
 }
 
-// matchNativeSelectOption implements the CLI contract in strict priority:
-// exact value, exact visible label, then unique visible-label prefix.
-func matchNativeSelectOption(options []SelectOption, query string) (nativeSelectMatch, error) {
-	for index, option := range options {
-		if option.Value == query {
-			return nativeSelectMatch{Index: index, Kind: "value"}, nil
+// matchNativeSelectOption requires a unique exact match in the declared field.
+func matchNativeSelectOption(options []SelectOption, selector *SelectOptionSelector) (nativeSelectMatch, error) {
+	if err := selector.Validate(); err != nil {
+		return nativeSelectMatch{}, fmt.Errorf("%w: %v", ErrActFailed, err)
+	}
+	kind, query := "label", selector.Label
+	if selector.Value != nil {
+		kind, query = "value", selector.Value
+	}
+	index, count := -1, 0
+	for i, option := range options {
+		candidate := option.Label
+		if kind == "value" {
+			candidate = option.Value
+		}
+		if candidate == *query {
+			index = i
+			count++
 		}
 	}
-	for index, option := range options {
-		if option.Label == query {
-			return nativeSelectMatch{Index: index, Kind: "label"}, nil
-		}
+	if count == 1 {
+		return nativeSelectMatch{Index: index, Kind: kind}, nil
 	}
-	prefixMatches := make([]int, 0, 2)
-	for index, option := range options {
-		if strings.HasPrefix(option.Label, query) {
-			prefixMatches = append(prefixMatches, index)
-		}
+	if count > 1 {
+		return nativeSelectMatch{}, fmt.Errorf("%w: exact option %s %q is ambiguous (%d matches); options: %s", ErrActFailed, kind, *query, count, formatNativeSelectOptions(options))
 	}
-	if len(prefixMatches) == 1 {
-		index := prefixMatches[0]
-		return nativeSelectMatch{Index: index, Kind: "label-prefix"}, nil
-	}
-	if len(prefixMatches) > 1 {
-		matched := make([]SelectOption, 0, len(prefixMatches))
-		for _, index := range prefixMatches {
-			matched = append(matched, options[index])
-		}
-		return nativeSelectMatch{}, fmt.Errorf("%w: label prefix %q is ambiguous (%s); options: %s",
-			ErrActFailed, query, formatNativeSelectOptions(matched), formatNativeSelectOptions(options))
-	}
-	return nativeSelectMatch{}, fmt.Errorf("%w: no option matched %q by exact value, exact label, or unique label prefix; options: %s",
-		ErrActFailed, query, formatNativeSelectOptions(options))
+	return nativeSelectMatch{}, fmt.Errorf("%w: no option matched exact %s %q; options: %s", ErrActFailed, kind, *query, formatNativeSelectOptions(options))
 }
 
-func (e *actionEngine) executeSelect(ctx context.Context, ref, query string, baselineElement bool) error {
+func (e *actionEngine) executeSelect(ctx context.Context, ref string, option *SelectOptionSelector, baselineElement bool) error {
 	e.updateActionFidelity(func(r *ActionFidelityReport) { r.Execution = "none" })
 	if baselineElement {
-		return e.executeSelectSynthetic(ctx, ref, query)
+		return e.executeSelectSynthetic(ctx, ref, option)
 	}
 	var obj *runtime.RemoteObject
 	err := e.withResolvedActionElement(ctx, ref, func(c context.Context, resolved *runtime.RemoteObject) error {
@@ -325,11 +328,11 @@ func (e *actionEngine) executeSelect(ctx context.Context, ref, query string, bas
 		return e.failedBeforeDispatch(err)
 	}
 	redact := (e.snapEngine != nil && e.snapEngine.redactFormValues) || original.Sensitive
-	plan, err := PlanSelect(original, query, false)
+	plan, err := PlanSelect(original, option, false)
 	if err != nil {
 		return e.failedBeforeDispatch(selectPublicError(err, redact))
 	}
-	evidence := SelectionEvidence{Before: SelectionState{Index: original.SelectedIndex, Value: original.Value}, After: SelectionState{Index: original.SelectedIndex, Value: original.Value}, Note: "native typeahead is non-atomic; intermediate choices may emit trusted input/change; no popup visibility evidence"}
+	evidence := SelectionEvidence{MatchedBy: plan.MatchKind, Before: SelectionState{Index: original.SelectedIndex, Value: original.Value}, After: SelectionState{Index: original.SelectedIndex, Value: original.Value}, Note: "native typeahead is non-atomic; intermediate choices may emit trusted input/change; no popup visibility evidence"}
 	save := func() {
 		copy := publicSelectionEvidence(evidence, redact)
 		e.updateActionFidelity(func(r *ActionFidelityReport) { r.Selection = &copy })
@@ -502,18 +505,18 @@ func sameSelectOptions(a, b []SelectOption) bool {
 	return true
 }
 
-func (e *actionEngine) executeSelectSynthetic(ctx context.Context, ref, query string) error {
+func (e *actionEngine) executeSelectSynthetic(ctx context.Context, ref string, option *SelectOptionSelector) error {
 	return e.withResolvedActionElement(ctx, ref, func(c context.Context, obj *runtime.RemoteObject) error {
 		var facts SelectFacts
 		if err := ProbeSelectFacts(c, obj, &facts); err != nil {
 			return e.failedBeforeDispatch(err)
 		}
 		redact := (e.snapEngine != nil && e.snapEngine.redactFormValues) || facts.Sensitive
-		plan, err := PlanSelect(facts, query, true)
+		plan, err := PlanSelect(facts, option, true)
 		if err != nil {
 			return e.failedBeforeDispatch(selectPublicError(err, redact))
 		}
-		evidence := SelectionEvidence{Before: SelectionState{Index: facts.SelectedIndex, Value: facts.Value}, After: SelectionState{Index: facts.SelectedIndex, Value: facts.Value}, Note: "functional state only; not evidence of human picker operation"}
+		evidence := SelectionEvidence{MatchedBy: plan.MatchKind, Before: SelectionState{Index: facts.SelectedIndex, Value: facts.Value}, After: SelectionState{Index: facts.SelectedIndex, Value: facts.Value}, Note: "functional state only; not evidence of human picker operation"}
 		if plan.NoOp {
 			e.markPreDispatchFailure()
 			evidence.Verified = true

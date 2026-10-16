@@ -17,22 +17,23 @@ import (
 // Action is the canonical request shared by CLI, journey and embedded adapters.
 // Text is never tokenized, trimmed, or included in an outcome.
 type Action struct {
-	Verb            string  `json:"kind" yaml:"kind"`
-	Target          Target  `json:"target,omitempty" yaml:"target,omitempty"`
-	Text            string  `json:"text,omitempty" yaml:"text,omitempty"`
-	Sensitive       bool    `json:"sensitive,omitempty" yaml:"sensitive,omitempty"`
-	Focused         bool    `json:"focused,omitempty" yaml:"focused,omitempty"`
-	Checked         *bool   `json:"checked,omitempty" yaml:"checked,omitempty"`
-	URL             string  `json:"url,omitempty" yaml:"url,omitempty"`
-	Key             string  `json:"key,omitempty" yaml:"key,omitempty"`
-	Value           string  `json:"value,omitempty" yaml:"value,omitempty"`
-	Button          string  `json:"button,omitempty" yaml:"button,omitempty"`
-	Count           int     `json:"count,omitempty" yaml:"count,omitempty"`
-	Direction       string  `json:"direction,omitempty" yaml:"direction,omitempty"`
-	Steps           int     `json:"steps,omitempty" yaml:"steps,omitempty"`
-	DeltaX          float64 `json:"delta_x,omitempty" yaml:"delta_x,omitempty"`
-	DeltaY          float64 `json:"delta_y,omitempty" yaml:"delta_y,omitempty"`
-	End             *Point  `json:"end,omitempty" yaml:"end,omitempty"`
+	Verb            string                `json:"kind" yaml:"kind"`
+	Target          Target                `json:"target,omitempty" yaml:"target,omitempty"`
+	Text            string                `json:"text,omitempty" yaml:"text,omitempty"`
+	Sensitive       bool                  `json:"sensitive,omitempty" yaml:"sensitive,omitempty"`
+	Focused         bool                  `json:"focused,omitempty" yaml:"focused,omitempty"`
+	Checked         *bool                 `json:"checked,omitempty" yaml:"checked,omitempty"`
+	URL             string                `json:"url,omitempty" yaml:"url,omitempty"`
+	Key             string                `json:"key,omitempty" yaml:"key,omitempty"`
+	Value           string                `json:"value,omitempty" yaml:"value,omitempty"`
+	Option          *SelectOptionSelector `json:"option,omitempty" yaml:"option,omitempty"`
+	Button          string                `json:"button,omitempty" yaml:"button,omitempty"`
+	Count           int                   `json:"count,omitempty" yaml:"count,omitempty"`
+	Direction       string                `json:"direction,omitempty" yaml:"direction,omitempty"`
+	Steps           int                   `json:"steps,omitempty" yaml:"steps,omitempty"`
+	DeltaX          float64               `json:"delta_x,omitempty" yaml:"delta_x,omitempty"`
+	DeltaY          float64               `json:"delta_y,omitempty" yaml:"delta_y,omitempty"`
+	End             *Point                `json:"end,omitempty" yaml:"end,omitempty"`
 	wireTextMissing bool
 	wireFields      []string
 }
@@ -77,7 +78,7 @@ func (a Action) executionRequest() (*actionRequest, error) {
 	for _, field := range definition.Fields {
 		allowedFields[field] = true
 	}
-	present := map[string]bool{"target": a.Target.Kind != "" || a.Target.Point != nil || a.Target.Ref != "" || a.Target.Locator != "", "text": a.Text != "", "sensitive": a.Sensitive, "focused": a.Focused, "checked": a.Checked != nil, "url": a.URL != "", "key": a.Key != "", "value": a.Value != "", "button": a.Button != "", "count": a.Count != 0, "direction": a.Direction != "", "steps": a.Steps != 0, "delta_x": a.DeltaX != 0, "delta_y": a.DeltaY != 0, "end": a.End != nil}
+	present := map[string]bool{"target": a.Target.Kind != "" || a.Target.Point != nil || a.Target.Ref != "" || a.Target.Locator != "", "text": a.Text != "", "sensitive": a.Sensitive, "focused": a.Focused, "checked": a.Checked != nil, "url": a.URL != "", "key": a.Key != "", "value": a.Value != "", "option": a.Option != nil, "button": a.Button != "", "count": a.Count != 0, "direction": a.Direction != "", "steps": a.Steps != 0, "delta_x": a.DeltaX != 0, "delta_y": a.DeltaY != 0, "end": a.End != nil}
 	for _, field := range a.wireFields {
 		if field != "kind" && !allowedFields[field] {
 			return fail("field " + field + " is unavailable for this action kind")
@@ -310,7 +311,10 @@ func (a Action) executionRequest() (*actionRequest, error) {
 		}
 		p.Value = a.Key
 	case "select":
-		p.Value = a.Value
+		if err := a.Option.Validate(); err != nil {
+			return fail(err.Error())
+		}
+		p.Option = a.Option
 	case "zoom", "keyboard":
 		if a.Verb == "zoom" {
 			if _, err := parseZoomFactor(a.Value); err != nil {
@@ -421,8 +425,10 @@ func (impl *browserCoreImpl) SetSessionAuthorityProvider(provider func(context.C
 	impl.actEngine.authorityCheck = func(ctx context.Context, needsGeometry bool, captureID string) error {
 		info, err := provider(ctx)
 		if err != nil {
+			impl.snapEngine.absorbSessionPrivacy(nil)
 			return err
 		}
+		impl.snapEngine.absorbSessionPrivacy(info)
 		if err := SessionAllowsAIInput(info); err != nil {
 			return err
 		}
@@ -556,7 +562,7 @@ func (a Action) MarshalJSON() ([]byte, error) {
 		target = &a.Target
 	}
 	var value *string
-	if a.Verb == "select" || a.Value != "" {
+	if a.Value != "" {
 		value = &a.Value
 	}
 	return json.Marshal(struct {
@@ -567,14 +573,14 @@ func (a Action) MarshalJSON() ([]byte, error) {
 	}{&wire, target, text, value})
 }
 func (a *Action) UnmarshalJSON(data []byte) error {
+	fields, err := uniqueJSONFields(data)
+	if err != nil {
+		return err
+	}
 	var wire actionWire
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&wire); err != nil {
-		return err
-	}
-	var fields map[string]json.RawMessage
-	if err := json.Unmarshal(data, &fields); err != nil {
 		return err
 	}
 	*a = Action(wire)
@@ -585,6 +591,14 @@ func (a *Action) UnmarshalJSON(data []byte) error {
 	a.wireTextMissing = !present
 	if present && bytes.Equal(bytes.TrimSpace(value), []byte("null")) {
 		return fmt.Errorf("text must be a string, not null")
+	}
+	if a.Verb == "select" {
+		if _, old := fields["value"]; old {
+			return fmt.Errorf("select requires option; top-level value is unavailable")
+		}
+		if err := a.Option.Validate(); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -621,6 +635,16 @@ func (a *Action) UnmarshalYAML(node *yaml.Node) error {
 				return fmt.Errorf("text must be a string")
 			}
 			a.wireTextMissing = false
+		}
+	}
+	if a.Verb == "select" {
+		for _, field := range a.wireFields {
+			if field == "value" {
+				return fmt.Errorf("select requires option; top-level value is unavailable")
+			}
+		}
+		if err := a.Option.Validate(); err != nil {
+			return err
 		}
 	}
 	return nil

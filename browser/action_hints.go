@@ -74,6 +74,11 @@ func SelectCapabilityForElement(ref ElementRef, scenario Scenario) *SelectCapabi
 	if !ref.Observed || !ref.VisibilityKnown || !ref.VisibleInViewport || ref.BlockedByModal || !ref.ControlStateKnown || ref.Disabled || !ref.Interactable {
 		capability.Available = false
 		capability.Reason = "target is not an observed enabled visible interactable control"
+		for i := range capability.Options {
+			capability.Options[i].Option = nil
+			capability.Options[i].Selectable = false
+			capability.Options[i].Reason = capability.Reason
+		}
 	}
 	if ref.SelectValuesRedacted || ref.Sensitive {
 		capability.Options = []SelectOptionCapability{}

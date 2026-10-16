@@ -13,6 +13,7 @@ import (
 )
 
 type CLIFlag struct {
+	Description    string   `json:"description,omitempty"`
 	Name           string   `json:"name"`
 	TakesValue     bool     `json:"takes_value"`
 	Values         []string `json:"values,omitempty"`
@@ -28,7 +29,16 @@ type FlagRule struct {
 	Forbids       []string `json:"forbids,omitempty"`
 }
 
+type CLIArgument struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+}
+
 type CommandDefinition struct {
+	Arguments  []CLIArgument                         `json:"arguments,omitempty"`
+	Usage      string                                `json:"usage,omitempty"`
+	Examples   []string                              `json:"examples,omitempty"`
+	Guidance   string                                `json:"guidance,omitempty"`
 	Path       string                                `json:"command"`
 	Summary    string                                `json:"summary"`
 	Flags      []CLIFlag                             `json:"flags"`
@@ -166,10 +176,26 @@ func commandDefinitions() []CommandDefinition {
 		case "check":
 			d.Rules = []FlagRule{{ExactlyOne: []string{"--id", "--observation"}}, {ExactlyOne: []string{"--assert", "--file"}}}
 		case "act select":
-			d.Required = append(d.Required, "--value")
+			d.MinArgs = 1
+			d.Arguments = []CLIArgument{{Name: "TARGET", Description: "Control ref returned by observe, or an explicit css= or role= locator for the select control."}}
+			d.Usage = "act select TARGET --id SESSION (--label LABEL | --value VALUE)"
+			d.Examples = []string{"dw-browser act select <CONTROL_REF_FOR_来源> --id <SESSION> --label '完整内容'", "dw-browser act select <CONTROL_REF_FOR_来源> --id <SESSION> --value '<EXACT_DOM_VALUE_FROM_OBSERVE>'"}
+			d.Guidance = "Placeholders in angle brackets must be replaced. First observe the session, read the control's option labels and DOM values, choose exactly one matching field, execute, then observe again. Do not guess values from labels; duplicate matches fail. Copy a selectable choice's select.options[].option unchanged into Action.option; for CLI map its sole label or value field directly to --label or --value, preserving exact strings including empty strings."
+			var selectors []string
+			for _, name := range browser.SelectOptionSelectorFields() {
+				selectors = append(selectors, "--"+name)
+			}
+			d.Rules = []FlagRule{{ExactlyOne: selectors}}
 			for fi := range d.Flags {
-				if d.Flags[fi].Name == "--value" {
+				switch d.Flags[fi].Name {
+				case "--label":
+					d.Flags[fi].Description = "Exact complete displayed option label only; no DOM-value fallback. Supply exactly one of --label or --value."
 					d.Flags[fi].AllowEmpty = true
+				case "--value":
+					d.Flags[fi].Description = "Exact DOM option value only; no displayed-label fallback. Supply exactly one of --label or --value."
+					d.Flags[fi].AllowEmpty = true
+				case "--id":
+					d.Flags[fi].Description = "Session ID used by observe; this is not the control target."
 				}
 			}
 		case "act fill", "act type":
@@ -211,6 +237,8 @@ func actionFlags(d browser.ActionDefinition) []CLIFlag {
 					break
 				}
 			}
+		case "option":
+			out = append(out, flags(strings.Join(browser.SelectOptionSelectorFields(), " "), "")...)
 		case "text":
 			out = append(out, flags("text text-file", "")...)
 		case "sensitive", "focused":

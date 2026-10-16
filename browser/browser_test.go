@@ -182,11 +182,11 @@ func TestTypedRequest_ValidSyntax(t *testing.T) {
 		{Action{Verb: "scroll", Direction: "down"}, "scroll", "", ""},
 		{Action{Verb: "scroll", Direction: "up"}, "scroll", "", ""},
 		{Action{Verb: "hover", Target: fixtureRef("@ofixture-r7")}, "hover", "@ofixture-r7", ""},
-		{Action{Verb: "select", Target: fixtureRef("@ofixture-r4"), Value: "opt2"}, "select", "@ofixture-r4", "opt2"},
+		{Action{Verb: "select", Target: fixtureRef("@ofixture-r4"), Option: SelectByValue("opt2")}, "select", "@ofixture-r4", "opt2"},
 		{Action{Verb: "type", Target: fixtureRef("@ofixture-r1"), Text: "hello world"}, "type", "@ofixture-r1", "hello world"},
 		{Action{Verb: "fill", Target: fixtureLocator("css=[data-testid=\"notes\"]"), Text: ""}, "fill", "css=[data-testid=\"notes\"]", ""},
 		{Action{Verb: "fill", Target: fixtureLocator("css=[data-testid=\"notes\"]"), Text: "   "}, "fill", "css=[data-testid=\"notes\"]", "   "},
-		{Action{Verb: "select", Target: fixtureLocator("css=[data-testid=\"preset\"]"), Value: ""}, "select", "css=[data-testid=\"preset\"]", ""},
+		{Action{Verb: "select", Target: fixtureLocator("css=[data-testid=\"preset\"]"), Option: SelectByValue("")}, "select", "css=[data-testid=\"preset\"]", ""},
 	}
 
 	for _, tc := range cases {
@@ -201,7 +201,11 @@ func TestTypedRequest_ValidSyntax(t *testing.T) {
 			if parsed.Ref != tc.wantRef {
 				t.Errorf("Ref: got %q, want %q", parsed.Ref, tc.wantRef)
 			}
-			if parsed.Value != tc.wantVal {
+			if tc.input.Verb == "select" {
+				if parsed.Option == nil || parsed.Option.Value == nil || *parsed.Option.Value != tc.wantVal || parsed.Value != "" {
+					t.Fatalf("typed option lost: %+v", parsed)
+				}
+			} else if parsed.Value != tc.wantVal {
 				t.Errorf("Value: got %q, want %q", parsed.Value, tc.wantVal)
 			}
 			coordOps := map[string]bool{

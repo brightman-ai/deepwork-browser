@@ -1,15 +1,47 @@
 # Native select and evidence
 
-Use the existing semantic action:
+Select means “choose one option in this dropdown.” The control target comes
+from `observe`; the session ID identifies the browser session. The tool supports
+any native HTML dropdown, not a particular application's choice names.
+
+1. Run `dw-browser observe --id review` and read the real screenshot.
+2. Find the desired dropdown in `elements`; copy its actual `ref` into
+   `CONTROL_REF`. This shell variable is the observed control identity, not its
+   name, a made-up token or an option's index.
+3. Read `select.options`. Each selectable choice includes an `option` object
+   with **exactly one** field: `label` or `value`.
+4. Use the corresponding flag and then observe the application result:
 
 ```sh
-dw-browser observe --id task
-dw-browser act select "$SELECT_REF" --id task --value '全文识别'
-dw-browser observe --id task
+# For an observed option object {"label":"完整内容"}:
+dw-browser act select "$CONTROL_REF" --id review --label '完整内容'
+# For an observed option object {"value":"full"}, use --value 'full' instead.
+dw-browser observe --id review
 ```
 
-The query matches an exact option value, an exact label, or an unambiguous label
-prefix, in that order. AI callers do not need browser-specific key sequences.
+The example label is page content, not a DW-Browser keyword. `--label` matches
+only the full captured display label; `--value` matches only the exact DOM value.
+They are mutually exclusive. There is no prefix, substring, value-to-label
+fallback or automatic first match. Zero or multiple matches reject before input.
+Comparison is case-sensitive and does not trim the query. Uniqueness includes
+all options, even hidden/disabled choices and choices outside the output budget.
+
+An empty string must be explicit: `--value ''` selects a unique empty DOM value;
+omitting both flags does not mean empty. Completely indistinguishable duplicates
+are unaddressable, even if already selected; the tool does not invent positional
+identity. Labels repeated with distinct values remain addressable by value, and
+values repeated with distinct labels remain addressable by label.
+
+The same canonical request is shared by Go, HTTP and journeys:
+
+```json
+{"kind":"select","target":{"kind":"locator","locator":"css=select[name=source]"},"option":{"label":"完整内容"}}
+```
+
+Use the actual control locator for your application. `option` requires exactly
+one string field; null, unknown fields, duplicate keys, an empty object or both
+fields are rejected. Old select top-level `value` is removed. Go callers use
+`browser.SelectByLabel(text)` or `browser.SelectByValue(value)` as `Action.Option`.
 Custom JavaScript dropdowns continue to use their actual visible controls;
 `select` targets native HTML `<select>` elements.
 
@@ -33,7 +65,7 @@ explicit journey step, not by a hidden retry after native failure:
   action:
     kind: select
     target: {kind: locator, locator: 'css=select[name=source]'}
-    value: full
+    option: {value: full}
 ```
 
 ## Discover before acting
@@ -41,7 +73,9 @@ explicit journey step, not by a hidden retry after native failure:
 Native select references in an observation include a `select` capability with
 `available`, `execution`, `evidence_scope`, `reason` when unavailable, and declared
 option labels/values plus disabled/hidden/selected state and per-option
-`selectable`/`reason` from the shared planner. This is structural
+`selectable`/`reason` and a directly reusable `option` selector from the shared
+planner. A unique label is preferred; otherwise a unique value is provided.
+Unaddressable duplicate choices have no selector and are not selectable. This is structural
 control data, not proof that a popup appeared in the screenshot. No popup-option
 ref is manufactured.
 
@@ -109,3 +143,14 @@ receipt. Go's existing `ActionFidelityReport.Fidelity` member remains the policy
 value and serializes under the clearer requested name.
 
 See [0.14.0-v2 acceptance and binary identity](native-select-acceptance.md).
+
+## Interface migration in 0.15.0-v2
+
+A 0.14 command that supplied a display label via `--value` must use `--label`.
+Actual DOM values continue to use `--value`, now strictly within that field.
+JSON/YAML actions replace top-level `value: full` with `option: {value: full}`
+or `option: {label: '完整内容'}`. All select callers use this one model;
+there is no legacy matcher or compatibility alias. A missing or ambiguous choice
+requires fresh observation and an explicit unique selector, not automatic retry.
+
+See [exact-selector acceptance](select-exact-acceptance.md).

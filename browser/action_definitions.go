@@ -21,7 +21,7 @@ func ActionDefinitions() []ActionDefinition {
 		{"type", "Insert text into a target or the physically focused editor", element, []string{"target", "text", "focused"}, true},
 		{"press", "Dispatch a platform key or shortcut", element, []string{"target", "key"}, true},
 		{"focus", "Physically focus an editable target", element, []string{"target"}, false},
-		{"select", "Select a native option using verified keyboard interaction; explicit baseline element steps provide synthetic functional evidence", element, []string{"target", "value"}, true},
+		{"select", "Select a native option using verified keyboard interaction; explicit baseline element steps provide synthetic functional evidence", element, []string{"target", "option"}, true},
 		{"set-checked", "Set a checkbox to an explicit boolean", element, []string{"target", "checked"}, true},
 		{"scroll", "Scroll the viewport or target at a declared point", pointer, []string{"target", "direction", "steps", "delta_x", "delta_y"}, false},
 		{"scrollto", "Scroll a persistent target into view", element, []string{"target"}, false},

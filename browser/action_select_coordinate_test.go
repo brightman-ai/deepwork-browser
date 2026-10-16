@@ -10,61 +10,29 @@ import (
 	"time"
 )
 
-func TestMatchNativeSelectOptionPriorityAndDiagnostics(t *testing.T) {
-	options := []SelectOption{
-		{Label: "Value wins", Value: "TencentDB-Agent-Memory"},
-		{Label: "TencentDB-Agent-Memory", Value: "/home/ubuntu/code/stwork/TencentDB-Agent-Memory"},
-		{Label: "Alpha Pipeline", Value: "alpha"},
-		{Label: "Alpine Pipeline", Value: "alpine"},
-		{Label: "Gamma Unique", Value: "gamma"},
+func TestMatchNativeSelectOptionExactAndDiagnostics(t *testing.T) {
+	options := []SelectOption{{Label: "Value wins", Value: "collision"}, {Label: "collision", Value: "other"}, {Label: "Alpha Pipeline", Value: "alpha"}, {Label: "Alpine Pipeline", Value: "alpine"}}
+	for _, tc := range []struct {
+		selector *SelectOptionSelector
+		index    int
+		kind     string
+	}{{SelectByLabel("collision"), 1, "label"}, {SelectByValue("collision"), 0, "value"}, {SelectByLabel("Alpha Pipeline"), 2, "label"}} {
+		got, err := matchNativeSelectOption(options, tc.selector)
+		if err != nil || got.Index != tc.index || got.Kind != tc.kind {
+			t.Fatalf("match=%+v err=%v", got, err)
+		}
 	}
-
-	tests := []struct {
-		name      string
-		query     string
-		wantIndex int
-		wantKind  string
-	}{
-		{name: "exact value wins before colliding label", query: "TencentDB-Agent-Memory", wantIndex: 0, wantKind: "value"},
-		{name: "exact visible label", query: "Gamma Unique", wantIndex: 4, wantKind: "label"},
-		{name: "unique visible label prefix", query: "Gamma", wantIndex: 4, wantKind: "label-prefix"},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			got, err := matchNativeSelectOption(options, tc.query)
-			if err != nil {
-				t.Fatalf("matchNativeSelectOption(%q): %v", tc.query, err)
-			}
-			if got.Index != tc.wantIndex || got.Kind != tc.wantKind {
-				t.Fatalf("match = %+v, want index=%d kind=%q", got, tc.wantIndex, tc.wantKind)
-			}
-		})
-	}
-
-	t.Run("ambiguous prefix lists label-to-value choices", func(t *testing.T) {
-		_, err := matchNativeSelectOption(options, "Al")
+	for _, selector := range []*SelectOptionSelector{SelectByLabel("Al"), SelectByLabel("alpha"), SelectByValue("Alpha Pipeline"), SelectByLabel("Missing")} {
+		_, err := matchNativeSelectOption(options, selector)
 		if err == nil {
-			t.Fatal("ambiguous prefix unexpectedly matched")
+			t.Fatal("non-exact/cross-field selector accepted")
 		}
-		for _, want := range []string{`"Alpha Pipeline"→"alpha"`, `"Alpine Pipeline"→"alpine"`, "ambiguous"} {
-			if !strings.Contains(err.Error(), want) {
-				t.Fatalf("error %q missing %q", err, want)
+		for _, o := range options {
+			if !strings.Contains(err.Error(), fmt.Sprintf("%q→%q", o.Label, o.Value)) {
+				t.Fatalf("missing diagnostic: %v", err)
 			}
 		}
-	})
-
-	t.Run("missing choice lists every option", func(t *testing.T) {
-		_, err := matchNativeSelectOption(options, "Missing")
-		if err == nil {
-			t.Fatal("missing choice unexpectedly matched")
-		}
-		for _, option := range options {
-			want := fmt.Sprintf("%q→%q", option.Label, option.Value)
-			if !strings.Contains(err.Error(), want) {
-				t.Fatalf("error %q missing %q", err, want)
-			}
-		}
-	})
+	}
 }
 
 func TestTypedRequestAbsoluteHoverAndWheel(t *testing.T) {
@@ -202,14 +170,14 @@ func TestActionEngineNativeSelectWithoutPicker(t *testing.T) {
 	if err := core.EvalJS(ctx, `(() => { document.querySelector('#project').selectedIndex = 0; return true; })()`, new(bool)); err != nil {
 		t.Fatalf("reset select: %v", err)
 	}
-	assertWithin(Action{Verb: "select", Target: fixtureLocator("role=combobox[name*=\"Project\"]"), Value: "TencentDB-Agent-Memory"}, "", 2*time.Second)
+	assertWithin(Action{Verb: "select", Target: fixtureLocator("role=combobox[name*=\"Project\"]"), Option: SelectByLabel("TencentDB-Agent-Memory")}, "", 2*time.Second)
 	assertValue("/home/ubuntu/code/stwork/TencentDB-Agent-Memory")
-	assertWithin(Action{Verb: "select", Target: fixtureLocator("role=combobox[name*=\"Project\"]"), Value: "gamma"}, "", 2*time.Second)
+	assertWithin(Action{Verb: "select", Target: fixtureLocator("role=combobox[name*=\"Project\"]"), Option: SelectByValue("gamma")}, "", 2*time.Second)
 	assertValue("gamma")
-	assertWithin(Action{Verb: "select", Target: fixtureLocator("role=combobox[name*=\"Project\"]"), Value: "Gamma"}, "", 2*time.Second)
+	assertWithin(Action{Verb: "select", Target: fixtureLocator("role=combobox[name*=\"Project\"]"), Option: SelectByLabel("Gamma")}, "no option matched exact label", 2*time.Second)
 	assertValue("gamma")
-	assertWithin(Action{Verb: "select", Target: fixtureLocator("role=combobox[name*=\"Project\"]"), Value: "Al"}, `"Alpha Pipeline"→"alpha"`, 2*time.Second)
-	assertWithin(Action{Verb: "select", Target: fixtureLocator("role=combobox[name*=\"Project\"]"), Value: "Missing"}, `"TencentDB-Agent-Memory"→"/home/ubuntu/code/stwork/TencentDB-Agent-Memory"`, 2*time.Second)
+	assertWithin(Action{Verb: "select", Target: fixtureLocator("role=combobox[name*=\"Project\"]"), Option: SelectByLabel("Al")}, `"Alpha Pipeline"→"alpha"`, 2*time.Second)
+	assertWithin(Action{Verb: "select", Target: fixtureLocator("role=combobox[name*=\"Project\"]"), Option: SelectByLabel("Missing")}, `"TencentDB-Agent-Memory"→"/home/ubuntu/code/stwork/TencentDB-Agent-Memory"`, 2*time.Second)
 
 	var events []string
 	if err := core.EvalJS(ctx, `window.actionEvents`, &events); err != nil {

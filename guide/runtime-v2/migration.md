@@ -2,6 +2,13 @@
 
 The runtime uses one typed Action kernel, one canonical observation contract and one typed journey runner. Historical evidence/reports are preserved. Installing a built binary is an explicit delivery action; external callers migrate using this contract.
 
+In 0.15.0-v2, select requires exactly one explicit selector: `--label` for the
+full captured label, or `--value` for the exact DOM value. The old automatic
+value/label/prefix matcher is removed; duplicate matches reject before input.
+Go/HTTP/journey actions use `option: {label: ...}` or `option: {value: ...}`
+instead of select's top-level `value`. Observation provides reusable option
+objects. See [native select](native-select.md) for the complete contract.
+
 In 0.14.0-v2, visual native `select` uses verified keyboard input. Only explicit
 baseline element steps retain synthetic selection. Action JSON names requested
 policy `requested_fidelity`, separately reporting actual execution/evidence;

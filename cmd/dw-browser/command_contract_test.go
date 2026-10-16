@@ -171,7 +171,7 @@ func TestCanonicalActionSerializationRetainsExplicitEmptyValues(t *testing.T) {
 		{Verb: "navigate", URL: "http://localhost/"},
 		{Verb: "fill", Target: browser.Target{Kind: "locator", Locator: "css=input"}, Text: ""},
 		{Verb: "type", Focused: true, Text: ""},
-		{Verb: "select", Target: browser.Target{Kind: "locator", Locator: "css=select"}, Value: ""},
+		{Verb: "select", Target: browser.Target{Kind: "locator", Locator: "css=select"}, Option: browser.SelectByValue("")},
 	} {
 		for _, format := range []string{"json", "yaml"} {
 			var data []byte

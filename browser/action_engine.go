@@ -261,9 +261,10 @@ func (e *actionEngine) autoSyncKeyboard(ctx context.Context) {
 // actionRequest contains validated dispatch fields derived from Action.
 type actionRequest struct {
 	ObservationID string
-	Op            string  // "click" | "clickxy" | "clickat" | "hoverat" | "dragat" | "tap" | "tapat" | "type" | "scroll" | "hover" | "select"
-	Ref           string  // Element Ref（如 "e3"）或语义选择器（如 "#testid", "button:'name'"）
-	Value         string  // type/select 的值
+	Op            string // "click" | "clickxy" | "clickat" | "hoverat" | "dragat" | "tap" | "tapat" | "type" | "scroll" | "hover" | "select"
+	Ref           string // Element Ref（如 "e3"）或语义选择器（如 "#testid", "button:'name'"）
+	Value         string // text/key/zoom/keyboard value
+	Option        *SelectOptionSelector
 	CoordX        float64 // 有 Ref: 元素内相对 X(0..1)；无 Ref: 视口 CSS px
 	CoordY        float64 // 有 Ref: 元素内相对 Y(0..1)；无 Ref: 视口 CSS px
 	CoordX2       float64 // dragat/swipeat 终点相对 X 坐标（0..1）
@@ -942,7 +943,7 @@ func (e *actionEngine) dispatchActionRequest(
 			return err
 		}
 	case "select":
-		if err := e.executeSelect(ctx, resolvedRef, parsed.Value, elementMode && e.interactionPolicy.Fidelity == InteractionFidelityDual); err != nil {
+		if err := e.executeSelect(ctx, resolvedRef, parsed.Option, elementMode && e.interactionPolicy.Fidelity == InteractionFidelityDual); err != nil {
 			return err
 		}
 	case "back":

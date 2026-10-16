@@ -14,6 +14,7 @@ func parseTypedActionArgs(args []string) (browser.Action, []string, error) {
 	a := browser.Action{}
 	var rest, pos []string
 	textSeen, fileSeen := false, false
+	var optionLabel, optionValue *string
 	observationID := ""
 	provided := map[string]bool{}
 	fail := func(err error) (browser.Action, []string, error) { return a, nil, err }
@@ -34,13 +35,16 @@ func parseTypedActionArgs(args []string) (browser.Action, []string, error) {
 			i++
 			return args[i], nil
 		}
+		if (key == "--label" || key == "--value") && provided[key] {
+			return fail(fmt.Errorf("duplicate %s", key))
+		}
 		provided[key] = true
 		switch key {
 		case "--focused":
 			a.Focused = true
 		case "--sensitive":
 			a.Sensitive = true
-		case "--text", "--text-file", "--url", "--key", "--value", "--button", "--count", "--checked", "--direction", "--steps", "--x", "--y", "--end-x", "--end-y", "--unit", "--frame", "--delta-x", "--delta-y", "--observation-id":
+		case "--text", "--text-file", "--url", "--key", "--label", "--value", "--button", "--count", "--checked", "--direction", "--steps", "--x", "--y", "--end-x", "--end-y", "--unit", "--frame", "--delta-x", "--delta-y", "--observation-id":
 			v, err := take()
 			if err != nil {
 				return fail(err)
@@ -71,8 +75,10 @@ func parseTypedActionArgs(args []string) (browser.Action, []string, error) {
 				a.URL = v
 			case "--key":
 				a.Key = v
+			case "--label":
+				optionLabel = &v
 			case "--value":
-				a.Value = v
+				optionValue = &v
 			case "--button":
 				a.Button = v
 			case "--direction":
@@ -152,6 +158,16 @@ func parseTypedActionArgs(args []string) (browser.Action, []string, error) {
 		return fail(fmt.Errorf("act requires verb and optional target"))
 	}
 	a.Verb = pos[0]
+	if a.Verb == "select" {
+		a.Option = &browser.SelectOptionSelector{Label: optionLabel, Value: optionValue}
+	} else {
+		if optionLabel != nil {
+			return fail(fmt.Errorf("--label is only available for select"))
+		}
+		if optionValue != nil {
+			a.Value = *optionValue
+		}
+	}
 	if len(pos) == 2 {
 		if strings.HasPrefix(pos[1], "@") {
 			a.Target.Kind = "ref"

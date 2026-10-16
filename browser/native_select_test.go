@@ -17,11 +17,11 @@ func selectFactsFixture() SelectFacts {
 
 func TestSelectPlannerPreflightAndProjection(t *testing.T) {
 	f := selectFactsFixture()
-	p, err := PlanSelect(f, "full", false)
+	p, err := PlanSelect(f, SelectByValue("full"), false)
 	if err != nil || p.Index != 1 || p.Character != "全" || p.NoOp {
 		t.Fatalf("plan=%+v err=%v", p, err)
 	}
-	p, err = PlanSelect(f, "a", false)
+	p, err = PlanSelect(f, SelectByValue("a"), false)
 	if err != nil || !p.NoOp {
 		t.Fatalf("no-op=%+v err=%v", p, err)
 	}
@@ -43,7 +43,7 @@ func TestSelectPlannerPreflightAndProjection(t *testing.T) {
 	for _, change := range []func(*SelectFacts){func(f *SelectFacts) { f.Hidden = true }, func(f *SelectFacts) { f.Multiple = true; f.Size = 4 }, func(f *SelectFacts) { f.Options[1].Hidden = true; f.Options[1].Label = "" }} {
 		f := selectFactsFixture()
 		change(&f)
-		if _, err := PlanSelect(f, "full", true); err != nil {
+		if _, err := PlanSelect(f, SelectByValue("full"), true); err != nil {
 			t.Fatalf("explicit baseline functionality removed: %v", err)
 		}
 	}
@@ -51,14 +51,14 @@ func TestSelectPlannerPreflightAndProjection(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			f := selectFactsFixture()
 			tc.mutate(&f)
-			if _, err := PlanSelect(f, "full", false); err == nil {
+			if _, err := PlanSelect(f, SelectByValue("full"), false); err == nil {
 				t.Fatal("unsafe native target allowed")
 			}
 		})
 	}
 	for _, label := range []string{"", "😀 current"} {
 		f := SelectFacts{IsSelect: true, Connected: true, Complete: true, OptionCount: 1, SelectedIndex: 0, Value: "a", Options: []SelectOption{{Label: label, Value: "a"}}}
-		p, err := PlanSelect(f, "a", false)
+		p, err := PlanSelect(f, SelectByValue("a"), false)
 		if err != nil || !p.NoOp || p.Character != "" {
 			t.Fatalf("state-only noop=%+v err=%v", p, err)
 		}
@@ -71,13 +71,13 @@ func TestSelectPlannerPreflightAndProjection(t *testing.T) {
 	f = selectFactsFixture()
 	f.Options = append(f.Options, SelectOption{Label: "Duplicate", Value: "dup2"})
 	f.OptionCount++
-	p, err = PlanSelect(f, "dup2", false)
+	p, err = PlanSelect(f, SelectByValue("dup2"), false)
 	if err != nil || p.Index != 3 || p.Character != "D" {
 		t.Fatalf("duplicate native plan=%+v err=%v", p, err)
 	}
 	f = selectFactsFixture()
 	f.Options[1].Label = "Alpha Two"
-	if _, err = PlanSelect(f, "full", false); err != nil {
+	if _, err = PlanSelect(f, SelectByValue("full"), false); err != nil {
 		t.Fatalf("shared native prefix unnecessarily rejected: %v", err)
 	}
 	for i := 3; i < 30; i++ {
@@ -108,8 +108,8 @@ func TestSelectOptionCapabilityMatchesPlannerWithoutMutatingFacts(t *testing.T) 
 		if len(c.Options) != len(f.Options) {
 			t.Fatalf("fixture projection truncated: %+v", c)
 		}
-		for i, o := range c.Options {
-			_, err := PlanSelect(f, f.Options[i].Value, baseline)
+		for _, o := range c.Options {
+			_, err := PlanSelect(f, o.Option, baseline)
 			if o.Selectable != (err == nil) {
 				t.Fatalf("baseline=%t option=%+v planerr=%v", baseline, o, err)
 			}
@@ -168,10 +168,31 @@ for(const type of ['input','change'])choice.addEventListener(type,e=>{events.pus
 
 func TestNativeSelectKeyboardExperienceAndFailureBoundaries(t *testing.T) {
 	requireChromeForPool(t)
+	mutationReady := []chan struct{}{make(chan struct{}), make(chan struct{})}
+	mutationApplied := []chan struct{}{make(chan struct{}), make(chan struct{})}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/duplicate-ready" || r.URL.Path == "/duplicate-applied" {
+			index := 0
+			if r.URL.Query().Get("case") == "1" {
+				index = 1
+			}
+			if r.URL.Path == "/duplicate-ready" {
+				select {
+				case <-mutationReady[index]:
+					w.WriteHeader(http.StatusNoContent)
+				case <-r.Context().Done():
+				}
+				return
+			}
+			close(mutationApplied[index])
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		page := nativeSelectExperienceFixture
 		switch r.URL.Query().Get("mode") {
+		case "fresh-duplicate":
+			page += `<script>(async()=>{const q=new URL(location.href).searchParams.get('case');await fetch('/duplicate-ready?case='+q);const s=document.querySelector('#choice'),o=s.options[0].cloneNode(true);o.disabled=true;o.hidden=true;s.append(o);await fetch('/duplicate-applied?case='+q)})()</script>`
 		case "placeholder":
 			page = strings.Replace(page, `<option value="a">Alpha</option>`, `<option disabled hidden selected value="">请选择</option><option value="a">Alpha</option>`, 1)
 		case "emoji-noop":
@@ -223,13 +244,14 @@ func TestNativeSelectKeyboardExperienceAndFailureBoundaries(t *testing.T) {
 		return Target{}
 	}
 	var lastReport ActionFidelityReport
-	actSelect := func(value string, mode InteractionMode) error {
+	actSelectOption := func(option *SelectOptionSelector, mode InteractionMode) error {
 		t.Helper()
 		target := selectTarget()
-		_, _, err := core.ExecuteAction(ctx, Action{Verb: "select", Target: target, Value: value}, false, true, mode)
+		_, _, err := core.ExecuteAction(ctx, Action{Verb: "select", Target: target, Option: option}, false, true, mode)
 		lastReport = core.(ActionFidelityCapable).LastActionFidelity()
 		return err
 	}
+	actSelect := func(value string, mode InteractionMode) error { return actSelectOption(SelectByValue(value), mode) }
 	read := func() (string, []struct {
 		Type    string `json:"type"`
 		Trusted bool   `json:"trusted"`
@@ -249,12 +271,38 @@ func TestNativeSelectKeyboardExperienceAndFailureBoundaries(t *testing.T) {
 		}
 		return state.Value, state.Events
 	}
+	// The application changes its options after observation without a debug
+	// write invalidating the captured ref. Synchronize via its own HTTP fixture.
+	// Identical disabled/hidden choices still make the selected option ambiguous.
+	for index, selector := range []*SelectOptionSelector{SelectByLabel("Alpha"), SelectByValue("a")} {
+		if _, err := core.Navigate(ctx, fmt.Sprintf("%s?mode=fresh-duplicate&case=%d", srv.URL, index)); err != nil {
+			t.Fatal(err)
+		}
+		staleTarget := selectTarget()
+		close(mutationReady[index])
+		select {
+		case <-mutationApplied[index]:
+		case <-ctx.Done():
+			t.Fatal(ctx.Err())
+		}
+		_, _, err := core.ExecuteAction(ctx, Action{Verb: "select", Target: staleTarget, Option: selector}, false, true, InteractionModeVisual)
+		report := core.(ActionFidelityCapable).LastActionFidelity()
+		if err == nil || !strings.Contains(err.Error(), "ambiguous") || report.Dispatched {
+			t.Fatalf("fresh duplicate err=%v report=%+v", err, report)
+		}
+		if got, events := read(); got != "a" || len(events) != 0 {
+			t.Fatalf("fresh ambiguity caused input: value=%s events=%+v", got, events)
+		}
+	}
+	if _, err := core.Navigate(ctx, srv.URL); err != nil {
+		t.Fatal(err)
+	}
 	for _, value := range []string{"full", "", "current", "original", "g", "d2"} {
 		if err := actSelect(value, InteractionModeVisual); err != nil {
 			t.Fatalf("select %s: %v report=%+v", value, err, lastReport)
 		}
 		got, events := read()
-		if got != value || lastReport.Synthetic || lastReport.Execution != "native-keys" || lastReport.EvidenceScope != "keyboard-selection" || lastReport.Selection == nil || !lastReport.Selection.Verified {
+		if got != value || lastReport.Synthetic || lastReport.Execution != "native-keys" || lastReport.EvidenceScope != "keyboard-selection" || lastReport.Selection == nil || !lastReport.Selection.Verified || lastReport.Selection.MatchedBy != "value" {
 			t.Fatalf("select %s value=%s report=%+v", value, got, lastReport)
 		}
 		for _, e := range events {
@@ -263,10 +311,10 @@ func TestNativeSelectKeyboardExperienceAndFailureBoundaries(t *testing.T) {
 			}
 		}
 	}
-	if err := actSelect("全部", InteractionModeVisual); err != nil {
+	if err := actSelectOption(SelectByLabel("全部"), InteractionModeVisual); err != nil {
 		t.Fatal(err)
 	}
-	if lastReport.Selection == nil || !lastReport.Selection.Verified || lastReport.Selection.After.Value != "" {
+	if lastReport.Selection == nil || !lastReport.Selection.Verified || lastReport.Selection.After.Value != "" || lastReport.Selection.MatchedBy != "label" {
 		t.Fatalf("empty selection report=%+v", lastReport)
 	}
 	emptyJSON, err := json.Marshal(lastReport.Selection.After)
@@ -327,7 +375,7 @@ func TestNativeSelectKeyboardExperienceAndFailureBoundaries(t *testing.T) {
 	if err := core.EvalJS(ctx, `window.coverControl()`, new(bool)); err != nil {
 		t.Fatal(err)
 	}
-	_, _, blockedErr := core.ExecuteAction(ctx, Action{Verb: "select", Target: blockedTarget, Value: "full"}, false, true, InteractionModeVisual)
+	_, _, blockedErr := core.ExecuteAction(ctx, Action{Verb: "select", Target: blockedTarget, Option: SelectByValue("full")}, false, true, InteractionModeVisual)
 	blockedReport := core.(ActionFidelityCapable).LastActionFidelity()
 	if blockedErr == nil || blockedReport.Execution != "none" || blockedReport.EvidenceScope != "" {
 		t.Fatalf("occluded err=%v report=%+v", blockedErr, blockedReport)
@@ -396,7 +444,7 @@ func TestNativeSelectKeyboardExperienceAndFailureBoundaries(t *testing.T) {
 	cancelTarget := selectTarget()
 	short, stopShort := context.WithTimeout(ctx, 450*time.Millisecond)
 	started := time.Now()
-	_, _, cancelErr := core.ExecuteAction(short, Action{Verb: "select", Target: cancelTarget, Value: "full"}, false, true, InteractionModeVisual)
+	_, _, cancelErr := core.ExecuteAction(short, Action{Verb: "select", Target: cancelTarget, Option: SelectByValue("full")}, false, true, InteractionModeVisual)
 	stopShort()
 	lastReport = core.(ActionFidelityCapable).LastActionFidelity()
 	if cancelErr == nil || time.Since(started) > 3*time.Second || lastReport.Synthetic {
@@ -424,7 +472,7 @@ func TestNativeSelectKeyboardExperienceAndFailureBoundaries(t *testing.T) {
 		if _, err := core.Snap(ctx); err != nil {
 			t.Fatal(err)
 		}
-		_, _, err := core.ExecuteAction(ctx, Action{Verb: "select", Target: fixtureLocator("css=#choice"), Value: "full"}, false, false, InteractionModeElement)
+		_, _, err := core.ExecuteAction(ctx, Action{Verb: "select", Target: fixtureLocator("css=#choice"), Option: SelectByValue("full")}, false, false, InteractionModeElement)
 		if err != nil {
 			t.Fatalf("%s baseline regression: %v", mode, err)
 		}

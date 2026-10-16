@@ -35,7 +35,7 @@ _dw_browser_v2() {
  'act type') choices='--id --text --text-file --focused --output --lock-wait --verbose ';;
  'act press') choices='--id --key --output --lock-wait --verbose ';;
  'act focus') choices='--id --output --lock-wait --verbose ';;
- 'act select') choices='--id --value --output --lock-wait --verbose ';;
+ 'act select') choices='--id --label --value --output --lock-wait --verbose ';;
  'act set-checked') choices='--id --checked --output --lock-wait --verbose ';;
  'act scroll') choices='--id --x --y --unit --frame --observation-id --direction --steps --delta-x --delta-y --output --lock-wait --verbose ';;
  'act scrollto') choices='--id --output --lock-wait --verbose ';;

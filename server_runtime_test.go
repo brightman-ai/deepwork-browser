@@ -27,6 +27,14 @@ func TestHTTPRejectsMalformedBeforeResolvingRuntime(t *testing.T) {
 		{"/act", `{"id":"x","action":{"kind":"fill","target":{"kind":"ref","ref":"@ofixture-r1"}}}`},
 		{"/act", `{"id":"x","action":{"kind":"click","target":{"kind":"point","point":{"x":1,"y":2,"unit":"css-px","frame":"viewport"}}}}`},
 		{"/act", `{"id":"x","action":{"kind":"reload","count":0}}`},
+		{"/act", `{"id":"x","action":{"kind":"select","target":{"kind":"locator","locator":"css=select"},"value":""}}`},
+		{"/act", `{"id":"x","action":{"kind":"select","target":{"kind":"locator","locator":"css=select"},"value":null}}`},
+		{"/act", `{"id":"x","action":{"kind":"select","target":{"kind":"locator","locator":"css=select"},"option":{}}}`},
+		{"/act", `{"id":"x","action":{"kind":"select","target":{"kind":"locator","locator":"css=select"},"option":null}}`},
+		{"/act", `{"id":"x","action":{"kind":"select","target":{"kind":"locator","locator":"css=select"},"option":{"label":null,"value":"a"}}}`},
+		{"/act", `{"id":"x","action":{"kind":"select","target":{"kind":"locator","locator":"css=select"},"option":{"label":"A","value":"a"}}}`},
+		{"/act", `{"id":"x","action":{"kind":"select","target":{"kind":"locator","locator":"css=select"},"option":{"label":4}}}`},
+		{"/act", `{"id":"x","action":{"kind":"select","target":{"kind":"locator","locator":"css=select"},"option":{"label":"A","index":1}}}`},
 		{"/act", `{"id":"x","action":{"kind":"reload"},"scenario":"webvisit"}`},
 		{"/navigate", `{"id":"x","url":"javascript:document.body.remove()"}`},
 		{"/navigate", `{"url":"https://example.com"}`},
@@ -97,11 +105,13 @@ type actionEvidenceCore struct {
 	outcome          browser.Outcome
 	actionErr        error
 	executed, closed int
+	action           *browser.Action
 }
 
 func (*actionEvidenceCore) SetPolicy(browser.SessionPolicy, string)     {}
 func (*actionEvidenceCore) RestoreRefsFromSession([]browser.SessionRef) {}
-func (c *actionEvidenceCore) ExecuteAction(context.Context, browser.Action, bool, bool, browser.InteractionMode) (*browser.Snapshot, browser.Outcome, error) {
+func (c *actionEvidenceCore) ExecuteAction(_ context.Context, action browser.Action, _ bool, _ bool, _ browser.InteractionMode) (*browser.Snapshot, browser.Outcome, error) {
+	c.action = &action
 	c.executed++
 	return nil, c.outcome, c.actionErr
 }
@@ -163,7 +173,7 @@ func TestHTTPActionPreservesCoreEvidenceAcrossTerminalPaths(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			body := `{"id":"host","action":{"kind":"select","target":{"kind":"locator","locator":"css=#choice"},"value":"after"}}`
+			body := `{"id":"host","action":{"kind":"select","target":{"kind":"locator","locator":"css=#choice"},"option":{"value":"after"}}}`
 			if tc.hookFailure {
 				server.hooks.OnNavigate = func(context.Context, string, string) error { return fmt.Errorf("hook failed") }
 				body = `{"id":"host","action":{"kind":"navigate","url":"https://example.test"}}`
@@ -227,5 +237,30 @@ func TestHTTPPreflightDoesNotReadPreviousActionEvidence(t *testing.T) {
 		if response.Code == http.StatusOK || strings.Contains(response.Body.String(), "action_fidelity") || capable.reads != 0 || base.executed != 0 || base.closed != 0 {
 			t.Fatalf("preflight inherited old action evidence: %s reads=%d", response.Body.String(), capable.reads)
 		}
+	}
+}
+
+func TestHTTPSelectPreservesExactOptionIdentity(t *testing.T) {
+	for _, optionJSON := range []string{`{"label":"全文识别"}`, `{"value":"full"}`, `{"value":""}`, `{"label":""}`} {
+		t.Run(optionJSON, func(t *testing.T) {
+			core := &actionEvidenceCore{outcome: browser.Outcome{Phase: "complete", DispatchState: "confirmed"}}
+			info := &browser.SessionInfo{SessionID: "host", BrowserRunID: "run", Scenario: string(browser.ScenarioAppTestExplore), AuthorityState: browser.AuthorityAgentic}
+			server, err := NewServer(WithRuntimeResolver(func(context.Context, string) (BoundRuntime, error) {
+				return BoundRuntime{Core: core, Info: info, Persist: func(context.Context, *browser.SessionInfo) error { return nil }}, nil
+			}))
+			if err != nil {
+				t.Fatal(err)
+			}
+			body := `{"id":"host","action":{"kind":"select","target":{"kind":"locator","locator":"css=select"},"option":` + optionJSON + `}}`
+			response := httptest.NewRecorder()
+			server.Handler().ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/act", strings.NewReader(body)))
+			if response.Code != http.StatusOK || core.executed != 1 || core.action == nil {
+				t.Fatalf("request lost: status=%d executions=%d body=%s", response.Code, core.executed, response.Body.String())
+			}
+			actual, err := json.Marshal(core.action.Option)
+			if err != nil || string(actual) != optionJSON {
+				t.Fatalf("option reinterpreted: got=%s want=%s err=%v", actual, optionJSON, err)
+			}
+		})
 	}
 }

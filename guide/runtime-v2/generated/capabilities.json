@@ -103,7 +103,7 @@
       ],
       "fields": [
         "target",
-        "value"
+        "option"
       ],
       "mutates": true
     },
@@ -3015,15 +3015,36 @@
       "diagnostic": false
     },
     {
+      "arguments": [
+        {
+          "name": "TARGET",
+          "description": "Control ref returned by observe, or an explicit css= or role= locator for the select control."
+        }
+      ],
+      "usage": "act select TARGET --id SESSION (--label LABEL | --value VALUE)",
+      "examples": [
+        "dw-browser act select \u003cCONTROL_REF_FOR_来源\u003e --id \u003cSESSION\u003e --label '完整内容'",
+        "dw-browser act select \u003cCONTROL_REF_FOR_来源\u003e --id \u003cSESSION\u003e --value '\u003cEXACT_DOM_VALUE_FROM_OBSERVE\u003e'"
+      ],
+      "guidance": "Placeholders in angle brackets must be replaced. First observe the session, read the control's option labels and DOM values, choose exactly one matching field, execute, then observe again. Do not guess values from labels; duplicate matches fail. Copy a selectable choice's select.options[].option unchanged into Action.option; for CLI map its sole label or value field directly to --label or --value, preserving exact strings including empty strings.",
       "command": "act select",
       "summary": "Select a native option using verified keyboard interaction; explicit baseline element steps provide synthetic functional evidence",
       "flags": [
         {
+          "description": "Session ID used by observe; this is not the control target.",
           "name": "--id",
           "takes_value": true,
           "value_type": "session-id"
         },
         {
+          "description": "Exact complete displayed option label only; no DOM-value fallback. Supply exactly one of --label or --value.",
+          "name": "--label",
+          "takes_value": true,
+          "allow_empty": true,
+          "value_type": "string"
+        },
+        {
+          "description": "Exact DOM option value only; no displayed-label fallback. Supply exactly one of --label or --value.",
           "name": "--value",
           "takes_value": true,
           "allow_empty": true,
@@ -3048,12 +3069,19 @@
         }
       ],
       "required": [
-        "--id",
-        "--value"
+        "--id"
       ],
-      "min_args": 0,
+      "min_args": 1,
       "max_args": 1,
-      "diagnostic": false
+      "diagnostic": false,
+      "rules": [
+        {
+          "exactly_one": [
+            "--label",
+            "--value"
+          ]
+        }
+      ]
     },
     {
       "command": "act set-checked",
@@ -3737,5 +3765,5 @@
     }
   ],
   "schema_version": "dw.capabilities.v2",
-  "version": "0.14.0-v2"
+  "version": "0.15.0-v2"
 }

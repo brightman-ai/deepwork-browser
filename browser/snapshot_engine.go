@@ -159,6 +159,12 @@ func (e *snapshotEngine) LookupRefMeta(ref string) (*ElementRef, bool) {
 	return meta, ok
 }
 
+// absorbSessionPrivacy inherits the session's sticky privacy policy before
+// either observation or input can expose form facts. Unavailable state fails closed.
+func (e *snapshotEngine) absorbSessionPrivacy(info *SessionInfo) {
+	e.redactFormValues = e.redactFormValues || info == nil || info.RedactFormValues
+}
+
 // GetSnapshot 获取当前页面 A11y 快照，带 Fallback 链 [IR-07, TC-09-U-03, TC-09-U-04]。
 //
 // Fallback 链:
@@ -170,11 +176,11 @@ func (e *snapshotEngine) captureSnapshot(ctx context.Context) (snapshot *Snapsho
 	var presence documentPresenceProbe
 	presenceCaptured := false
 	if e.ownerSource != nil {
-		if info, err := e.ownerSource(ctx); err == nil && info != nil {
-			e.redactFormValues = e.redactFormValues || info.RedactFormValues
-		} else {
-			e.redactFormValues = true
+		info, err := e.ownerSource(ctx)
+		if err != nil {
+			info = nil
 		}
+		e.absorbSessionPrivacy(info)
 	}
 	e.revokeObservationAuthority()
 	defer func() {

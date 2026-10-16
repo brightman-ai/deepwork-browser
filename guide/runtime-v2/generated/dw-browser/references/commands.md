@@ -1,4 +1,4 @@
-# DW-Browser 0.14.0-v2 command contract
+# DW-Browser 0.15.0-v2 command contract
 
 Generated from executable declarations. Flags on attached sessions inherit creation environment. `--output` is JSON; `--screenshot` is PNG. Absolute and locator-relative points require `--observation-id` from the exact capture; opaque ref-relative points supply capture identity in the token. Gesture endpoints share that identity.
 
@@ -651,13 +651,25 @@ Physically focus an editable target. Positional arguments: 0..1. Required flags:
 
 ## `act select`
 
-Select a native option using verified keyboard interaction; explicit baseline element steps provide synthetic functional evidence. Positional arguments: 0..1. Required flags: --id, --value.
+Select a native option using verified keyboard interaction; explicit baseline element steps provide synthetic functional evidence. Positional arguments: 1..1. Required flags: --id.
 
-- `--id` VALUE (session-id)
-- `--value` VALUE (string); empty string permitted
+Usage: `act select TARGET --id SESSION (--label LABEL | --value VALUE)`
+
+- `TARGET`: Control ref returned by observe, or an explicit css= or role= locator for the select control.
+
+Placeholders in angle brackets must be replaced. First observe the session, read the control's option labels and DOM values, choose exactly one matching field, execute, then observe again. Do not guess values from labels; duplicate matches fail. Copy a selectable choice's select.options[].option unchanged into Action.option; for CLI map its sole label or value field directly to --label or --value, preserving exact strings including empty strings.
+
+Example: `dw-browser act select <CONTROL_REF_FOR_来源> --id <SESSION> --label '完整内容'`
+
+Example: `dw-browser act select <CONTROL_REF_FOR_来源> --id <SESSION> --value '<EXACT_DOM_VALUE_FROM_OBSERVE>'`
+
+- `--id` VALUE (session-id); Session ID used by observe; this is not the control target.
+- `--label` VALUE (string); empty string permitted; Exact complete displayed option label only; no DOM-value fallback. Supply exactly one of --label or --value.
+- `--value` VALUE (string); empty string permitted; Exact DOM option value only; no displayed-label fallback. Supply exactly one of --label or --value.
 - `--output` VALUE (string)
 - `--lock-wait` VALUE (lock-duration)
 - `--verbose`
+- Rule: when="" unless="" exactly-one=[--label --value] requires=[] forbids=[].
 
 ## `act set-checked`
 

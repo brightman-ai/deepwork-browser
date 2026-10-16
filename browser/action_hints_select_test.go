@@ -30,6 +30,11 @@ func TestSelectHintsRequireCapturedRuntimeFacts(t *testing.T) {
 	if capability = SelectCapabilityForElement(ref, ScenarioAppTestExplore); capability.Available || capability.OptionCount != 2 {
 		t.Fatalf("blocked select=%+v", capability)
 	}
+	for _, option := range capability.Options {
+		if option.Selectable || option.Option != nil || option.Reason == "" {
+			t.Fatalf("blocked control retained executable choice: %+v", option)
+		}
+	}
 	// Internal full option facts must not inflate persisted session refs.
 	encoded, err := json.Marshal(ref)
 	if err != nil {

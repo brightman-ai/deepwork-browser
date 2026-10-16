@@ -320,7 +320,7 @@ func TestStrictHumanFillTypePressSelectAndHitCoverage(t *testing.T) {
 	}
 
 	refreshObservation()
-	if _, err := executeFixtureAction(ctx, sessionCore, Action{Verb: "select", Target: fixtureRef(choiceRef), Value: "Beta"}, false, true); err != nil {
+	if _, err := executeFixtureAction(ctx, sessionCore, Action{Verb: "select", Target: fixtureRef(choiceRef), Option: SelectByLabel("Beta")}, false, true); err != nil {
 		t.Fatalf("strict native select: %v", err)
 	}
 	report = core.(ActionFidelityCapable).LastActionFidelity()
@@ -330,7 +330,7 @@ func TestStrictHumanFillTypePressSelectAndHitCoverage(t *testing.T) {
 
 	capable.SetInteractionScenario(ScenarioWebVisit)
 	refreshObservation()
-	if _, err := executeFixtureAction(ctx, sessionCore, Action{Verb: "select", Target: fixtureRef(choiceRef), Value: "Alpha"}, false, true); err != nil {
+	if _, err := executeFixtureAction(ctx, sessionCore, Action{Verb: "select", Target: fixtureRef(choiceRef), Option: SelectByLabel("Alpha")}, false, true); err != nil {
 		t.Fatalf("utility native select: %v", err)
 	}
 	report = core.(ActionFidelityCapable).LastActionFidelity()

@@ -36,7 +36,7 @@ _dw_browser_v2() {
  'act type') candidates=('--id' '--text' '--text-file' '--focused' '--output' '--lock-wait' '--verbose' ); _describe 'flag' candidates; return;;
  'act press') candidates=('--id' '--key' '--output' '--lock-wait' '--verbose' ); _describe 'flag' candidates; return;;
  'act focus') candidates=('--id' '--output' '--lock-wait' '--verbose' ); _describe 'flag' candidates; return;;
- 'act select') candidates=('--id' '--value' '--output' '--lock-wait' '--verbose' ); _describe 'flag' candidates; return;;
+ 'act select') candidates=('--id' '--label' '--value' '--output' '--lock-wait' '--verbose' ); _describe 'flag' candidates; return;;
  'act set-checked') candidates=('--id' '--checked' '--output' '--lock-wait' '--verbose' ); _describe 'flag' candidates; return;;
  'act scroll') candidates=('--id' '--x' '--y' '--unit' '--frame' '--observation-id' '--direction' '--steps' '--delta-x' '--delta-y' '--output' '--lock-wait' '--verbose' ); _describe 'flag' candidates; return;;
  'act scrollto') candidates=('--id' '--output' '--lock-wait' '--verbose' ); _describe 'flag' candidates; return;;
