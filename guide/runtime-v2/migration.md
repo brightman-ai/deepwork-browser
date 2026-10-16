@@ -2,6 +2,12 @@
 
 The runtime uses one typed Action kernel, one canonical observation contract and one typed journey runner. Historical evidence/reports are preserved. Installing a built binary is an explicit delivery action; external callers migrate using this contract.
 
+In 0.14.0-v2, visual native `select` uses verified keyboard input. Only explicit
+baseline element steps retain synthetic selection. Action JSON names requested
+policy `requested_fidelity`, separately reporting actual execution/evidence;
+journey drops its old mixed fidelity scalar. See [native select](native-select.md)
+for capability discovery, evidence scope and receipt migration.
+
 | Prior interface | v2 interface |
 | --- | --- |
 | String `act "fill ..."` / implicit one-shot act | `act fill TARGET --id NAME --text|--text-file VALUE` |

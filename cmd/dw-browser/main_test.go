@@ -59,7 +59,7 @@ func TestActionFidelityOutputAndSessionFocusReconcile(t *testing.T) {
 		FocusedBackend: 42,
 	}
 	injectActionFidelity(output, report)
-	if output["fidelity"] != browser.InteractionFidelityStrictHuman || output["synthetic"] != true ||
+	if output["requested_fidelity"] != browser.InteractionFidelityStrictHuman || output["synthetic"] != true ||
 		output["synthetic_note"] != "synthetic marker" || output["aim_source"] != browser.AimSourceContentQuadCentroid ||
 		output["hit_coverage"] != "4/5" {
 		t.Fatalf("fidelity output=%+v", output)
@@ -620,5 +620,42 @@ func TestObserveListingCountsAreSelfConsistent(t *testing.T) {
 	}
 	if total != visible+snap.OffscreenInteractableCount {
 		t.Fatalf("total=%d != visible=%d + offscreen=%d", total, visible, snap.OffscreenInteractableCount)
+	}
+}
+
+func TestSelectFidelityPreservesPartialFailureWithoutInventingNative(t *testing.T) {
+	output := actionErrorPayload(browser.Outcome{Phase: "selection", DispatchState: "unknown"}, errors.New("control replaced"))
+	report := browser.ActionFidelityReport{Fidelity: browser.InteractionFidelityStrictHuman, InteractionMode: browser.InteractionModeVisual, Execution: "native-keys", EvidenceScope: "keyboard-selection", Selection: &browser.SelectionEvidence{KeySteps: 1, Partial: true}}
+	injectActionFidelity(output, report)
+	encoded, err := json.Marshal(output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, field := range []string{`"requested_fidelity":"strict-human"`, `"execution":"native-keys"`, `"evidence_scope":"keyboard-selection"`, `"partial":true`, `"dispatch_state":"unknown"`} {
+		if !strings.Contains(string(encoded), field) {
+			t.Fatalf("missing %s: %s", field, encoded)
+		}
+	}
+	if _, ok := output["fidelity"]; ok {
+		t.Fatal("ambiguous fidelity key retained")
+	}
+	plain := map[string]interface{}{}
+	injectActionFidelity(plain, browser.ActionFidelityReport{Fidelity: browser.InteractionFidelityStrictHuman})
+	if _, ok := plain["execution"]; ok {
+		t.Fatal("missing synthetic flag fabricated native evidence")
+	}
+}
+
+func TestLeanNativeSelectWithoutCapturedFactsDoesNotGrantSelect(t *testing.T) {
+	ref := browser.ElementRef{Ref: "@ocapture-r1", NativeSelect: true, ControlStateKnown: true, Observed: true, VisibilityKnown: true, VisibleInViewport: true}
+	el := leanElement(ref, browser.ScenarioAppTestExplore)
+	capability, ok := el["select"].(*browser.SelectCapability)
+	if !ok || capability.Available || capability.Reason == "" {
+		t.Fatalf("unverified capability=%+v", el)
+	}
+	for _, action := range el["allowed_actions"].([]string) {
+		if action == "select" {
+			t.Fatal("unverified native select advertised")
+		}
 	}
 }

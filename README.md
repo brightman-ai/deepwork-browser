@@ -28,6 +28,11 @@ dw-browser close --id edit
 
 `fill` replaces through verified physical selection/input; `type --focused` inserts. Text files retain UTF-8 and trailing newlines. Tokens and screenshot geometry expire across input, target, document and runtime changes. Unknown/partial dispatch requires observation before deciding whether another input is safe.
 
+Native HTML dropdowns use `act select TARGET --id edit --value 'Visible label'`.
+Default visual execution uses real keyboard selection; explicit baseline element
+steps retain synthetic functional testing. Observations expose bounded choices
+and receipts separate requested policy from actual evidence. See [native select](guide/runtime-v2/native-select.md).
+
 stdout is one JSON value. `--output` saves JSON, `--screenshot` names a PNG, and creation `--evidence` selects the evidence root. `check` exits 0 only for required PASS, 1 for FAIL, and 2 for BLOCKED/evidence/runtime/argument errors. Other exit 0 means the command delivered its result.
 
 Use `app-test-baseline` for deterministic typed journeys with no internal LLM; use `webvisit` for public browsing, retaining explicit `--allow-host` write authorization. `htr takeover --id edit` blocks AI input; `htr yield --id edit` restores authority and requires a new observation.

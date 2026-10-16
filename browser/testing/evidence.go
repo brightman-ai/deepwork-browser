@@ -149,7 +149,26 @@ func (e *EvidenceStore) GenerateReport(result *JourneyResult) error {
 			data, _ := json.Marshal(step.Action)
 			fmt.Fprintf(&b, "- Action: %s\n", data)
 		}
-		fmt.Fprintf(&b, "- Fidelity: %s\n", step.Fidelity)
+		if step.ActionFidelity != nil {
+			report := step.ActionFidelity
+			fmt.Fprintf(&b, "- Requested fidelity: %s\n- Interaction mode: %s\n", report.Fidelity, report.InteractionMode)
+			if report.Execution != "" {
+				fmt.Fprintf(&b, "- Execution: %s\n", report.Execution)
+			}
+			if report.EvidenceScope != "" {
+				fmt.Fprintf(&b, "- Evidence scope: %s\n", report.EvidenceScope)
+			}
+			if len(report.HumanPath) > 0 {
+				fmt.Fprintf(&b, "- Input path: %s\n", strings.Join(report.HumanPath, " → "))
+			}
+			if report.Selection != nil {
+				data, _ := json.Marshal(report.Selection)
+				fmt.Fprintf(&b, "- Selection: %s\n", data)
+			}
+			if report.Synthetic {
+				fmt.Fprintf(&b, "- Synthetic: %s\n", report.SyntheticNote)
+			}
+		}
 
 		total := len(step.Checks)
 		passed := 0

@@ -46,13 +46,44 @@ func AllowedActionsForElement(ref ElementRef, scenario Scenario) []string {
 		case "set-checked":
 			allow = ref.ControlStateKnown && ref.Checkable && !ref.Disabled
 		case "select":
-			allow = ref.ControlStateKnown && ref.NativeSelect && !ref.Disabled
+			capability := SelectCapabilityForElement(ref, scenario)
+			allow = capability != nil && capability.Available
 		}
 		if allow {
 			result = append(result, definition.Kind)
 		}
 	}
 	return result
+}
+
+// SelectCapabilityForElement describes the default visual select path from captured facts.
+// A missing probe never grants native select authority (including Safari).
+func SelectCapabilityForElement(ref ElementRef, scenario Scenario) *SelectCapability {
+	if !ref.NativeSelect {
+		return nil
+	}
+	capability := SelectCapability{Reason: "native select facts unavailable", Options: []SelectOptionCapability{}}
+	if _, err := NormalizeScenario(string(scenario)); err != nil {
+		capability.Reason = "interaction scenario unavailable"
+		return &capability
+	}
+	if ref.SelectFacts == nil {
+		return &capability
+	}
+	capability = PlanSelectCapability(*ref.SelectFacts, false)
+	if !ref.Observed || !ref.VisibilityKnown || !ref.VisibleInViewport || ref.BlockedByModal || !ref.ControlStateKnown || ref.Disabled || !ref.Interactable {
+		capability.Available = false
+		capability.Reason = "target is not an observed enabled visible interactable control"
+	}
+	if ref.SelectValuesRedacted || ref.Sensitive {
+		capability.Options = []SelectOptionCapability{}
+		capability.OptionsComplete = false
+		if capability.Reason != "" {
+			capability.Reason += "; "
+		}
+		capability.Reason += "choices withheld for privacy; use an explicitly known label or value"
+	}
+	return &capability
 }
 
 var controlStateFunction = `function(redactValues){
@@ -70,6 +101,8 @@ var controlStateFunction = `function(redactValues){
 func (e *snapshotEngine) captureControlStates(ctx context.Context, refs []ElementRef) error {
 	return chromedp.Run(ctx, chromedp.ActionFunc(func(c context.Context) error {
 		for i := range refs {
+			refs[i].SelectFacts = nil
+			refs[i].SelectValuesRedacted = e.redactFormValues
 			object, err := resolveElementObjectForMeta(c, &refs[i])
 			if err != nil {
 				continue
@@ -81,6 +114,19 @@ func (e *snapshotEngine) captureControlStates(ctx context.Context, refs []Elemen
 				}
 			}
 			result, exception, err := runtime.CallFunctionOn(controlStateFunction).WithObjectID(object.ObjectID).WithArguments([]*runtime.CallArgument{{Value: jsontext.Value(fmt.Sprintf("%t", e.redactFormValues))}}).WithReturnByValue(true).Do(c)
+			var selectFacts *SelectFacts
+			if err == nil && exception == nil && result != nil {
+				var control struct {
+					NativeSelect bool `json:"native_select"`
+					Sensitive    bool `json:"sensitive"`
+				}
+				if json.Unmarshal(result.Value, &control) == nil && control.NativeSelect {
+					facts := new(SelectFacts)
+					if ProbeSelectFacts(c, object, facts) == nil {
+						selectFacts = facts
+					}
+				}
+			}
 			_ = runtime.ReleaseObject(object.ObjectID).Do(c)
 			if err != nil || exception != nil || result == nil {
 				continue
@@ -95,6 +141,8 @@ func (e *snapshotEngine) captureControlStates(ctx context.Context, refs []Elemen
 				continue
 			}
 			ref := &refs[i]
+			ref.SelectFacts = selectFacts
+			ref.SelectValuesRedacted = e.redactFormValues || state.Sensitive
 			ref.Value = state.Value
 			ref.ControlStateKnown = state.Known
 			ref.Editable = state.Editable

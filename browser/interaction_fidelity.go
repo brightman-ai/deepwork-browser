@@ -1,17 +1,56 @@
 package browser
 
-import "context"
+import (
+	"context"
+	"encoding/json"
+)
 
 const (
 	AimSourceContentQuadCentroid = "content-quad-centroid"
 	AimSourceBBoxCenter          = "bbox-center-fallback"
 )
 
-// ActionFidelityReport is optional metadata for the most recently completed
-// action. BrowserCore remains unchanged; CLI callers discover this capability
-// through ActionFidelityCapable.
+// SelectionState omits values under the existing form/control privacy policy.
+type SelectionState struct {
+	Index         int    `json:"index"`
+	Value         string `json:"value"`
+	ValueRedacted bool   `json:"value_redacted,omitempty"`
+}
+
+// MarshalJSON distinguishes a verified empty value from withheld private data.
+func (s SelectionState) MarshalJSON() ([]byte, error) {
+	if s.ValueRedacted {
+		return json.Marshal(struct {
+			Index         int  `json:"index"`
+			ValueRedacted bool `json:"value_redacted"`
+		}{s.Index, true})
+	}
+	return json.Marshal(struct {
+		Index int    `json:"index"`
+		Value string `json:"value"`
+	}{s.Index, s.Value})
+}
+
+// SelectionEvidence describes the final observed state and non-atomic native
+// attempts. KeySteps counts selecting key dispatch attempts, excluding Escape.
+type SelectionEvidence struct {
+	Before   SelectionState `json:"before"`
+	After    SelectionState `json:"after"`
+	Verified bool           `json:"verified"`
+	KeySteps int            `json:"key_steps"`
+	Partial  bool           `json:"partial,omitempty"`
+	Note     string         `json:"note,omitempty"`
+}
+
+// ActionFidelityReport keeps requested policy separate from actual execution.
+// It is exposed through ActionFidelityCapable without widening BrowserCore.
 type ActionFidelityReport struct {
-	Fidelity      InteractionFidelity `json:"fidelity,omitempty"`
+	InteractionMode InteractionMode    `json:"interaction_mode,omitempty"`
+	Execution       string             `json:"execution,omitempty"`
+	EvidenceScope   string             `json:"evidence_scope,omitempty"`
+	Selection       *SelectionEvidence `json:"selection,omitempty"`
+
+	Fidelity      InteractionFidelity `json:"requested_fidelity,omitempty"`
 	Synthetic     bool                `json:"synthetic,omitempty"`
 	SyntheticNote string              `json:"synthetic_note,omitempty"`
 	HumanPath     []string            `json:"human_path,omitempty"`

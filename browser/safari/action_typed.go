@@ -49,7 +49,7 @@ func (c *SafariBrowserCore) ExecuteAction(ctx context.Context, a browser.Action,
 	}
 	c.mu.Lock()
 	policy, authority := c.interaction, c.authoritySession
-	c.lastFidelity = browser.ActionFidelityReport{Fidelity: c.interaction.Fidelity}
+	c.lastFidelity = browser.ActionFidelityReport{Fidelity: c.interaction.Fidelity, InteractionMode: normalized}
 	c.mu.Unlock()
 	if err := policy.Validate(); err != nil {
 		return nil, out, err

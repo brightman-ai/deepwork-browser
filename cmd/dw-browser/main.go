@@ -29,7 +29,7 @@ import (
 	"github.com/chromedp/chromedp"
 )
 
-const version = "0.13.1-v2"
+const version = "0.14.0-v2"
 
 // ActionEngine returns its own explicit error at 15s. The CLI watchdog is a
 // slightly wider process-level fence covering every BrowserCore implementation.
@@ -978,7 +978,19 @@ func injectActionFidelity(output map[string]interface{}, report browser.ActionFi
 		return
 	}
 	if report.Fidelity != "" {
-		output["fidelity"] = report.Fidelity
+		output["requested_fidelity"] = report.Fidelity
+	}
+	if report.InteractionMode != "" {
+		output["interaction_mode"] = report.InteractionMode
+	}
+	if report.Execution != "" {
+		output["execution"] = report.Execution
+	}
+	if report.EvidenceScope != "" {
+		output["evidence_scope"] = report.EvidenceScope
+	}
+	if report.Selection != nil {
+		output["selection"] = report.Selection
 	}
 	if report.Synthetic {
 		output["synthetic"] = true
@@ -1477,6 +1489,9 @@ func leanElement(ref browser.ElementRef, scenarios ...browser.Scenario) map[stri
 		"name":            name,
 		"locator":         locator,
 	}
+	if capability := browser.SelectCapabilityForElement(ref, scenario); capability != nil {
+		el["select"] = capability
+	}
 	if ref.NameFull != "" && ref.NameFull != name {
 		el["name_full"] = clampRunes(ref.NameFull, nameFullDisplayRunes)
 	}
@@ -1874,6 +1889,7 @@ func runActSessionRequestResult(flags commonFlags, typedRequest browser.Action) 
 		return impl.ExecuteAction(actionCtx, typedRequest, typedRequest.Verb == "navigate" || typedRequest.Verb == "reload" || typedRequest.Verb == "back" || typedRequest.Verb == "forward", true, browser.InteractionModeVisual)
 	})
 	if err != nil {
+		failedReport := actionFidelityReport(impl)
 		// An input failure returns the canonical stage/outcome without a hidden retry.
 		commandOutput.note("dw-browser: act failed: %v\n", err)
 		// 失败分两种，后果完全不同 [BUG-ACT-FAILURE-REVOKES-OBSERVATION]:
@@ -1906,7 +1922,9 @@ func runActSessionRequestResult(flags commonFlags, typedRequest browser.Action) 
 			outcome.Phase = stage.Phase
 			outcome.DispatchState = stage.State
 		}
-		commandOutput.Payload = actionErrorPayload(outcome, err)
+		failedPayload := actionErrorPayload(outcome, err)
+		injectActionFidelity(failedPayload, failedReport)
+		commandOutput.Payload = failedPayload
 		return finishCommand(commandOutput, exitRunErr)
 	}
 	// The returned snapshot is the first terminal page boundary. Commit it with

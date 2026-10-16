@@ -165,6 +165,13 @@ func commandDefinitions() []CommandDefinition {
 			d.Rules = []FlagRule{{WhenPresent: "--id", Forbids: creation}, {UnlessPresent: "--id", Requires: []string{"--scenario"}}}
 		case "check":
 			d.Rules = []FlagRule{{ExactlyOne: []string{"--id", "--observation"}}, {ExactlyOne: []string{"--assert", "--file"}}}
+		case "act select":
+			d.Required = append(d.Required, "--value")
+			for fi := range d.Flags {
+				if d.Flags[fi].Name == "--value" {
+					d.Flags[fi].AllowEmpty = true
+				}
+			}
 		case "act fill", "act type":
 			d.Rules = []FlagRule{{ExactlyOne: []string{"--text", "--text-file"}}}
 		case "wait":

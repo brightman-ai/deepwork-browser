@@ -1,4 +1,4 @@
-# DW-Browser 0.13.1-v2 command contract
+# DW-Browser 0.14.0-v2 command contract
 
 Generated from executable declarations. Flags on attached sessions inherit creation environment. `--output` is JSON; `--screenshot` is PNG. Absolute and locator-relative points require `--observation-id` from the exact capture; opaque ref-relative points supply capture identity in the token. Gesture endpoints share that identity.
 
@@ -651,10 +651,10 @@ Physically focus an editable target. Positional arguments: 0..1. Required flags:
 
 ## `act select`
 
-Select a native option; reports its synthetic exception. Positional arguments: 0..1. Required flags: --id.
+Select a native option using verified keyboard interaction; explicit baseline element steps provide synthetic functional evidence. Positional arguments: 0..1. Required flags: --id, --value.
 
 - `--id` VALUE (session-id)
-- `--value` VALUE (string)
+- `--value` VALUE (string); empty string permitted
 - `--output` VALUE (string)
 - `--lock-wait` VALUE (lock-duration)
 - `--verbose`

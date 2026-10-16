@@ -321,20 +321,20 @@ func TestStrictHumanFillTypePressSelectAndHitCoverage(t *testing.T) {
 
 	refreshObservation()
 	if _, err := executeFixtureAction(ctx, sessionCore, Action{Verb: "select", Target: fixtureRef(choiceRef), Value: "Beta"}, false, true); err != nil {
-		t.Fatalf("strict synthetic select: %v", err)
+		t.Fatalf("strict native select: %v", err)
 	}
 	report = core.(ActionFidelityCapable).LastActionFidelity()
-	if report.Fidelity != InteractionFidelityStrictHuman || !report.Synthetic || !strings.Contains(report.SyntheticNote, "not evidence") {
+	if report.Fidelity != InteractionFidelityStrictHuman || report.Synthetic || report.Execution != "native-keys" || report.EvidenceScope != "keyboard-selection" || report.Selection == nil || !report.Selection.Verified {
 		t.Fatalf("strict select report=%+v", report)
 	}
 
 	capable.SetInteractionScenario(ScenarioWebVisit)
 	refreshObservation()
 	if _, err := executeFixtureAction(ctx, sessionCore, Action{Verb: "select", Target: fixtureRef(choiceRef), Value: "Alpha"}, false, true); err != nil {
-		t.Fatalf("utility synthetic select: %v", err)
+		t.Fatalf("utility native select: %v", err)
 	}
 	report = core.(ActionFidelityCapable).LastActionFidelity()
-	if report.Fidelity != InteractionFidelityUtility || !report.Synthetic {
+	if report.Fidelity != InteractionFidelityUtility || report.Synthetic || report.Execution != "native-keys" || report.Selection == nil || !report.Selection.Verified {
 		t.Fatalf("utility select report=%+v", report)
 	}
 }

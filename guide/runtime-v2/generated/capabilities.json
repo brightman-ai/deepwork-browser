@@ -96,7 +96,7 @@
     },
     {
       "kind": "select",
-      "summary": "Select a native option; reports its synthetic exception",
+      "summary": "Select a native option using verified keyboard interaction; explicit baseline element steps provide synthetic functional evidence",
       "target_kinds": [
         "ref",
         "locator"
@@ -3016,7 +3016,7 @@
     },
     {
       "command": "act select",
-      "summary": "Select a native option; reports its synthetic exception",
+      "summary": "Select a native option using verified keyboard interaction; explicit baseline element steps provide synthetic functional evidence",
       "flags": [
         {
           "name": "--id",
@@ -3026,6 +3026,7 @@
         {
           "name": "--value",
           "takes_value": true,
+          "allow_empty": true,
           "value_type": "string"
         },
         {
@@ -3047,7 +3048,8 @@
         }
       ],
       "required": [
-        "--id"
+        "--id",
+        "--value"
       ],
       "min_args": 0,
       "max_args": 1,
@@ -3735,5 +3737,5 @@
     }
   ],
   "schema_version": "dw.capabilities.v2",
-  "version": "0.13.1-v2"
+  "version": "0.14.0-v2"
 }

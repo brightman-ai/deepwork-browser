@@ -133,6 +133,10 @@ func (e *actionEngine) lastActionFidelity() ActionFidelityReport {
 	defer e.fidelityMu.Unlock()
 	report := e.lastReport
 	report.HumanPath = append([]string(nil), report.HumanPath...)
+	if report.Selection != nil {
+		selection := *report.Selection
+		report.Selection = &selection
+	}
 	return report
 }
 
@@ -667,10 +671,14 @@ func runActionWithTimeout(
 
 func (e *actionEngine) executeRequestWithInteractionMode(ctx context.Context, parsed *actionRequest, observe, sessionMode bool, mode InteractionMode) (*Snapshot, error) {
 	e.beginActionFidelity()
+	if parsed.Op == "select" {
+		e.updateActionFidelity(func(report *ActionFidelityReport) { report.Execution = "none" })
+	}
 	normalizedMode, err := NormalizeInteractionMode(string(mode))
 	if err != nil {
 		return nil, e.failedBeforeDispatch(err)
 	}
+	e.updateActionFidelity(func(report *ActionFidelityReport) { report.InteractionMode = normalizedMode })
 	elementMode := normalizedMode == InteractionModeElement
 	if elementMode && e.interactionPolicy.StrictHuman() {
 		return nil, e.failedBeforeDispatch(fmt.Errorf("%w: mode element is unavailable in strict-human scenario", ErrActFailed))
@@ -934,13 +942,9 @@ func (e *actionEngine) dispatchActionRequest(
 			return err
 		}
 	case "select":
-		if err := e.executeSelect(ctx, resolvedRef, parsed.Value); err != nil {
+		if err := e.executeSelect(ctx, resolvedRef, parsed.Value, elementMode && e.interactionPolicy.Fidelity == InteractionFidelityDual); err != nil {
 			return err
 		}
-		e.updateActionFidelity(func(report *ActionFidelityReport) {
-			report.Synthetic = true
-			report.SyntheticNote = "native <select> uses DOM state plus synthetic input/change events; this is not evidence that a human can operate the picker"
-		})
 	case "back":
 		if err := e.executeBack(ctx); err != nil {
 			return err
@@ -3023,10 +3027,6 @@ func (e *actionEngine) executeStrictHumanPress(ctx context.Context, ref, key str
 		if err != nil || !focused || backendNodeID == 0 || backendNodeID != e.currentHumanFocus() {
 			return fmt.Errorf("%w: focus not acquired by real click — run click %s first", ErrActFailed, ref)
 		}
-		state, stateErr := strictEditableStateForMeta(ctx, meta)
-		if stateErr == nil && state.Tag == "SELECT" {
-			return fmt.Errorf("%w: strict-human press on native <select> is blocked; use select %s '<label-or-value>' (reported synthetic)", ErrActFailed, ref)
-		}
 		// A verified key event does not revoke the focus established by the
 		// earlier real click. Renew the persisted proof against the caller's
 		// post-action snapshot epoch so consecutive press actions remain valid.
@@ -3391,104 +3391,15 @@ func (e *actionEngine) withResolvedActionElement(
 	}))
 }
 
-type nativeSelectKeyResult struct {
-	IsSelect  bool   `json:"is_select"`
-	Supported bool   `json:"supported"`
-	Reason    string `json:"reason"`
-	Changed   bool   `json:"changed"`
-	Value     string `json:"value"`
-}
-
-func callNativeSelectKey(ctx context.Context, obj *runtime.RemoteObject, key string, out *nativeSelectKeyResult) error {
-	fn := `function() {
-		const key = ` + strconv.Quote(key) + `;
-		if (!this || String(this.tagName || '').toUpperCase() !== 'SELECT') {
-			return {is_select:false, supported:false, reason:'', changed:false, value:''};
-		}
-		if (this.disabled) {
-			return {is_select:true, supported:false, reason:'disabled', changed:false, value:String(this.value || '')};
-		}
-		const supported = key === 'ArrowDown' || key === 'ArrowUp' || key === 'Home' || key === 'End';
-		if (!supported) {
-			return {is_select:true, supported:false, reason:'native-picker-key', changed:false, value:String(this.value || '')};
-		}
-		try { this.focus({preventScroll:true}); } catch (_) { this.focus(); }
-		if (document.activeElement !== this) {
-			return {is_select:true, supported:false, reason:'focus-failed', changed:false, value:String(this.value || '')};
-		}
-		const options = Array.from(this.options || []);
-		const enabled = options.map((option, index) => ({option, index})).filter(entry =>
-			!entry.option.disabled && !(entry.option.parentElement && entry.option.parentElement.disabled));
-		let next = this.selectedIndex;
-		if (enabled.length > 0) {
-			if (key === 'Home') next = enabled[0].index;
-			if (key === 'End') next = enabled[enabled.length - 1].index;
-			if (key === 'ArrowDown') {
-				const candidate = enabled.find(entry => entry.index > this.selectedIndex);
-				if (candidate) next = candidate.index;
-			}
-			if (key === 'ArrowUp') {
-				for (let i = enabled.length - 1; i >= 0; i--) {
-					if (enabled[i].index < this.selectedIndex || this.selectedIndex < 0) { next = enabled[i].index; break; }
-				}
-			}
-		}
-		this.dispatchEvent(new KeyboardEvent('keydown', {key, bubbles:true}));
-		const changed = next >= 0 && next !== this.selectedIndex;
-		if (changed) {
-			this.selectedIndex = next;
-			this.dispatchEvent(new Event('input', {bubbles:true}));
-			this.dispatchEvent(new Event('change', {bubbles:true}));
-		}
-		this.dispatchEvent(new KeyboardEvent('keyup', {key, bubbles:true}));
-		return {is_select:true, supported:true, reason:'', changed, value:String(this.value || '')};
-	}`
-	res, exc, err := runtime.CallFunctionOn(fn).
-		WithObjectID(obj.ObjectID).
-		WithReturnByValue(true).
-		Do(ctx)
-	if err != nil {
-		return err
-	}
-	if exc != nil {
-		return fmt.Errorf("native select key handler failed: %s", exc.Text)
-	}
-	if res == nil || len(res.Value) == 0 {
-		return fmt.Errorf("native select key handler returned no value")
-	}
-	return json.Unmarshal([]byte(res.Value), out)
-}
-
 // executePress 执行按键操作，支持组合键（Ctrl+A, Shift+Enter 等）。
 func (e *actionEngine) executePress(ctx context.Context, ref string, key string) error {
-	// Focus element first if ref is specified. Native <select> is handled by a
-	// non-popup DOM path: directional keys update selectedIndex and dispatch
-	// input/change; keys that would summon the browser picker fail immediately.
+	// Baseline targeted press may focus the target, but every key is native.
+	// Native SELECT has no setter/event-injection exception.
 	if ref != "" {
-		var selectResult nativeSelectKeyResult
-		canonicalKey := canonicalKeyName(key)
 		if err := e.withResolvedActionElement(ctx, ref, func(execCtx context.Context, obj *runtime.RemoteObject) error {
-			if err := callNativeSelectKey(execCtx, obj, canonicalKey, &selectResult); err != nil {
-				return fmt.Errorf("%w: inspect native select %q for press: %v", ErrActFailed, ref, err)
-			}
-			if selectResult.IsSelect {
-				return nil
-			}
 			return dom.Focus().WithObjectID(obj.ObjectID).Do(execCtx)
 		}); err != nil {
 			return err
-		}
-		if selectResult.IsSelect {
-			switch selectResult.Reason {
-			case "disabled":
-				return fmt.Errorf("%w: cannot press %q on disabled native <select> %q", ErrActFailed, key, ref)
-			case "native-picker-key":
-				return fmt.Errorf("%w: press %q on native <select> %q is blocked to avoid opening the browser picker; use select %s '<label-or-value>'",
-					ErrActFailed, key, ref, ref)
-			case "focus-failed":
-				return fmt.Errorf("%w: native <select> %q could not be focused for press %q", ErrActFailed, ref, key)
-			}
-			return nil
 		}
 	}
 
@@ -4075,187 +3986,6 @@ func (e *actionEngine) dispatchHumanMouseWheel(ctx context.Context, x, y, deltaY
 		warnWheelAckPending(steps, x, y)
 	}
 	return nil
-}
-
-type nativeSelectOption struct {
-	Label    string `json:"label"`
-	Value    string `json:"value"`
-	Disabled bool   `json:"disabled"`
-}
-
-type nativeSelectProbe struct {
-	IsSelect      bool                 `json:"is_select"`
-	Disabled      bool                 `json:"disabled"`
-	SelectedIndex int                  `json:"selected_index"`
-	Options       []nativeSelectOption `json:"options"`
-}
-
-type nativeSelectMatch struct {
-	Index int
-	Kind  string
-}
-
-func formatNativeSelectOptions(options []nativeSelectOption) string {
-	if len(options) == 0 {
-		return "<none>"
-	}
-	items := make([]string, 0, len(options))
-	for _, option := range options {
-		item := fmt.Sprintf("%q→%q", option.Label, option.Value)
-		if option.Disabled {
-			item += " (disabled)"
-		}
-		items = append(items, item)
-	}
-	return strings.Join(items, ", ")
-}
-
-// matchNativeSelectOption implements the CLI contract in strict priority:
-// exact value, exact visible label, then unique visible-label prefix.
-func matchNativeSelectOption(options []nativeSelectOption, query string) (nativeSelectMatch, error) {
-	for index, option := range options {
-		if option.Value == query {
-			if option.Disabled {
-				return nativeSelectMatch{}, fmt.Errorf("%w: option %q→%q is disabled; options: %s",
-					ErrActFailed, option.Label, option.Value, formatNativeSelectOptions(options))
-			}
-			return nativeSelectMatch{Index: index, Kind: "value"}, nil
-		}
-	}
-	for index, option := range options {
-		if option.Label == query {
-			if option.Disabled {
-				return nativeSelectMatch{}, fmt.Errorf("%w: option %q→%q is disabled; options: %s",
-					ErrActFailed, option.Label, option.Value, formatNativeSelectOptions(options))
-			}
-			return nativeSelectMatch{Index: index, Kind: "label"}, nil
-		}
-	}
-	prefixMatches := make([]int, 0, 2)
-	for index, option := range options {
-		if strings.HasPrefix(option.Label, query) {
-			prefixMatches = append(prefixMatches, index)
-		}
-	}
-	if len(prefixMatches) == 1 {
-		index := prefixMatches[0]
-		if options[index].Disabled {
-			return nativeSelectMatch{}, fmt.Errorf("%w: option %q→%q is disabled; options: %s",
-				ErrActFailed, options[index].Label, options[index].Value, formatNativeSelectOptions(options))
-		}
-		return nativeSelectMatch{Index: index, Kind: "label-prefix"}, nil
-	}
-	if len(prefixMatches) > 1 {
-		matched := make([]nativeSelectOption, 0, len(prefixMatches))
-		for _, index := range prefixMatches {
-			matched = append(matched, options[index])
-		}
-		return nativeSelectMatch{}, fmt.Errorf("%w: label prefix %q is ambiguous (%s); options: %s",
-			ErrActFailed, query, formatNativeSelectOptions(matched), formatNativeSelectOptions(options))
-	}
-	return nativeSelectMatch{}, fmt.Errorf("%w: no option matched %q by exact value, exact label, or unique label prefix; options: %s",
-		ErrActFailed, query, formatNativeSelectOptions(options))
-}
-
-func probeNativeSelect(ctx context.Context, obj *runtime.RemoteObject, out *nativeSelectProbe) error {
-	fn := `function() {
-		if (!this || String(this.tagName || '').toUpperCase() !== 'SELECT') {
-			return {is_select:false, disabled:false, selected_index:-1, options:[]};
-		}
-		const options = Array.from(this.options || []).map(option => ({
-			label:String(option.label || option.textContent || '').trim(),
-			value:String(option.value ?? ''),
-			disabled:!!option.disabled || !!(option.parentElement && option.parentElement.disabled)
-		}));
-		return {is_select:true, disabled:!!this.disabled, selected_index:this.selectedIndex, options};
-	}`
-	res, exc, err := runtime.CallFunctionOn(fn).
-		WithObjectID(obj.ObjectID).
-		WithReturnByValue(true).
-		Do(ctx)
-	if err != nil {
-		return err
-	}
-	if exc != nil {
-		return fmt.Errorf("native select probe failed: %s", exc.Text)
-	}
-	if res == nil || len(res.Value) == 0 {
-		return fmt.Errorf("native select probe returned no value")
-	}
-	return json.Unmarshal([]byte(res.Value), out)
-}
-
-type nativeSelectApplyResult struct {
-	Applied       bool   `json:"applied"`
-	SelectedIndex int    `json:"selected_index"`
-	Label         string `json:"label"`
-	Value         string `json:"value"`
-}
-
-func applyNativeSelectIndex(ctx context.Context, obj *runtime.RemoteObject, index int, out *nativeSelectApplyResult) error {
-	fn := `function() {
-		const index = ` + strconv.Itoa(index) + `;
-		if (!this || String(this.tagName || '').toUpperCase() !== 'SELECT' || index < 0 || index >= this.options.length) {
-			return {applied:false, selected_index:-1, label:'', value:''};
-		}
-		this.selectedIndex = index;
-		this.dispatchEvent(new Event('input', {bubbles:true}));
-		this.dispatchEvent(new Event('change', {bubbles:true}));
-		const selected = this.options[this.selectedIndex];
-		return {
-			applied:true,
-			selected_index:this.selectedIndex,
-			label:String(selected ? (selected.label || selected.textContent || '') : '').trim(),
-			value:String(this.value ?? '')
-		};
-	}`
-	res, exc, err := runtime.CallFunctionOn(fn).
-		WithObjectID(obj.ObjectID).
-		WithReturnByValue(true).
-		Do(ctx)
-	if err != nil {
-		return err
-	}
-	if exc != nil {
-		return fmt.Errorf("native select apply failed: %s", exc.Text)
-	}
-	if res == nil || len(res.Value) == 0 {
-		return fmt.Errorf("native select apply returned no value")
-	}
-	return json.Unmarshal([]byte(res.Value), out)
-}
-
-// executeSelect changes native <select> state entirely through DOM state and
-// bubbling input/change events. It never focuses or opens the browser picker.
-func (e *actionEngine) executeSelect(ctx context.Context, ref string, query string) error {
-	return e.withResolvedActionElement(ctx, ref, func(execCtx context.Context, obj *runtime.RemoteObject) error {
-		var probe nativeSelectProbe
-		if err := probeNativeSelect(execCtx, obj, &probe); err != nil {
-			return fmt.Errorf("%w: inspect select %q: %v", ErrActFailed, ref, err)
-		}
-		if !probe.IsSelect {
-			return fmt.Errorf("%w: target %q is not a native <select>", ErrActFailed, ref)
-		}
-		if probe.Disabled {
-			return fmt.Errorf("%w: native <select> %q is disabled; options: %s",
-				ErrActFailed, ref, formatNativeSelectOptions(probe.Options))
-		}
-		match, err := matchNativeSelectOption(probe.Options, query)
-		if err != nil {
-			return err
-		}
-		var applied nativeSelectApplyResult
-		if err := applyNativeSelectIndex(execCtx, obj, match.Index, &applied); err != nil {
-			return fmt.Errorf("%w: apply select %q (%s match): %v", ErrActFailed, ref, match.Kind, err)
-		}
-		want := probe.Options[match.Index]
-		if !applied.Applied || applied.SelectedIndex != match.Index || applied.Value != want.Value {
-			return fmt.Errorf("%w: select %q did not converge after %s match (want %q→%q, got %q→%q); options: %s",
-				ErrActFailed, ref, match.Kind, want.Label, want.Value, applied.Label, applied.Value,
-				formatNativeSelectOptions(probe.Options))
-		}
-		return nil
-	})
 }
 
 // checkPasswordField 通过 CDP 检查节点是否为密码字段 [TC-09-U-07, TC-09-U-08]。

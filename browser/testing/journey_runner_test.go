@@ -3,6 +3,7 @@ package testing
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"image"
 	"image/png"
@@ -217,4 +218,47 @@ func TestLoadSpecValidatesInteractionMode(t *testing.T) {
 
 func testClick(locator string) *browser.Action {
 	return &browser.Action{Verb: "click", Target: browser.Target{Kind: "locator", Locator: locator}}
+}
+
+type fidelityRunnerExecutor struct {
+	*runnerTestExecutor
+	report browser.ActionFidelityReport
+}
+
+func (e *fidelityRunnerExecutor) LastActionFidelity() browser.ActionFidelityReport { return e.report }
+
+func TestRunnerPreservesNativeSelectionEvidenceOnFailure(t *testing.T) {
+	report := browser.ActionFidelityReport{Fidelity: browser.InteractionFidelityStrictHuman, InteractionMode: browser.InteractionModeVisual, Execution: "native-keys", EvidenceScope: "keyboard-selection", Selection: &browser.SelectionEvidence{KeySteps: 2, Partial: true, Note: "control replaced"}}
+	executor := &fidelityRunnerExecutor{runnerTestExecutor: &runnerTestExecutor{executeErr: errors.New("control replaced")}, report: report}
+	runner, err := NewRunner(executor, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := runner.Run(context.Background(), &JourneySpec{Version: 2, ID: "native-select-partial", Name: "native select partial", Journey: []StepSpec{{ID: "choose", Kind: "action", Action: testClick("role=button[name=\"Continue\"]")}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	step := result.Steps[0]
+	if step.Status != StatusBlocked || step.ActionFidelity == nil || step.ActionFidelity.Selection == nil || !step.ActionFidelity.Selection.Partial || step.ActionFidelity.Execution != "native-keys" {
+		t.Fatalf("lost partial facts: %+v", step)
+	}
+	encoded, err := json.Marshal(step)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), `"fidelity":`) || !strings.Contains(string(encoded), `"requested_fidelity":"strict-human"`) {
+		t.Fatalf("mixed requested/actual evidence: %s", encoded)
+	}
+	if err := runner.evidence.GenerateReport(result); err != nil {
+		t.Fatal(err)
+	}
+	markdown, err := os.ReadFile(filepath.Join(runner.evidence.dir, "report.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, fact := range []string{"Requested fidelity: strict-human", "Interaction mode: visual", "Execution: native-keys", "Evidence scope: keyboard-selection", `"partial":true`} {
+		if !strings.Contains(string(markdown), fact) {
+			t.Fatalf("report lost %q: %s", fact, markdown)
+		}
+	}
 }

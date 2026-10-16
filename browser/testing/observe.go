@@ -218,6 +218,7 @@ func (obs *Observation) BindActionHints(snap *browser.Snapshot, scenario browser
 	}
 	for index, ref := range snap.Refs {
 		obs.Structural.Refs[index].AllowedActions = browser.AllowedActionsForElement(ref, scenario)
+		obs.Structural.Refs[index].Select = browser.SelectCapabilityForElement(ref, scenario)
 	}
 }
 

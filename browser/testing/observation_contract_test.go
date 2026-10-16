@@ -140,6 +140,7 @@ func TestCanonicalActionHintsRespectCapturedControlState(t *testing.T) {
 	readonly.Ref, readonly.ReadOnly = "@ocapture-r2", true
 	disabled.Ref, disabled.Disabled = "@ocapture-r3", true
 	nativeSelect.Ref, nativeSelect.Role, nativeSelect.Editable, nativeSelect.NativeSelect = "@ocapture-r4", "combobox", false, true
+	nativeSelect.SelectFacts = &browser.SelectFacts{IsSelect: true, Connected: true, Complete: true, OptionCount: 2, Options: []browser.SelectOption{{Label: "Alpha", Value: "a"}, {Label: "Beta", Value: "b"}}}
 	snap := &browser.Snapshot{URL: "https://example.test", ObservationID: "capture", Refs: []browser.ElementRef{base, readonly, disabled, nativeSelect}}
 	obs := BuildObservation("s", snap, nil, "", nil, nil)
 	for _, ref := range obs.Structural.Refs {
@@ -157,6 +158,9 @@ func TestCanonicalActionHintsRespectCapturedControlState(t *testing.T) {
 		t.Fatal(err)
 	}
 	refs := loaded.Structural.Refs
+	if refs[3].Select == nil || !refs[3].Select.Available || refs[3].Select.OptionCount != 2 {
+		t.Fatalf("select capability not preserved: %+v", refs[3])
+	}
 	if !slices.Contains(refs[0].AllowedActions, "fill") || slices.Contains(refs[1].AllowedActions, "fill") || slices.Contains(refs[2].AllowedActions, "click") || !slices.Contains(refs[3].AllowedActions, "select") {
 		t.Fatalf("canonical hints ignored captured controls: %+v", refs)
 	}
@@ -180,5 +184,26 @@ func TestObservationPreservesScreenshotCaptureFailure(t *testing.T) {
 	obs = BuildObservation("s", nil, data.Bytes(), path, nil, nil, captureErr)
 	if obs.Visual != nil || obs.Channels["visual"].Reason != captureErr.Error() {
 		t.Fatalf("failed capture accepted bytes: %+v", obs)
+	}
+}
+
+func TestObservationSuppressesSensitiveSelectOptions(t *testing.T) {
+	for _, sensitive := range []bool{true, false} {
+		ref := browser.ElementRef{Ref: "@ocapture-r1", Role: "combobox", NativeSelect: true, Interactable: true, ControlStateKnown: true, Observed: true, VisibilityKnown: true, VisibleInViewport: true, Sensitive: sensitive, SelectValuesRedacted: !sensitive,
+			SelectFacts: &browser.SelectFacts{IsSelect: true, Connected: true, Complete: true, OptionCount: 1, Options: []browser.SelectOption{{Label: "private-label", Value: "private-value"}}}}
+		snap := &browser.Snapshot{ObservationID: "capture", Refs: []browser.ElementRef{ref}}
+		obs := BuildObservation("s", snap, nil, "", nil, nil)
+		obs.BindActionHints(snap, browser.ScenarioAppTestExplore)
+		encoded, err := json.Marshal(obs)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if bytes.Contains(encoded, []byte("private-")) {
+			t.Fatalf("sensitive options leaked into observation: %s", encoded)
+		}
+		got := obs.Structural.Refs[0]
+		if got.Select == nil || !got.Select.Available || got.Select.Execution != "native-keys" || got.Select.OptionCount != 1 || len(got.Select.Options) != 0 || got.Select.OptionsComplete || !slices.Contains(got.AllowedActions, "select") {
+			t.Fatalf("privacy changed select capability: %+v", got)
+		}
 	}
 }

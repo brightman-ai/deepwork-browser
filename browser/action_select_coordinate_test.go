@@ -11,7 +11,7 @@ import (
 )
 
 func TestMatchNativeSelectOptionPriorityAndDiagnostics(t *testing.T) {
-	options := []nativeSelectOption{
+	options := []SelectOption{
 		{Label: "Value wins", Value: "TencentDB-Agent-Memory"},
 		{Label: "TencentDB-Agent-Memory", Value: "/home/ubuntu/code/stwork/TencentDB-Agent-Memory"},
 		{Label: "Alpha Pipeline", Value: "alpha"},
@@ -195,8 +195,9 @@ func TestActionEngineNativeSelectWithoutPicker(t *testing.T) {
 	assertWithin(Action{Verb: "focus", Target: fixtureLocator("role=button[name*=\"Overview\"]")}, "", 2*time.Second)
 	assertWithin(Action{Verb: "press", Target: fixtureLocator("role=combobox[name*=\"Project\"]"), Key: "ArrowDown"}, "", 2*time.Second)
 	assertFocused("#project")
-	assertValue("/home/ubuntu/code/stwork/TencentDB-Agent-Memory")
-	assertWithin(Action{Verb: "press", Target: fixtureLocator("role=combobox[name*=\"Project\"]"), Key: "Enter"}, "blocked to avoid opening the browser picker", 2*time.Second)
+	// Press is a native key only; it makes no selected-value guarantee.
+	assertWithin(Action{Verb: "press", Target: fixtureLocator("role=combobox[name*=\"Project\"]"), Key: "Enter"}, "", 2*time.Second)
+	assertWithin(Action{Verb: "press", Target: fixtureLocator("role=combobox[name*=\"Project\"]"), Key: "Escape"}, "", 2*time.Second)
 
 	if err := core.EvalJS(ctx, `(() => { document.querySelector('#project').selectedIndex = 0; return true; })()`, new(bool)); err != nil {
 		t.Fatalf("reset select: %v", err)
@@ -215,7 +216,7 @@ func TestActionEngineNativeSelectWithoutPicker(t *testing.T) {
 		t.Fatalf("read select events: %v", err)
 	}
 	if len(events) < 2 || events[0] != "input:/home/ubuntu/code/stwork/TencentDB-Agent-Memory" || events[1] != "change:/home/ubuntu/code/stwork/TencentDB-Agent-Memory" {
-		t.Fatalf("select events = %v, want bubbling input/change from the first ArrowDown", events)
+		t.Fatalf("select events = %v, want bubbling input/change from explicit baseline select", events)
 	}
 }
 

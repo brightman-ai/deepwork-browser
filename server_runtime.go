@@ -206,6 +206,24 @@ func (s *Server) executeHTTPAction(w http.ResponseWriter, r *http.Request, id st
 		return
 	}
 	snap, outcome, actionErr := bound.Core.ExecuteAction(ctx, action, action.Verb == "navigate" || action.Verb == "reload" || action.Verb == "back" || action.Verb == "forward", true, mode)
+	// Read evidence exactly once at the completed core boundary. Preflight
+	// failures above must never inherit metadata from an earlier operation.
+	var actionReport *browser.ActionFidelityReport
+	if fidelity, ok := bound.Core.(browser.ActionFidelityCapable); ok {
+		report := fidelity.LastActionFidelity()
+		actionReport = &report
+	}
+	writeActionResult := func(status int, out browser.Outcome, resultErr error) {
+		payload := map[string]interface{}{"success": resultErr == nil, "session_id": id, "runtime_run_id": bound.Info.BrowserRunID, "operation_id": operationID, "outcome": out}
+		if resultErr != nil {
+			payload["error"] = resultErr.Error()
+		}
+		if actionReport != nil {
+			payload["action_fidelity"] = actionReport
+		}
+		writeHTTPResult(w, status, payload)
+	}
+
 	if outcome.DispatchState == "not-dispatched" {
 		*bound.Info = prior
 	} else {
@@ -220,32 +238,29 @@ func (s *Server) executeHTTPAction(w http.ResponseWriter, r *http.Request, id st
 			} else {
 				browser.RevokeSessionObservationGeometry(bound.Info)
 			}
-			if fidelity, ok := bound.Core.(browser.ActionFidelityCapable); ok {
-				report := fidelity.LastActionFidelity()
-				if report.FocusUpdated {
-					bound.Info.HumanFocusBackendNodeID = report.FocusedBackend
-					bound.Info.HumanFocusPageURL = bound.Info.PageURL
-				}
+			if actionReport != nil && actionReport.FocusUpdated {
+				bound.Info.HumanFocusBackendNodeID = actionReport.FocusedBackend
+				bound.Info.HumanFocusPageURL = bound.Info.PageURL
 			}
 		}
 	}
 	if err := persistHTTPRuntime(ctx, bound); err != nil {
 		bound.Info.LastActionOutcome = browser.SessionActionOutcomeUnknown
 		browser.InvalidateSessionObservation(bound.Info)
-		writeHTTPError(w, http.StatusServiceUnavailable, browser.Outcome{Phase: "persist", DispatchState: "unknown", Recovery: "observe before further input"}, err)
+		writeActionResult(http.StatusServiceUnavailable, browser.Outcome{Phase: "persist", DispatchState: "unknown", Recovery: "observe before further input"}, err)
 		return
 	}
 	if actionErr != nil {
-		writeHTTPError(w, http.StatusConflict, outcome, actionErr)
+		writeActionResult(http.StatusConflict, outcome, actionErr)
 		return
 	}
 	if action.Verb == "navigate" && s.hooks.OnNavigate != nil {
 		if err := s.hooks.OnNavigate(ctx, id, action.URL); err != nil {
-			writeHTTPError(w, http.StatusInternalServerError, browser.Outcome{Phase: "hook", DispatchState: "confirmed"}, err)
+			writeActionResult(http.StatusInternalServerError, browser.Outcome{Phase: "hook", DispatchState: "confirmed"}, err)
 			return
 		}
 	}
-	writeHTTPResult(w, http.StatusOK, map[string]interface{}{"success": true, "session_id": id, "runtime_run_id": bound.Info.BrowserRunID, "operation_id": operationID, "outcome": outcome})
+	writeActionResult(http.StatusOK, outcome, nil)
 }
 
 func parseHTTPQueryID(r *http.Request) (string, error) {

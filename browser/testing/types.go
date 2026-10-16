@@ -65,20 +65,21 @@ type StructuralState struct {
 
 // RefSummary — 精简的元素引用
 type RefSummary struct {
-	AllowedActions  []string     `json:"allowed_actions"`
-	Ref             string       `json:"ref"`
-	Role            string       `json:"role"`
-	Name            string       `json:"name"`
-	Value           string       `json:"value,omitempty"`
-	NameFull        string       `json:"name_full,omitempty"`
-	TestID          string       `json:"testid,omitempty"`
-	Locator         string       `json:"locator,omitempty"`
-	BBox            browser.Rect `json:"bbox"`
-	VisibilityKnown bool         `json:"visibility_known"`
-	Visible         bool         `json:"visible"`
-	Observed        bool         `json:"observed"`
-	ModalRank       int          `json:"modal_rank,omitempty"`
-	Blocked         bool         `json:"blocked,omitempty"`
+	Select          *browser.SelectCapability `json:"select,omitempty"`
+	AllowedActions  []string                  `json:"allowed_actions"`
+	Ref             string                    `json:"ref"`
+	Role            string                    `json:"role"`
+	Name            string                    `json:"name"`
+	Value           string                    `json:"value,omitempty"`
+	NameFull        string                    `json:"name_full,omitempty"`
+	TestID          string                    `json:"testid,omitempty"`
+	Locator         string                    `json:"locator,omitempty"`
+	BBox            browser.Rect              `json:"bbox"`
+	VisibilityKnown bool                      `json:"visibility_known"`
+	Visible         bool                      `json:"visible"`
+	Observed        bool                      `json:"observed"`
+	ModalRank       int                       `json:"modal_rank,omitempty"`
+	Blocked         bool                      `json:"blocked,omitempty"`
 }
 
 // BehaviorState — 用户可感知的行为状态

@@ -245,10 +245,8 @@ func (r *Runner) runStep(ctx context.Context, step StepSpec, invariants []Assert
 			return
 		}
 		mode, _ := browser.NormalizeInteractionMode(string(step.Mode))
-		sr.Fidelity = "visual"
 		var outcome browser.Outcome
 		if mode == browser.InteractionModeElement {
-			sr.Fidelity = "synthetic-element"
 			if executor, ok := r.executor.(InteractionModeActionExecutor); ok {
 				outcome, err = executor.ExecuteWithMode(ctx, request, mode)
 			} else {
@@ -263,9 +261,6 @@ func (r *Runner) runStep(ctx context.Context, step StepSpec, invariants []Assert
 		}); ok {
 			report := metadata.LastActionFidelity()
 			sr.ActionFidelity = &report
-			if report.Synthetic {
-				sr.Fidelity = "synthetic"
-			}
 		}
 		if err == nil && outcome.DispatchState != "confirmed" {
 			err = fmt.Errorf("action dispatch completion unproven: %q", outcome.DispatchState)

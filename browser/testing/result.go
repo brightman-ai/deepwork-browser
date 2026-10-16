@@ -40,7 +40,6 @@ type StepResult struct {
 	Action         *RecordedAction               `json:"action,omitempty"`
 	Outcome        *browser.Outcome              `json:"outcome,omitempty"`
 	ActionFidelity *browser.ActionFidelityReport `json:"action_fidelity,omitempty"`
-	Fidelity       string                        `json:"fidelity,omitempty"`
 	Status         Status                        `json:"status"`
 	Checks         []AssertionResult             `json:"checks"`
 	ReferenceDiffs []ReferenceDiff               `json:"reference_diffs,omitempty"`
