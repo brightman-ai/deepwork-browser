@@ -19,6 +19,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"os/exec"
@@ -28,14 +29,15 @@ import (
 
 // chromeHandleImpl — cross-platform ChromeHandle owning *exec.Cmd.
 type chromeHandleImpl struct {
-	cmd      *exec.Cmd
-	pid      int
-	wsURL    string
-	doneCh   chan struct{}
-	waitErr  error
-	stderr   *bytes.Buffer
-	killOnce sync.Once
-	killErr  error
+	cmd       *exec.Cmd
+	pid       int
+	wsURL     string
+	doneCh    chan struct{}
+	waitErr   error
+	stderr    fmt.Stringer
+	stderrErr error // Published with waitErr before doneCh closes.
+	killOnce  sync.Once
+	killErr   error
 	// regToken is the on-disk ownership note (chrome_registry.go). Dropped on
 	// Kill; left behind on an unclean death so the next dw-browser process can
 	// finish the kill this one never got to run.
@@ -89,7 +91,37 @@ func (h *chromeHandleImpl) killWithContext(ctx context.Context) error {
 		}
 		return fmt.Errorf("workspace: kill chrome pid=%d timed out waiting for exit", h.pid)
 	}
-	return h.killErr
+	return errors.Join(h.killErr, h.stderrErr)
+}
+
+// documentStderrTail keeps diagnostics bounded while the pipe reader and a
+// diagnostic consumer may run concurrently. Legacy launches retain their buffer.
+type documentStderrTail struct {
+	mu   sync.Mutex
+	data []byte
+}
+
+func (b *documentStderrTail) Write(p []byte) (int, error) {
+	const limit = 16 << 10
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	n := len(p)
+	if len(p) >= limit {
+		b.data = append(b.data[:0], p[len(p)-limit:]...)
+	} else {
+		if extra := len(b.data) + len(p) - limit; extra > 0 {
+			copy(b.data, b.data[extra:])
+			b.data = b.data[:len(b.data)-extra]
+		}
+		b.data = append(b.data, p...)
+	}
+	return n, nil
+}
+
+func (b *documentStderrTail) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return string(b.data)
 }
 
 // startChromeProcess forks Chrome as a detached process, waits for CDP ready,
@@ -151,15 +183,43 @@ func startChromeProcessWithOwnership(spec ChromeLaunchSpec, detached bool) (*chr
 		ApplyOwnedChromeProcAttr(cmd)
 	}
 	var stderrBuf bytes.Buffer
+	var stderr fmt.Stringer = &stderrBuf
+	var stderrReader, stderrWriter *os.File
+	var stderrDone chan error
 	cmd.Stderr = &stderrBuf
+	if spec.documentRead {
+		// Own the pipe explicitly: Cmd.WaitDelay can hide a drain timeout
+		// behind the leader's ExitError. A successful wait must never conceal
+		// a helper that still holds stderr after the leader has exited.
+		var err error
+		stderrReader, stderrWriter, err = os.Pipe()
+		if err != nil {
+			return nil, fmt.Errorf("document stderr pipe: %w", err)
+		}
+		stderr = &documentStderrTail{}
+		cmd.Stderr = stderrWriter
+		stderrDone = make(chan error, 1)
+	}
 
 	log.Printf("[CHROME-LAUNCH] start path=%q debug_port=%d args=%d detached=%t ready_timeout_ms=%d",
 		spec.ChromePath, spec.DebugPort, len(spec.Args), detached, timeout.Milliseconds())
 	forkStartedAt := time.Now()
 	if err := cmd.Start(); err != nil {
+		if stderrReader != nil {
+			_ = stderrReader.Close()
+			_ = stderrWriter.Close()
+		}
 		log.Printf("[CHROME-LAUNCH] start_failed debug_port=%d detached=%t fork_elapsed_ms=%d err=%v",
 			spec.DebugPort, detached, time.Since(forkStartedAt).Milliseconds(), err)
 		return nil, fmt.Errorf("workspace: start chrome: %w", err)
+	}
+	if stderrReader != nil {
+		_ = stderrWriter.Close()
+		go func() {
+			_, err := io.Copy(stderr.(*documentStderrTail), stderrReader)
+			_ = stderrReader.Close()
+			stderrDone <- err
+		}()
 	}
 	if spec.documentOwner != nil {
 		spec.documentOwner.pid.Store(int64(cmd.Process.Pid))
@@ -172,7 +232,7 @@ func startChromeProcessWithOwnership(spec ChromeLaunchSpec, detached bool) (*chr
 		pid:    cmd.Process.Pid,
 		pgid:   ChromeProcessGroupID(cmd.Process.Pid),
 		doneCh: make(chan struct{}),
-		stderr: &stderrBuf,
+		stderr: stderr,
 	}
 	if spec.documentOwner != nil {
 		spec.documentOwner.handle.Store(h)
@@ -194,12 +254,27 @@ func startChromeProcessWithOwnership(spec ChromeLaunchSpec, detached bool) (*chr
 	// Reap the child + signal exit. Single goroutine owns cmd.Wait().
 	go func() {
 		h.waitErr = cmd.Wait()
+		// The leader is gone; reap its group before draining stderr, so an
+		// owned same-group helper cannot keep the pipe open unnecessarily.
+		KillChromeProcessGroupID(h.pgid)
+		if stderrDone != nil {
+			// The OS leader has been reaped. Join its pipe separately, leaving
+			// room in the five-second cleanup budget for process-group checks.
+			timer := time.NewTimer(500 * time.Millisecond)
+			select {
+			case err := <-stderrDone:
+				if err != nil {
+					h.stderrErr = fmt.Errorf("document stderr drain: %w", err)
+				}
+			case <-timer.C:
+				_ = stderrReader.Close()
+				<-stderrDone
+				h.stderrErr = errors.New("document stderr drain incomplete after leader exit; inherited writer may still be alive")
+			}
+			timer.Stop()
+		}
 		log.Printf("[CHROME-LAUNCH] process_exited pid=%d debug_port=%d err=%v",
 			h.pid, spec.DebugPort, h.waitErr)
-		// The browser process is gone; its children are not. Same reason Kill
-		// group-kills — a crashed Chrome leaves the same residue as a killed
-		// one, and residue keeps writing into the profile dir.
-		KillChromeProcessGroupID(h.pgid)
 		UnregisterChromeProcess(h.regToken)
 		close(h.doneCh)
 	}()

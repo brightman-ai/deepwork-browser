@@ -22,10 +22,19 @@ const DocumentSchema = "dw.document.v1"
 // DocumentRequest is a public URL read, never a script or a session attachment.
 // Zero budgets select the defaults. Timeout covers queueing, startup and reading.
 type DocumentRequest struct {
+	Mode            BrowserMode
+	NetworkRoute    DocumentNetworkRoute
 	URL             string
 	Timeout         time.Duration
 	MaxHTMLBytes    int64
 	MaxNetworkBytes int64
+}
+
+// DocumentRendering describes the actual DOM target, not desktop observation.
+// A failed attempt that never established its target reports not-started.
+type DocumentRendering struct {
+	Mode    BrowserMode `json:"mode"`
+	Surface string      `json:"surface"`
 }
 
 type DocumentReadiness struct {
@@ -34,6 +43,7 @@ type DocumentReadiness struct {
 }
 
 type DocumentPolicy struct {
+	DocumentNetworkRouting
 	Network         string `json:"network"`
 	Profile         string `json:"profile"`
 	JavaScript      string `json:"javascript"`
@@ -53,6 +63,7 @@ type DocumentCleanup struct {
 // Document contains the main frame DOM, not an extraction or a screenshot.
 // DeclaredCanonicalURL is an untrusted DOM hint, never a navigated/verified URL.
 type Document struct {
+	Rendering            DocumentRendering `json:"rendering"`
 	Schema               string            `json:"schema"`
 	ToolVersion          string            `json:"tool_version,omitempty"`
 	RequestedURL         string            `json:"requested_url"`
@@ -69,6 +80,7 @@ type Document struct {
 // UnsupportedDocumentContentError preserves actual response metadata without
 // returning a browser-generated XML/PDF viewer as the original document.
 type UnsupportedDocumentContentError struct {
+	Rendering   DocumentRendering
 	URL         string
 	ContentType string
 	Reroutable  bool
@@ -90,6 +102,15 @@ func documentIsHTML(contentType string) bool {
 }
 
 func normalizeDocumentRequest(r DocumentRequest) (DocumentRequest, error) {
+	var err error
+	r.Mode, err = normalizeDocumentMode(r.Mode)
+	if err != nil {
+		return r, err
+	}
+	r.NetworkRoute, err = normalizeDocumentNetworkRoute(r.NetworkRoute)
+	if err != nil {
+		return r, err
+	}
 	if r.Timeout < 0 || r.MaxHTMLBytes < 0 || r.MaxNetworkBytes < 0 {
 		return r, errors.New("document budgets must not be negative")
 	}
@@ -109,7 +130,7 @@ func normalizeDocumentRequest(r DocumentRequest) (DocumentRequest, error) {
 }
 
 // FetchDocument is the single typed read kernel for CLI and Go consumers. Each
-// call owns a fresh headless browser, a private proxy and a disposable profile.
+// call owns a fresh browser, a private proxy and a disposable profile.
 // A non-nil error means no successful document, including cleanup/policy errors.
 func FetchDocument(parent context.Context, request DocumentRequest) (doc *Document, resultErr error) {
 	return fetchDocumentWithNetwork(parent, request, PublicNetworkOptions{})
@@ -118,18 +139,46 @@ func FetchDocument(parent context.Context, request DocumentRequest) (doc *Docume
 // Private network seams let acceptance fixtures exercise real Chrome and proxy
 // traffic. Production callers always enter through FetchDocument's fixed policy.
 func fetchDocumentWithNetwork(parent context.Context, request DocumentRequest, networkOptions PublicNetworkOptions) (doc *Document, resultErr error) {
+	attempt := newDocumentAttempt(request.URL)
+	rendering := DocumentRendering{Mode: request.Mode, Surface: "not-started"}
+	if rendering.Mode == "" {
+		rendering.Mode = ModeHeadless
+	}
+	requestedRoute := request.NetworkRoute
+	if requestedRoute == "" {
+		requestedRoute = DocumentNetworkSystem
+	}
+	policy := DocumentPolicy{DocumentNetworkRouting: DocumentNetworkRouting{RequestedNetworkRoute: requestedRoute, EffectiveTransport: "not-started", NetworkRouteSource: "unresolved", NumericTargetPinning: true}, Network: "page-requests-public-only", Profile: documentProfilePolicy(rendering.Mode), JavaScript: "fixed-isolated-dom-read"}
+	defer func() {
+		attempt.diagnostic.Policy, attempt.diagnostic.Rendering = policy, rendering
+		if doc != nil {
+			doc.Rendering = rendering
+		}
+		if unsupported, ok := resultErr.(*UnsupportedDocumentContentError); ok {
+			unsupported.Rendering = rendering
+		}
+		doc, resultErr = attempt.settle(doc, resultErr)
+	}()
 	r, err := normalizeDocumentRequest(request)
 	if err != nil {
 		return nil, err
 	}
+	policy.Profile = documentProfilePolicy(r.Mode)
 	if parent == nil {
 		parent = context.Background()
 	}
 	ctx, cancel := context.WithTimeout(parent, r.Timeout)
 	defer cancel()
 	if err := ctx.Err(); err != nil {
-		return nil, fmt.Errorf("document deadline: %w", err)
+		return nil, fmt.Errorf("document acquisition: %w", err)
 	}
+	attempt.advance("startup")
+	route, err := resolveDocumentNetworkRoute(r.NetworkRoute)
+	policy.DocumentNetworkRouting = route.receipt
+	if err != nil {
+		return nil, fmt.Errorf("document network route: %w", err)
+	}
+	networkOptions.NetworkRoute, networkOptions.routeSnapshot = r.NetworkRoute, route
 	if err := documentRuntimeAvailable(); err != nil {
 		return nil, err
 	}
@@ -137,18 +186,21 @@ func fetchDocumentWithNetwork(parent context.Context, request DocumentRequest, n
 	if err != nil {
 		return nil, err
 	}
+	attempt.advance("queue")
 	slot, err := acquireDocumentSlot(ctx, filepath.Join(home, ".deepwork", "browser-document-slots"))
 	if err != nil {
 		return nil, err
 	}
+	attempt.advance("startup")
 	cleanup := DocumentCleanup{}
-	var policy DocumentPolicy
 	defer func() {
+		attempt.beginCleanup(resultErr != nil)
 		if err := slot.Close(); err != nil {
-			resultErr = errors.Join(resultErr, fmt.Errorf("document slot cleanup: %w", err))
+			resultErr = errors.Join(resultErr, &documentCleanupFailure{fmt.Errorf("document slot cleanup: %w", err)})
 			doc = nil
 		}
 		doc, resultErr = settleDocumentReceipt(doc, resultErr, policy, cleanup)
+		attempt.diagnostic.Policy, attempt.diagnostic.Cleanup = policy, cleanup
 	}()
 	var token [16]byte
 	if _, err := rand.Read(token[:]); err != nil {
@@ -173,12 +225,16 @@ func fetchDocumentWithNetwork(parent context.Context, request DocumentRequest, n
 	var core BrowserCore
 	owner := &documentLaunchOwner{}
 	defer func() {
+		if ctx.Err() != nil {
+			resultErr = errors.Join(resultErr, documentReadError(ctx, guard, ctx.Err()))
+		}
+		attempt.beginCleanup(resultErr != nil)
 		// Cleanup has its own deadline: a timed-out read must still reap its browser.
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cleanupCancel()
-		policyErr := errors.Join(guard.Err(), documentCorePolicyError(core))
+		policyErr := errors.Join(guard.PolicyError(), documentCorePolicyError(core))
 		if closeErr := guard.CloseContext(cleanupCtx); closeErr != nil {
-			resultErr = errors.Join(resultErr, fmt.Errorf("document network cleanup: %w", closeErr))
+			resultErr = errors.Join(resultErr, &documentCleanupFailure{fmt.Errorf("document network cleanup: %w", closeErr)})
 		} else {
 			cleanup.NetworkClosed = true
 		}
@@ -186,11 +242,11 @@ func fetchDocumentWithNetwork(parent context.Context, request DocumentRequest, n
 			closeErr := core.Close(cleanupCtx)
 			cleanup.BrowserClosed = closeErr == nil
 			if closeErr != nil {
-				resultErr = errors.Join(resultErr, fmt.Errorf("document browser cleanup: %w", closeErr))
+				resultErr = errors.Join(resultErr, &documentCleanupFailure{fmt.Errorf("document browser cleanup: %w", closeErr)})
 			}
 		} else if owner.pid.Load() > 0 {
 			if err := owner.cleanup(cleanupCtx); err != nil {
-				resultErr = errors.Join(resultErr, fmt.Errorf("document failed startup cleanup: %w", err))
+				resultErr = errors.Join(resultErr, &documentCleanupFailure{fmt.Errorf("document failed startup cleanup: %w", err)})
 			} else {
 				cleanup.BrowserClosed = true
 			}
@@ -199,25 +255,31 @@ func fetchDocumentWithNetwork(parent context.Context, request DocumentRequest, n
 			cleanup.BrowserClosed = true
 		}
 		if finalPolicyErr := guard.PolicyError(); finalPolicyErr != nil {
-			policyErr = finalPolicyErr
+			policyErr = errors.Join(policyErr, finalPolicyErr)
 		}
 		if policyErr != nil {
-			resultErr = errors.Join(resultErr, fmt.Errorf("document network policy: %w", policyErr))
+			resultErr = errors.Join(resultErr, &documentPolicyFailure{fmt.Errorf("document network policy: %w", policyErr)})
+		}
+		if transportErr := documentCoreTransportError(core); transportErr != nil {
+			resultErr = errors.Join(resultErr, &documentTransportFailure{transportErr})
 		}
 		if cleanup.BrowserClosed {
 			if removeErr := os.RemoveAll(profilePath); removeErr != nil {
-				resultErr = errors.Join(resultErr, fmt.Errorf("document profile cleanup: %w", removeErr))
+				resultErr = errors.Join(resultErr, &documentCleanupFailure{fmt.Errorf("document profile cleanup: %w", removeErr)})
 			} else {
 				cleanup.ProfileRemoved = true
 			}
 		}
 		stats := guard.Stats()
-		policy = DocumentPolicy{Network: "page-requests-public-only", Profile: "ephemeral-headless", JavaScript: "fixed-isolated-dom-read", MaxHTMLBytes: r.MaxHTMLBytes, MaxNetworkBytes: r.MaxNetworkBytes, NetworkRequests: stats.Requests, NetworkBytes: stats.Bytes, BlockedRequests: stats.DeniedRequests + documentCoreBlockedRequests(core)}
+		policy = DocumentPolicy{DocumentNetworkRouting: route.receipt, Network: "page-requests-public-only", Profile: documentProfilePolicy(r.Mode), JavaScript: "fixed-isolated-dom-read", MaxHTMLBytes: r.MaxHTMLBytes, MaxNetworkBytes: r.MaxNetworkBytes, NetworkRequests: stats.Requests, NetworkBytes: stats.Bytes, BlockedRequests: stats.DeniedRequests + documentCoreBlockedRequests(core)}
 	}()
 	if err := ctx.Err(); err != nil {
 		return nil, fmt.Errorf("document deadline: %w", err)
 	}
-	core, err = NewBrowserCore(operationCtx, profileID, WithMode(ModeHeadless), withDocumentNetwork(guard.ProxyURL(), owner))
+	core, err = NewBrowserCore(operationCtx, profileID, WithMode(r.Mode), withDocumentNetwork(guard.ProxyURL(), owner))
+	if owner.targetReady.Load() {
+		rendering.Surface = documentTargetSurface(r.Mode)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("document browser startup: %w", err)
 	}
@@ -228,6 +290,7 @@ func fetchDocumentWithNetwork(parent context.Context, request DocumentRequest, n
 	runCtx, cancelRun := deriveTargetContext(operationCtx, provider.CDPContext())
 	defer cancelRun()
 	var finalURL string
+	attempt.advance("navigation")
 	var payload documentDOMPayload
 	err = chromedp.Run(runCtx, chromedp.ActionFunc(func(c context.Context) error {
 		_, _, text, download, err := page.Navigate(r.URL).Do(c)
@@ -245,6 +308,7 @@ func fetchDocumentWithNetwork(parent context.Context, request DocumentRequest, n
 	if err != nil {
 		return nil, documentReadError(ctx, guard, err)
 	}
+	attempt.advance("read")
 	ticker := time.NewTicker(50 * time.Millisecond)
 	defer ticker.Stop()
 	for {
@@ -257,6 +321,7 @@ func fetchDocumentWithNetwork(parent context.Context, request DocumentRequest, n
 				return errors.New("document main frame unavailable")
 			}
 			before := tree.Frame
+			attempt.diagnostic.URL = before.URL + before.URLFragment
 			world, err := page.CreateIsolatedWorld(before.ID).WithWorldName("dw.document.v1.reader").Do(c)
 			if err != nil {
 				return err
@@ -297,13 +362,19 @@ func fetchDocumentWithNetwork(parent context.Context, request DocumentRequest, n
 		}
 	}
 	if payload.TooLarge || int64(len(payload.HTML)) > r.MaxHTMLBytes {
-		return nil, errors.New("document HTML byte budget exceeded")
+		return nil, &documentBudgetFailure{errors.New("document HTML byte budget exceeded")}
 	}
 	if _, err := ValidatePublicDocumentURL(finalURL, nil); err != nil {
 		return nil, fmt.Errorf("document final URL: %w", err)
 	}
-	if err := errors.Join(guard.Err(), documentCorePolicyError(core)); err != nil {
-		return nil, fmt.Errorf("document network policy: %w", err)
+	if err := errors.Join(guard.PolicyError(), documentCorePolicyError(core)); err != nil {
+		return nil, &documentPolicyFailure{fmt.Errorf("document network policy: %w", err)}
+	}
+	if err := documentCoreTransportError(core); err != nil {
+		return nil, &documentTransportFailure{err}
+	}
+	if err := guard.Err(); err != nil {
+		return nil, documentReadError(ctx, guard, err)
 	}
 	contentType := documentCoreContentType(core)
 	if contentType == "" {
@@ -332,11 +403,12 @@ func settleDocumentReceipt(doc *Document, err error, policy DocumentPolicy, clea
 		unsupported.Policy = policy
 		unsupported.Cleanup = cleanup
 	}
+	_, unsupportedOutcome := err.(*UnsupportedDocumentContentError)
+	if !complete && (err == nil || unsupportedOutcome) {
+		err = errors.Join(err, &documentCleanupFailure{errors.New("document cleanup incomplete")})
+	}
 	if err != nil {
 		return nil, err
-	}
-	if !complete {
-		return nil, errors.New("document cleanup incomplete")
 	}
 	if doc != nil {
 		doc.Policy = policy
@@ -346,11 +418,15 @@ func settleDocumentReceipt(doc *Document, err error, policy DocumentPolicy, clea
 }
 
 func documentReadError(ctx context.Context, guard *PublicNetworkGuard, err error) error {
-	if policyErr := guard.Err(); policyErr != nil {
-		return fmt.Errorf("document network policy: %w", policyErr)
+	if policyErr := guard.PolicyError(); policyErr != nil {
+		return &documentPolicyFailure{fmt.Errorf("document network policy: %w", policyErr)}
 	}
-	if ctx.Err() != nil {
-		return fmt.Errorf("document deadline: %w", ctx.Err())
+	// A child with the same deadline can report first, before ctx.Err updates.
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return fmt.Errorf("document deadline: %w", errors.Join(err, ctx.Err()))
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(ctx.Err(), context.Canceled) {
+		return fmt.Errorf("document canceled: %w", errors.Join(err, ctx.Err()))
 	}
 	return fmt.Errorf("document read: %w", err)
 }

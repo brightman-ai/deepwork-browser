@@ -40,9 +40,11 @@ stdout is one JSON value. `--output` saves JSON, `--screenshot` names a PNG, and
 Use `app-test-baseline` for deterministic typed journeys with no internal LLM; use `webvisit` for public browsing, retaining explicit `--allow-host` write authorization. `htr takeover --id edit` blocks AI input; `htr yield --id edit` restores authority and requires a new observation.
 
 For background public DOM acquisition, use `dw-browser document https://example.com/`.
-It returns `dw.document.v1` HTML from an isolated disposable headless browser,
+It returns `dw.document.v1` HTML from a disposable browser (headless by default;
+explicit headed uses a windowless hidden target),
 without screenshots or arbitrary eval. It restricts webpage requests to validated
-public destinations; it is not an OS firewall. See the [document contract](guide/runtime-v2/document.md).
+public destinations, with supported system proxy routing after numeric-IP validation;
+it is not an OS firewall. Failures include typed diagnostics without a usable partial DOM. See the [document contract](guide/runtime-v2/document.md).
 
 The same executable generates [the tool-use skill](guide/runtime-v2/generated/dw-browser/SKILL.md), [command reference](guide/runtime-v2/generated/dw-browser/references/commands.md), capabilities and completion:
 

@@ -1,4 +1,4 @@
-# DW-Browser 0.15.0-v2 command contract
+# DW-Browser 0.16.0-v2 command contract
 
 Generated from executable declarations. Flags on attached sessions inherit creation environment. `--output` is JSON; `--screenshot` is PNG. Absolute and locator-relative points require `--observation-id` from the exact capture; opaque ref-relative points supply capture identity in the token. Gesture endpoints share that identity.
 
@@ -71,11 +71,19 @@ Capture one canonical UI observation in an owned short-lived session. Positional
 
 ## `document`
 
-Read public URL DOM in an isolated disposable headless browser; no screenshot or session. Positional arguments: 1..1. Required flags: .
+Read public URL DOM in a disposable browser target; no screenshot or session. Positional arguments: 1..1. Required flags: .
 
-- `--timeout` VALUE (duration)
+Usage: `document URL [--mode headless|headed] [--network-route system|direct] [--timeout DURATION]`
+
+- `URL`: Public HTTP(S) URL; no existing browser session or profile is used.
+
+Default headless, system route. Headed uses a windowless hidden target, not a visible browser and not UI acceptance evidence. No mode fallback or automatic challenge retry. System route honors supported trusted proxy configuration only after validating numeric public destinations; direct deliberately ignores proxy configuration. A captured login or verification page is not article acceptance. Read rendering, policy, cleanup and failure diagnostics.
+
+- `--timeout` VALUE (duration); Whole read budget including queue and browser startup; cleanup has an independent bounded deadline.
 - `--max-html-bytes` VALUE (integer)
 - `--max-network-bytes` VALUE (integer)
+- `--network-route` VALUE (string); values system|direct; Transport configuration: system (default) or explicit direct; public destination validation remains required in both.
+- `--mode` VALUE (string); values headless|headed; DOM rendering: headless (default) or headful hidden target without a native window
 - `--output` VALUE (string)
 - `--lock-wait` VALUE (lock-duration)
 - `--verbose`

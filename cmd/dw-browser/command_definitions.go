@@ -97,7 +97,9 @@ func commandDefinitions() []CommandDefinition {
 	add("open", "Create one session; duplicate IDs are rejected", runOpenResult, append(creationFlags(), flags("id", "")...), []string{"--scenario", "--id"}, 1, 1, false)
 	add("close", "Close only the named session", runCloseResult, id(flags("", "force")), []string{"--id"}, 0, 0, false)
 	add("once", "Capture one canonical UI observation in an owned short-lived session", runOnceResult, append(creationFlags(), flags("screenshot content", "health tree all annotate")...), []string{"--scenario"}, 1, 1, false)
-	add("document", "Read public URL DOM in an isolated disposable headless browser; no screenshot or session", runDocumentResult, flags("timeout max-html-bytes max-network-bytes", ""), nil, 1, 1, false)
+	documentFlags := flags("timeout max-html-bytes max-network-bytes network-route", "")
+	documentFlags = append(documentFlags, CLIFlag{Name: "--mode", TakesValue: true, ValueType: "string", Values: []string{"headless", "headed"}, Description: "DOM rendering: headless (default) or headful hidden target without a native window"})
+	add("document", "Read public URL DOM in a disposable browser target; no screenshot or session", runDocumentResult, documentFlags, nil, 1, 1, false)
 	add("observe", "Capture a canonical observation and actual screenshot", runObserveResult, id(flags("screenshot content scope top budget", "health tree all hit-audit annotate")), []string{"--id"}, 0, 0, false)
 	add("check", "Judge required assertions against one canonical observation", runCheckResult, flags("id observation assert file using vision-url vision-provider vision-model vision-api-key", ""), nil, 0, 0, false)
 	add("diff", "Compare two canonical observations", runDiffResult, nil, nil, 2, 2, true)
@@ -159,6 +161,19 @@ func commandDefinitions() []CommandDefinition {
 			}
 		}
 		switch d.Path {
+		case "document":
+			d.Arguments = []CLIArgument{{Name: "URL", Description: "Public HTTP(S) URL; no existing browser session or profile is used."}}
+			d.Usage = "document URL [--mode headless|headed] [--network-route system|direct] [--timeout DURATION]"
+			d.Guidance = "Default headless, system route. Headed uses a windowless hidden target, not a visible browser and not UI acceptance evidence. No mode fallback or automatic challenge retry. System route honors supported trusted proxy configuration only after validating numeric public destinations; direct deliberately ignores proxy configuration. A captured login or verification page is not article acceptance. Read rendering, policy, cleanup and failure diagnostics."
+			for fi := range d.Flags {
+				switch d.Flags[fi].Name {
+				case "--network-route":
+					d.Flags[fi].Values = []string{"system", "direct"}
+					d.Flags[fi].Description = "Transport configuration: system (default) or explicit direct; public destination validation remains required in both."
+				case "--timeout":
+					d.Flags[fi].Description = "Whole read budget including queue and browser startup; cleanup has an independent bounded deadline."
+				}
+			}
 		case "muxhost status", "muxhost release", "muxhost shutdown":
 			d.Rules = []FlagRule{{ExactlyOne: []string{"--muxhost-id", "--runtime-id", "--browser-session-id"}}}
 		case "muxhost serve", "muxhost ensure":

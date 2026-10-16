@@ -19,12 +19,12 @@ import (
 
 func publicTestEnvironment(t *testing.T) {
 	t.Helper()
-	for _, k := range []string{"HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"} {
+	for _, k := range []string{"HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy", "NO_PROXY", "no_proxy"} {
 		t.Setenv(k, "")
 	}
 }
 func publicTestOptions() PublicNetworkOptions {
-	return PublicNetworkOptions{Timeout: 3 * time.Second, MaxBytes: 1 << 20, MaxRequests: 10}
+	return PublicNetworkOptions{NetworkRoute: DocumentNetworkDirect, Timeout: 3 * time.Second, MaxBytes: 1 << 20, MaxRequests: 10}
 }
 func publicTestGuard(t *testing.T, opts PublicNetworkOptions) *PublicNetworkGuard {
 	t.Helper()
@@ -265,10 +265,12 @@ func TestPublicNetworkBudgets(t *testing.T) {
 		}
 	})
 }
-func TestPublicNetworkRejectsEnvironmentProxy(t *testing.T) {
+func TestPublicNetworkRejectsUnsupportedEnvironmentProxy(t *testing.T) {
 	publicTestEnvironment(t)
-	t.Setenv("HTTPS_PROXY", "http://proxy.test:3128")
-	if g, e := StartPublicNetworkGuard(context.Background(), publicTestOptions()); e == nil {
+	t.Setenv("HTTPS_PROXY", "socks5://proxy.test:3128")
+	opts := publicTestOptions()
+	opts.NetworkRoute = DocumentNetworkSystem
+	if g, e := StartPublicNetworkGuard(context.Background(), opts); e == nil {
 		g.Close()
 		t.Fatal("silently bypassed upstream proxy")
 	}
@@ -796,6 +798,7 @@ func TestPublicNetworkUnexpectedProxyServerFailureIsFatal(t *testing.T) {
 func TestPublicNetworkLocalErrorMarkerCannotBeForgedByOrigin(t *testing.T) {
 	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set(PublicNetworkErrorHeader, "1")
+		w.Header().Set(PublicNetworkErrorKindHeader, "policy")
 		fmt.Fprint(w, "real origin")
 	}))
 	defer origin.Close()
@@ -836,6 +839,9 @@ func TestPublicNetworkLocalErrorMarkerCannotBeForgedByOrigin(t *testing.T) {
 	}
 	if marker := normal.Header.Get(PublicNetworkErrorHeader); marker != "" {
 		t.Fatalf("origin forged local proxy error marker: %q", marker)
+	}
+	if kind := normal.Header.Get(PublicNetworkErrorKindHeader); kind != "" {
+		t.Fatalf("origin forged local proxy error provenance: %q", kind)
 	}
 	if dials.Load() != 1 {
 		t.Fatalf("origin dial count = %d", dials.Load())

@@ -2,6 +2,14 @@
 
 The runtime uses one typed Action kernel, one canonical observation contract and one typed journey runner. Historical evidence/reports are preserved. Installing a built binary is an explicit delivery action; external callers migrate using this contract.
 
+In 0.16.0-v2, `document` keeps headless as its default and adds explicit headed
+rendering through a windowless hidden target. The default network route becomes
+`system`, using supported trusted proxy configuration after numeric public-IP
+pinning; `--network-route direct` is explicit. Success adds `rendering` and routing
+facts; default `policy.profile=ephemeral-headless` is preserved. Ordinary failures
+add `dw.document.failure.v1` diagnostics with `usable:false`, never partial DOM.
+Pure unsupported-format rerouting remains unchanged. See [document](document.md).
+
 In 0.15.0-v2, select requires exactly one explicit selector: `--label` for the
 full captured label, or `--value` for the exact DOM value. The old automatic
 value/label/prefix matcher is removed; duplicate matches reject before input.

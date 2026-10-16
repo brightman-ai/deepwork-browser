@@ -519,7 +519,20 @@ func NewBrowserCore(ctx context.Context, profileID string, optFns ...BrowserOpti
 	}
 
 	allocCtx, allocCancel := chromedp.NewRemoteAllocator(ctx, launch.wsURL)
-	browserCtx, browserCancel := chromedp.NewContext(allocCtx, chromedp.WithErrorf(chromedpErrorf))
+	var browserCtx context.Context
+	var browserCancel context.CancelFunc
+	if bopts.documentProxy != "" && runtimeMode == ModeHeaded {
+		browserCtx, browserCancel, err = newDocumentHiddenBrowserContext(allocCtx, launch.wsURL)
+		if err != nil {
+			allocCancel()
+			return nil, errors.Join(err, cleanupControlledBrowserCoreLaunch(launch, profilePath, ownerKey))
+		}
+		if bopts.documentOwner != nil {
+			bopts.documentOwner.targetReady.Store(true)
+		}
+	} else {
+		browserCtx, browserCancel = chromedp.NewContext(allocCtx, chromedp.WithErrorf(chromedpErrorf))
+	}
 	cleanupLaunch := func() error {
 		browserCancel()
 		allocCancel()
@@ -534,6 +547,9 @@ func NewBrowserCore(ctx context.Context, profileID string, optFns ...BrowserOpti
 			return nil, errors.Join(fmt.Errorf("%w: CDP connection failed: %v; %s", ErrCDPDisconnected, err, diagnostic), cleanupErr)
 		}
 		return nil, errors.Join(fmt.Errorf("%w: CDP connection failed: %v", ErrCDPDisconnected, err), cleanupLaunch())
+	}
+	if bopts.documentOwner != nil {
+		bopts.documentOwner.targetReady.Store(true)
 	}
 
 	if defaultPreset != nil {
@@ -564,6 +580,10 @@ func NewBrowserCore(ctx context.Context, profileID string, optFns ...BrowserOpti
 	takeoverCtrl := newTakeoverController(browserCtx)
 
 	tracker := NewTargetTracker(browserCtx)
+	if bopts.documentProxy != "" {
+		tracker.SetNoFrontMode(true)
+		tracker.SetForegroundGuard(func(_ target.ID, _ string) error { return errors.New("document target activation is forbidden") })
+	}
 	if launch.virtualDisplay != nil && launch.chromePID > 0 {
 		virtualDisplay := launch.virtualDisplay
 		chromePID := launch.chromePID
@@ -666,11 +686,15 @@ type controlledBrowserCoreLaunchResult struct {
 }
 
 func launchControlledBrowserCoreChrome(ctx context.Context, opts controlledBrowserCoreLaunchOptions) (*controlledBrowserCoreLaunchResult, error) {
-	if opts.documentProxy != "" && opts.mode != ModeHeadless {
-		return nil, errors.New("document browser requires headless mode")
-	}
 	mode := opts.mode
 	mode = NormalizeBrowserMode(mode, ModeHeadless)
+	if opts.documentProxy != "" {
+		var err error
+		mode, err = normalizeDocumentMode(opts.mode)
+		if err != nil {
+			return nil, err
+		}
+	}
 
 	width, height := opts.width, opts.height
 	if width <= 0 {
@@ -687,6 +711,11 @@ func launchControlledBrowserCoreChrome(ctx context.Context, opts controlledBrows
 	switch mode {
 	case ModeHeadless:
 	case ModeHeaded:
+		if opts.documentProxy != "" {
+			// Document uses a hidden WebContents without any native window.
+			// Existing interactive headed browsers retain their display path.
+			break
+		}
 		switch runtime.GOOS {
 		case "linux":
 			dm := &DisplayManager{}
@@ -723,7 +752,7 @@ func launchControlledBrowserCoreChrome(ctx context.Context, opts controlledBrows
 
 	if opts.documentProxy != "" {
 		var err error
-		launchArgs, err = prepareDocumentLaunch(opts.profilePath, opts.documentProxy, 0, width, height)
+		launchArgs, err = prepareDocumentLaunchMode(opts.profilePath, opts.documentProxy, 0, width, height, mode)
 		if err != nil {
 			return nil, err
 		}

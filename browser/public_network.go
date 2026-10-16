@@ -13,7 +13,6 @@ import (
 	"net/http"
 	"net/netip"
 	"net/url"
-	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -24,16 +23,37 @@ import (
 // PublicNetworkErrorHeader identifies responses synthesized by this proxy. It
 // must be stripped from origin responses so a site cannot forge that signal.
 const PublicNetworkErrorHeader = "X-DW-Proxy-Error"
+const PublicNetworkErrorKindHeader = "X-DW-Proxy-Error-Kind"
 
-func publicProxyError(w http.ResponseWriter, message string, status int) {
+type publicProxyFailureKind string
+
+const (
+	publicProxyPolicyFailure    publicProxyFailureKind = "policy"
+	publicProxyTransportFailure publicProxyFailureKind = "transport"
+)
+
+func publicProxyError(w http.ResponseWriter, message string, status int, kind publicProxyFailureKind) {
 	w.Header().Set(PublicNetworkErrorHeader, "1")
+	w.Header().Set(PublicNetworkErrorKindHeader, string(kind))
 	http.Error(w, message, status)
 }
 
+func (g *PublicNetworkGuard) proxyFailureKind(err error) publicProxyFailureKind {
+	var denied *publicDestinationError
+	if errors.As(err, &denied) || g.PolicyError() != nil {
+		return publicProxyPolicyFailure
+	}
+	return publicProxyTransportFailure
+}
+
 type PublicNetworkOptions struct {
-	Timeout     time.Duration
-	MaxBytes    int64
-	MaxRequests int64
+	// The low-level guard defaults to direct. FetchDocument explicitly selects
+	// its normalized system/default route; fixture callers choose direct.
+	NetworkRoute  DocumentNetworkRoute
+	routeSnapshot *documentRouteSnapshot
+	Timeout       time.Duration
+	MaxBytes      int64
+	MaxRequests   int64
 	// AllowedPorts overrides the default TCP ports 80 and 443.
 	AllowedPorts []uint16
 	// Private resolver/dial seams are for deterministic unit tests.
@@ -55,6 +75,7 @@ type PublicNetworkStats struct {
 	Bytes          int64
 }
 type PublicNetworkGuard struct {
+	route          *documentRouteSnapshot
 	handlers       sync.WaitGroup
 	closing        bool
 	ctx            context.Context
@@ -177,9 +198,16 @@ func ValidatePublicDocumentURL(raw string, allowedPorts []uint16) (*url.URL, err
 	return u, nil
 }
 func StartPublicNetworkGuard(parent context.Context, opts PublicNetworkOptions) (*PublicNetworkGuard, error) {
-	for _, key := range []string{"HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"} {
-		if os.Getenv(key) != "" {
-			return nil, fmt.Errorf("public document network guard does not support upstream proxy environment %s", key)
+	route := opts.routeSnapshot
+	if route == nil {
+		selected := opts.NetworkRoute
+		if selected == "" {
+			selected = DocumentNetworkDirect
+		}
+		var err error
+		route, err = resolveDocumentNetworkRoute(selected)
+		if err != nil {
+			return nil, err
 		}
 	}
 	if opts.Timeout <= 0 || opts.MaxBytes <= 0 || opts.MaxRequests <= 0 {
@@ -194,7 +222,7 @@ func StartPublicNetworkGuard(parent context.Context, opts PublicNetworkOptions) 
 		cancel()
 		return nil, err
 	}
-	g := &PublicNetworkGuard{ctx: ctx, cancel: cancel, opts: opts, listener: ln, conns: make(map[*publicTrackedConn]struct{}), serveDone: make(chan struct{}), closeDone: make(chan struct{})}
+	g := &PublicNetworkGuard{route: route, ctx: ctx, cancel: cancel, opts: opts, listener: ln, conns: make(map[*publicTrackedConn]struct{}), serveDone: make(chan struct{}), closeDone: make(chan struct{})}
 	g.transport = &http.Transport{Proxy: nil, DialContext: g.dial, DisableKeepAlives: true, ForceAttemptHTTP2: false, ResponseHeaderTimeout: opts.Timeout, MaxResponseHeaderBytes: 64 << 10}
 	g.server = &http.Server{Handler: g, ReadHeaderTimeout: 5 * time.Second, MaxHeaderBytes: 64 << 10, BaseContext: func(net.Listener) context.Context { return ctx }}
 	go func() {
@@ -298,6 +326,10 @@ func (g *PublicNetworkGuard) countDestinationDenial(err error) {
 }
 
 func (g *PublicNetworkGuard) dial(ctx context.Context, network, address string) (net.Conn, error) {
+	return g.dialScheme(ctx, network, address, "http")
+}
+
+func (g *PublicNetworkGuard) dialScheme(ctx context.Context, network, address, scheme string) (net.Conn, error) {
 	// net/http may detach a dial's request deadline for connection management.
 	// Bind actual resolution/dialing to both the caller and the job lifetime.
 	deadline, _ := g.ctx.Deadline()
@@ -346,7 +378,18 @@ func (g *PublicNetworkGuard) dial(ctx context.Context, network, address string) 
 			return nil, err
 		}
 		attemptCtx, attemptCancel := context.WithTimeout(ctx, time.Until(deadline)/time.Duration(len(ips)-i))
-		conn, err := dial(attemptCtx, "tcp", net.JoinHostPort(ip.Unmap().String(), portS))
+		target := net.JoinHostPort(ip.Unmap().String(), portS)
+		proxyAddress := g.route.httpProxy
+		if scheme == "https" {
+			proxyAddress = g.route.httpsProxy
+		}
+		var conn net.Conn
+		var err error
+		if proxyAddress != "" {
+			conn, err = dialDocumentProxyTunnel(attemptCtx, proxyAddress, target, dial)
+		} else {
+			conn, err = dial(attemptCtx, "tcp", target)
+		}
 		attemptCancel()
 		if err == nil {
 			return conn, nil
@@ -359,7 +402,7 @@ func (g *PublicNetworkGuard) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	g.mu.Lock()
 	if g.closing {
 		g.mu.Unlock()
-		publicProxyError(w, "proxy closed", 503)
+		publicProxyError(w, "proxy closed", 503, publicProxyTransportFailure)
 		return
 	}
 	g.handlers.Add(1)
@@ -367,7 +410,7 @@ func (g *PublicNetworkGuard) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	defer g.handlers.Done()
 	if g.requests.Add(1) > g.opts.MaxRequests {
 		g.fail(errors.New("public network request budget exceeded"))
-		publicProxyError(w, "request budget exceeded", 502)
+		publicProxyError(w, "request budget exceeded", 502, publicProxyPolicyFailure)
 		return
 	}
 	if r.Method == http.MethodConnect {
@@ -380,7 +423,7 @@ func (g *PublicNetworkGuard) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			err = errors.New("HTTPS requires CONNECT")
 		}
 		g.deny()
-		publicProxyError(w, "destination rejected", 403)
+		publicProxyError(w, "destination rejected", 403, publicProxyPolicyFailure)
 		return
 	}
 	req := r.Clone(g.ctx)
@@ -398,12 +441,13 @@ func (g *PublicNetworkGuard) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	resp, err := g.transport.RoundTrip(req)
 	if err != nil {
 		g.countDestinationDenial(err)
-		publicProxyError(w, "upstream rejected", 502)
+		publicProxyError(w, "upstream rejected", 502, g.proxyFailureKind(err))
 		return
 	}
 	defer resp.Body.Close()
 	stripPublicHopHeaders(resp.Header)
 	resp.Header.Del(PublicNetworkErrorHeader)
+	resp.Header.Del(PublicNetworkErrorKindHeader)
 	for k, vs := range resp.Header {
 		for _, v := range vs {
 			w.Header().Add(k, v)
@@ -427,13 +471,13 @@ func stripPublicHopHeaders(h http.Header) {
 func (g *PublicNetworkGuard) connect(w http.ResponseWriter, r *http.Request) {
 	if r.URL.User != nil || r.Host != r.URL.Host {
 		g.deny()
-		publicProxyError(w, "invalid CONNECT", 403)
+		publicProxyError(w, "invalid CONNECT", 403, publicProxyPolicyFailure)
 		return
 	}
-	upstream, err := g.dial(g.ctx, "tcp", r.Host)
+	upstream, err := g.dialScheme(g.ctx, "tcp", r.Host, "https")
 	if err != nil {
 		g.countDestinationDenial(err)
-		publicProxyError(w, "destination rejected", 403)
+		publicProxyError(w, "destination rejected", 403, g.proxyFailureKind(err))
 		return
 	}
 	defer upstream.Close()

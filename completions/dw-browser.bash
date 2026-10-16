@@ -57,7 +57,7 @@ _dw_browser_v2() {
  'completion') choices='--output --lock-wait --verbose ';;
  'cookie-import') choices='--id --browser --domain --output --lock-wait --verbose ';;
  'diff') choices='--output --lock-wait --verbose ';;
- 'document') choices='--timeout --max-html-bytes --max-network-bytes --output --lock-wait --verbose ';;
+ 'document') choices='--timeout --max-html-bytes --max-network-bytes --network-route --mode --output --lock-wait --verbose ';;
  'eval') choices='--id --output --lock-wait --verbose ';;
  'export-contract') choices='--directory --output --lock-wait --verbose ';;
  'gc') choices='--older-than --dry-run --all --output --lock-wait --verbose ';;

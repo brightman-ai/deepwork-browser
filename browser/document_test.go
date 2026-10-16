@@ -14,18 +14,20 @@ func TestDocumentRequestDefaultsAndValidation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if r.Timeout != 30*time.Second || r.MaxHTMLBytes != 8<<20 || r.MaxNetworkBytes != 32<<20 {
+	if r.Mode != ModeHeadless || r.NetworkRoute != DocumentNetworkSystem || r.Timeout != 30*time.Second || r.MaxHTMLBytes != 8<<20 || r.MaxNetworkBytes != 32<<20 {
 		t.Fatalf("wrong defaults: %+v", r)
 	}
 	for _, input := range []DocumentRequest{
 		{URL: "file:///etc/passwd"}, {URL: "http://127.0.0.1/"}, {URL: "https://[::1]/"}, {URL: "https://user:secret@example.com/"}, {URL: "https://example.com:9222/"},
 		{URL: "https://example.com/", Timeout: -time.Second}, {URL: "https://example.com/", MaxHTMLBytes: -1}, {URL: "https://example.com/", MaxNetworkBytes: -1},
+		{URL: "https://example.com/", NetworkRoute: "proxy-url"},
+		{URL: "https://example.com/", Mode: ModeVisible}, {URL: "https://example.com/", Mode: "unknown"},
 	} {
 		if _, err := normalizeDocumentRequest(input); err == nil {
 			t.Errorf("accepted invalid request %+v", input)
 		}
 	}
-	custom := DocumentRequest{URL: "https://example.com/", Timeout: time.Second, MaxHTMLBytes: 128, MaxNetworkBytes: 1024}
+	custom := DocumentRequest{Mode: ModeHeaded, NetworkRoute: DocumentNetworkDirect, URL: "https://example.com/", Timeout: time.Second, MaxHTMLBytes: 128, MaxNetworkBytes: 1024}
 	got, err := normalizeDocumentRequest(custom)
 	if err != nil || got != custom {
 		t.Fatalf("custom budgets lost: %+v %v", got, err)
@@ -85,7 +87,7 @@ func TestDocumentJSONContract(t *testing.T) {
 	if err := json.Unmarshal(b, &got); err != nil {
 		t.Fatal(err)
 	}
-	for _, key := range []string{"schema", "requested_url", "url", "content_type", "readiness", "content", "representation", "policy", "cleanup"} {
+	for _, key := range []string{"schema", "requested_url", "url", "content_type", "readiness", "content", "representation", "policy", "cleanup", "rendering"} {
 		if _, ok := got[key]; !ok {
 			t.Errorf("missing %s in %s", key, b)
 		}
@@ -141,3 +143,40 @@ func TestUnsupportedReceiptRequiresPureOutcomeAndAllCleanup(t *testing.T) {
 		})
 	}
 }
+
+func TestDocumentReadErrorDistinguishesDeadlineCancellationAndPolicy(t *testing.T) {
+	for _, tc := range []struct {
+		name               string
+		parentErr, readErr error
+		want               string
+	}{
+		{"parent deadline", context.DeadlineExceeded, context.Canceled, "document deadline"},
+		{"child deadline first", nil, context.DeadlineExceeded, "document deadline"},
+		{"caller cancellation", context.Canceled, context.Canceled, "document canceled"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			if tc.parentErr != nil {
+				ctx = documentTestErrorContext{Context: ctx, err: tc.parentErr}
+			}
+			guard := &PublicNetworkGuard{ctx: ctx}
+			got := documentReadError(ctx, guard, tc.readErr)
+			if !strings.Contains(got.Error(), tc.want) || strings.Contains(got.Error(), "network policy") || !errors.Is(got, tc.readErr) && !errors.Is(got, tc.parentErr) {
+				t.Fatalf("wrong acquisition classification: %v", got)
+			}
+		})
+	}
+	ctx := documentTestErrorContext{Context: context.Background(), err: context.DeadlineExceeded}
+	enforced := errors.New("network byte budget")
+	got := documentReadError(ctx, &PublicNetworkGuard{ctx: ctx, err: enforced}, context.Canceled)
+	if !strings.Contains(got.Error(), "network policy") || !errors.Is(got, enforced) {
+		t.Fatalf("lost enforcement: %v", got)
+	}
+}
+
+type documentTestErrorContext struct {
+	context.Context
+	err error
+}
+
+func (c documentTestErrorContext) Err() error { return c.err }

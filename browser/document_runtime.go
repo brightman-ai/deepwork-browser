@@ -26,15 +26,17 @@ import (
 )
 
 type documentLaunchOwner struct {
-	pid    atomic.Int64
-	handle atomic.Pointer[chromeHandleImpl]
+	pid         atomic.Int64
+	handle      atomic.Pointer[chromeHandleImpl]
+	targetReady atomic.Bool
 }
 
 type documentRuntimePolicy struct {
-	mu          sync.Mutex
-	err         error
-	blocked     int64
-	contentType string
+	mu           sync.Mutex
+	err          error
+	transportErr error
+	blocked      int64
+	contentType  string
 }
 
 func (p *documentRuntimePolicy) fail(err error) {
@@ -45,6 +47,38 @@ func (p *documentRuntimePolicy) fail(err error) {
 	}
 }
 func (p *documentRuntimePolicy) Err() error { p.mu.Lock(); defer p.mu.Unlock(); return p.err }
+
+// Only main-frame HTTP response metadata enters here. The guard strips both
+// headers from origin responses; HTTPS origins cannot authenticate this marker.
+func (p *documentRuntimePolicy) observeGuardFailure(rawURL string, headers map[string]any) bool {
+	if !strings.HasPrefix(rawURL, "http://") {
+		return false
+	}
+	var marker, kind string
+	for key, value := range headers {
+		if strings.EqualFold(key, PublicNetworkErrorHeader) {
+			marker, _ = value.(string)
+		}
+		if strings.EqualFold(key, PublicNetworkErrorKindHeader) {
+			kind, _ = value.(string)
+		}
+	}
+	if marker == "" && kind == "" {
+		return false
+	}
+	if marker == "1" && kind == string(publicProxyTransportFailure) {
+		p.mu.Lock()
+		if p.transportErr == nil {
+			p.transportErr = errors.New("main document transport failed through network guard")
+		}
+		p.mu.Unlock()
+	} else {
+		// Policy denial or malformed internal provenance must never become a
+		// successful document or grant unsupported-content rerouting.
+		p.fail(errors.New("main document rejected by network guard"))
+	}
+	return true
+}
 func documentLaunchContext(ctx context.Context, proxy string) context.Context {
 	if proxy == "" {
 		return nil
@@ -53,6 +87,14 @@ func documentLaunchContext(ctx context.Context, proxy string) context.Context {
 }
 
 func prepareDocumentLaunch(profilePath, proxyURL string, debugPort, width, height int) ([]string, error) {
+	return prepareDocumentLaunchMode(profilePath, proxyURL, debugPort, width, height, ModeHeadless)
+}
+
+func prepareDocumentLaunchMode(profilePath, proxyURL string, debugPort, width, height int, mode BrowserMode) ([]string, error) {
+	mode, err := normalizeDocumentMode(mode)
+	if err != nil {
+		return nil, err
+	}
 	u, err := url.Parse(proxyURL)
 	if err != nil || u.Scheme != "http" || u.Hostname() != "127.0.0.1" || u.User != nil || u.Path != "" || u.RawQuery != "" || u.Fragment != "" {
 		return nil, errors.New("document requires a dedicated loopback HTTP proxy")
@@ -79,13 +121,20 @@ func prepareDocumentLaunch(profilePath, proxyURL string, debugPort, width, heigh
 	// not inherit legacy stealth, proxy environment, popup or sandbox flags.
 	args := []string{
 		"--remote-debugging-port=0", "--remote-debugging-address=127.0.0.1", "--user-data-dir=" + profilePath,
-		"--headless=new", "--enable-automation", "--no-first-run", "--no-default-browser-check", "--disable-session-crashed-bubble",
+		"--enable-automation", "--no-first-run", "--no-default-browser-check", "--disable-session-crashed-bubble",
 		fmt.Sprintf("--window-size=%d,%d", width, height), "--proxy-server=" + proxyURL, "--proxy-bypass-list=<-loopback>",
 		"--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1", "--disable-quic",
-		"--disable-background-networking", "--disable-background-mode", "--disable-domain-reliability", "--disable-search-engine-choice-screen", "--disable-component-update", "--disable-default-apps", "--disable-sync", "--disable-extensions", "--disable-breakpad", "--disable-crash-reporter", "--noerrdialogs",
+		"--disable-background-networking", "--disable-background-mode", "--disable-domain-reliability", "--disable-search-engine-choice-screen", "--disable-component-update", "--disable-updater-scheduler", "--disable-default-apps", "--disable-sync", "--disable-extensions", "--disable-breakpad", "--disable-crash-reporter", "--noerrdialogs",
 		"--mute-audio", "--autoplay-policy=user-gesture-required", "--block-new-web-contents", "--deny-permission-prompts",
 		"--blink-settings=imagesEnabled=false", "--disable-features=MediaRouter,OptimizationHints,AutofillServerCommunication,CertificateTransparencyComponentUpdater",
-		"--password-store=basic", "--use-mock-keychain", ChromeInitialPageURL,
+		"--password-store=basic", "--use-mock-keychain",
+	}
+	if mode == ModeHeaded {
+		// No initial URL or ordinary target: neither startup nor bootstrap may
+		// create a browser window. Hidden-target support must fail closed.
+		args = append(args, "--no-startup-window")
+	} else {
+		args = append(args, "--headless=new", ChromeInitialPageURL)
 	}
 	return args, nil
 }
@@ -124,6 +173,9 @@ func (impl *browserCoreImpl) configureDocumentRuntime() error {
 				return
 			}
 			contentType := response.Response.MimeType
+			if policy.observeGuardFailure(response.Response.URL, response.Response.Headers) {
+				return
+			}
 			var observed []string
 			for key, value := range response.Response.Headers {
 				if strings.EqualFold(key, "Content-Type") {
@@ -133,10 +185,6 @@ func (impl *browserCoreImpl) configureDocumentRuntime() error {
 						return
 					}
 					observed = append(observed, header)
-				}
-				if strings.HasPrefix(response.Response.URL, "http://") && strings.EqualFold(key, PublicNetworkErrorHeader) {
-					policy.fail(errors.New("main document rejected by network guard"))
-					return
 				}
 			}
 			if len(observed) > 0 {
@@ -220,6 +268,15 @@ func (impl *browserCoreImpl) closeDocumentRuntime(ctx context.Context) error {
 func documentCorePolicyError(core BrowserCore) error {
 	if impl, ok := core.(*browserCoreImpl); ok && impl.documentRuntime != nil {
 		return impl.documentRuntime.Err()
+	}
+	return nil
+}
+
+func documentCoreTransportError(core BrowserCore) error {
+	if impl, ok := core.(*browserCoreImpl); ok && impl.documentRuntime != nil {
+		impl.documentRuntime.mu.Lock()
+		defer impl.documentRuntime.mu.Unlock()
+		return impl.documentRuntime.transportErr
 	}
 	return nil
 }

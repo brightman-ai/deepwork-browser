@@ -53,3 +53,26 @@ func TestDocumentLaunchEnforcesPolicy(t *testing.T) {
 		t.Fatalf("profile exposed mode %v", info.Mode())
 	}
 }
+
+func TestDocumentLaunchDisablesUpdaterSchedulerInBothModes(t *testing.T) {
+	for _, mode := range []BrowserMode{ModeHeadless, ModeHeaded} {
+		t.Run(string(mode), func(t *testing.T) {
+			args, err := prepareDocumentLaunchMode(t.TempDir(), "http://127.0.0.1:32123", 0, 1024, 768, mode)
+			if err != nil {
+				t.Fatal(err)
+			}
+			found := false
+			for _, arg := range args {
+				if arg == "--disable-updater-scheduler" {
+					found = true
+				}
+				if arg == "--no-sandbox" || arg == "--disable-web-security" {
+					t.Fatalf("document launch relaxed security: %s", arg)
+				}
+			}
+			if !found {
+				t.Fatal("document job may start the browser's delayed global updater scheduler")
+			}
+		})
+	}
+}
