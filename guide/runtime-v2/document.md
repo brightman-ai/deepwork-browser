@@ -13,8 +13,7 @@ dw-browser document https://example.com/ --timeout 30s \
 The Go entry point is
 `browser.FetchDocument(ctx, browser.DocumentRequest{URL: "https://example.com/"})`.
 It is the same kernel used by the CLI. No caller JavaScript, selector, user
-profile, session ID, headed mode, cookie import or host permission grant is
-accepted. There is no second DOM-export command or arbitrary-eval escape hatch.
+profile, session ID, cookie import or host permission grant is accepted. There is no second DOM-export command or arbitrary-eval escape hatch.
 
 ## Result contract
 
