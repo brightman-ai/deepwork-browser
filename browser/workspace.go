@@ -22,14 +22,20 @@
 // [Ref: DDC-I-11, DDC-I-21, BRR-12, BRR-MODE-1]
 package browser
 
-import "time"
+import (
+	"context"
+	"time"
+)
 
 // ChromeLaunchSpec — input to Workspace.LaunchChromeInSpace.
 type ChromeLaunchSpec struct {
-	ChromePath   string        // absolute path to chrome binary
-	Args         []string      // full Chrome args (must include --remote-debugging-port=N)
-	DebugPort    int           // must match --remote-debugging-port in Args
-	ReadyTimeout time.Duration // CDP ready timeout (default 30s if zero)
+	documentOwner *documentLaunchOwner
+	LaunchContext context.Context // optional owned-launch cancellation/deadline
+	documentRead  bool            // owned native document launch, with zero-port identity binding
+	ChromePath    string          // absolute path to chrome binary
+	Args          []string        // full Chrome args (must include --remote-debugging-port=N)
+	DebugPort     int             // must match --remote-debugging-port in Args
+	ReadyTimeout  time.Duration   // CDP ready timeout (default 30s if zero)
 }
 
 // ChromeHandle owns a Chrome process spawned via Workspace.LaunchChromeInSpace.

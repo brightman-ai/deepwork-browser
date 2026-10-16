@@ -16,8 +16,11 @@ package browser
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"fmt"
 	"log"
+	"os"
 	"os/exec"
 	"sync"
 	"time"
@@ -30,7 +33,9 @@ type chromeHandleImpl struct {
 	wsURL    string
 	doneCh   chan struct{}
 	waitErr  error
+	stderr   *bytes.Buffer
 	killOnce sync.Once
+	killErr  error
 	// regToken is the on-disk ownership note (chrome_registry.go). Dropped on
 	// Kill; left behind on an unclean death so the next dw-browser process can
 	// finish the kill this one never got to run.
@@ -59,23 +64,32 @@ func (h *chromeHandleImpl) Wait() error {
 // set at fork by ApplyOwnedChromeProcAttr / ApplyDetachedProcAttr, so
 // kill(-pgid) is the one signal that reaches all of them.
 func (h *chromeHandleImpl) Kill() error {
-	var killErr error
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	return h.killWithContext(ctx)
+}
+func (h *chromeHandleImpl) signalKill() {
 	h.killOnce.Do(func() {
 		if h.cmd != nil && h.cmd.Process != nil {
-			killErr = h.cmd.Process.Kill()
+			h.killErr = h.cmd.Process.Kill()
+			if errors.Is(h.killErr, os.ErrProcessDone) {
+				h.killErr = nil
+			}
 			KillChromeProcessGroupID(h.pgid)
 		}
-		UnregisterChromeProcess(h.regToken)
 	})
+}
+func (h *chromeHandleImpl) killWithContext(ctx context.Context) error {
+	h.signalKill()
 	select {
 	case <-h.doneCh:
-	case <-time.After(5 * time.Second):
-		if killErr != nil {
-			return fmt.Errorf("workspace: kill chrome pid=%d timed out waiting for exit: %w", h.pid, killErr)
+	case <-ctx.Done():
+		if h.killErr != nil {
+			return fmt.Errorf("workspace: kill chrome pid=%d timed out waiting for exit: %w", h.pid, h.killErr)
 		}
 		return fmt.Errorf("workspace: kill chrome pid=%d timed out waiting for exit", h.pid)
 	}
-	return killErr
+	return h.killErr
 }
 
 // startChromeProcess forks Chrome as a detached process, waits for CDP ready,
@@ -104,7 +118,7 @@ func startChromeProcessWithOwnership(spec ChromeLaunchSpec, detached bool) (*chr
 	if spec.ChromePath == "" {
 		return nil, fmt.Errorf("workspace: empty chrome path")
 	}
-	if spec.DebugPort <= 0 {
+	if spec.DebugPort <= 0 && !(spec.DebugPort == 0 && spec.documentRead) {
 		return nil, fmt.Errorf("workspace: invalid debug port %d", spec.DebugPort)
 	}
 	timeout := spec.ReadyTimeout
@@ -112,7 +126,14 @@ func startChromeProcessWithOwnership(spec ChromeLaunchSpec, detached bool) (*chr
 		timeout = 30 * time.Second
 	}
 
-	EnsureChromeRegistryReaped()
+	if spec.LaunchContext != nil {
+		if err := spec.LaunchContext.Err(); err != nil {
+			return nil, err
+		}
+	}
+	if !spec.documentRead {
+		EnsureChromeRegistryReaped()
+	}
 	cmd := exec.Command(spec.ChromePath, spec.Args...)
 	if detached {
 		// Detached process group — Chrome survives parent exit (dw-browser CLI
@@ -140,6 +161,9 @@ func startChromeProcessWithOwnership(spec ChromeLaunchSpec, detached bool) (*chr
 			spec.DebugPort, detached, time.Since(forkStartedAt).Milliseconds(), err)
 		return nil, fmt.Errorf("workspace: start chrome: %w", err)
 	}
+	if spec.documentOwner != nil {
+		spec.documentOwner.pid.Store(int64(cmd.Process.Pid))
+	}
 	log.Printf("[CHROME-LAUNCH] process_started pid=%d debug_port=%d detached=%t fork_elapsed_ms=%d",
 		cmd.Process.Pid, spec.DebugPort, detached, time.Since(forkStartedAt).Milliseconds())
 
@@ -148,6 +172,10 @@ func startChromeProcessWithOwnership(spec ChromeLaunchSpec, detached bool) (*chr
 		pid:    cmd.Process.Pid,
 		pgid:   ChromeProcessGroupID(cmd.Process.Pid),
 		doneCh: make(chan struct{}),
+		stderr: &stderrBuf,
+	}
+	if spec.documentOwner != nil {
+		spec.documentOwner.handle.Store(h)
 	}
 	// Register before waiting for CDP readiness — a launch that times out is
 	// precisely the case where nobody is left holding this pid.
@@ -177,16 +205,36 @@ func startChromeProcessWithOwnership(spec ChromeLaunchSpec, detached bool) (*chr
 	}()
 
 	readyStartedAt := time.Now()
-	wsURL, err := WaitForChromeReady(spec.DebugPort, timeout)
+	var wsURL string
+	var err error
+	if spec.LaunchContext != nil {
+		go func() {
+			select {
+			case <-spec.LaunchContext.Done():
+				_ = h.Kill()
+			case <-h.doneCh:
+			}
+		}()
+		readyCtx, cancelReady := context.WithTimeout(spec.LaunchContext, timeout)
+		wsURL, err = waitDocumentChromeReady(readyCtx, ChromeProfileDirFromArgs(spec.Args), h.doneCh)
+		cancelReady()
+	} else {
+		wsURL, err = WaitForChromeReady(spec.DebugPort, timeout)
+	}
 	if err != nil {
-		_ = h.Kill()
-		stderr := stderrBuf.String()
+		var cleanupErr error
+		if spec.documentRead {
+			h.signalKill()
+		} else {
+			cleanupErr = h.Kill()
+		}
+		stderr := documentChromeExitDiagnostics(h)
 		if len(stderr) > 200 {
 			stderr = stderr[:200]
 		}
 		log.Printf("[CHROME-LAUNCH] ready_failed pid=%d debug_port=%d ready_elapsed_ms=%d total_elapsed_ms=%d err=%v",
 			h.pid, spec.DebugPort, time.Since(readyStartedAt).Milliseconds(), time.Since(totalStartedAt).Milliseconds(), err)
-		return nil, fmt.Errorf("workspace: CDP not ready on port %d: %w (chrome stderr: %s)", spec.DebugPort, err, stderr)
+		return nil, errors.Join(fmt.Errorf("workspace: CDP not ready on port %d: %w (chrome stderr: %s)", spec.DebugPort, err, stderr), cleanupErr)
 	}
 	h.wsURL = wsURL
 	log.Printf("[CHROME-LAUNCH] ready pid=%d debug_port=%d ready_elapsed_ms=%d total_elapsed_ms=%d",

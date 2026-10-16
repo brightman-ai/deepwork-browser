@@ -86,7 +86,8 @@ func commandDefinitions() []CommandDefinition {
 	add("help", "Show the same executable command contract", runHelpResult, nil, nil, 0, 2, true)
 	add("open", "Create one session; duplicate IDs are rejected", runOpenResult, append(creationFlags(), flags("id", "")...), []string{"--scenario", "--id"}, 1, 1, false)
 	add("close", "Close only the named session", runCloseResult, id(flags("", "force")), []string{"--id"}, 0, 0, false)
-	add("once", "Create, observe and close a short-lived reading session", runOnceResult, append(creationFlags(), flags("screenshot content", "health tree all annotate")...), []string{"--scenario"}, 1, 1, false)
+	add("once", "Capture one canonical UI observation in an owned short-lived session", runOnceResult, append(creationFlags(), flags("screenshot content", "health tree all annotate")...), []string{"--scenario"}, 1, 1, false)
+	add("document", "Read public URL DOM in an isolated disposable headless browser; no screenshot or session", runDocumentResult, flags("timeout max-html-bytes max-network-bytes", ""), nil, 1, 1, false)
 	add("observe", "Capture a canonical observation and actual screenshot", runObserveResult, id(flags("screenshot content scope top budget", "health tree all hit-audit annotate")), []string{"--id"}, 0, 0, false)
 	add("check", "Judge required assertions against one canonical observation", runCheckResult, flags("id observation assert file using vision-url vision-provider vision-model vision-api-key", ""), nil, 0, 0, false)
 	add("diff", "Compare two canonical observations", runDiffResult, nil, nil, 2, 2, true)
@@ -381,7 +382,7 @@ func flagValueType(name string) string {
 	switch name {
 	case "id":
 		return "session-id"
-	case "top", "budget", "count", "steps", "threshold", "width", "height", "owner-pid", "debug-port":
+	case "top", "budget", "count", "steps", "threshold", "width", "height", "owner-pid", "debug-port", "max-html-bytes", "max-network-bytes":
 		return "integer"
 	case "x", "y", "end-x", "end-y", "delta-x", "delta-y":
 		return "number"
@@ -395,16 +396,27 @@ func flagValueType(name string) string {
 }
 
 func parseDeclaredOptions(args []string, command string) (map[string]string, error) {
+	options, _, err := parseDeclaredArguments(args, command)
+	return options, err
+}
+
+func parseDeclaredArguments(args []string, command string) (map[string]string, []string, error) {
 	d, _, err := lookupCommand(strings.Fields(command))
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if err = validateCommandArgs(d, args); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	values := map[string]string{}
+	var positional []string
 	for i := 0; i < len(args); i++ {
+		if args[i] == "--" {
+			positional = append(positional, args[i+1:]...)
+			break
+		}
 		if !strings.HasPrefix(args[i], "--") {
+			positional = append(positional, args[i])
 			continue
 		}
 		name, value, inline := strings.Cut(args[i], "=")
@@ -421,7 +433,7 @@ func parseDeclaredOptions(args []string, command string) (map[string]string, err
 			}
 		}
 	}
-	return values, nil
+	return values, positional, nil
 }
 
 func flagValues(name string) []string {

@@ -18,8 +18,8 @@ var sharedVDM *VirtualDisplayManager
 
 func TestMain(m *testing.M) {
 	sharedVDM = &VirtualDisplayManager{}
-	// Ignore errors — individual tests call sharedVDM.Ensure() and skip if nil.
-	_ = sharedVDM.Ensure()
+	// Only display-specific tests call requireDisplay/Ensure. Unit and headless
+	// runs must not create a display or reconfigure WindowServer in TestMain.
 
 	code := m.Run()
 

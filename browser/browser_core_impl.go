@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -42,21 +43,27 @@ var errScreenshotTimeout = errors.New("browser: screenshot timed out")
 
 // browserOptions 存储可选浏览器配置。
 type browserOptions struct {
-	viewportW   int
-	viewportH   int
-	userAgent   string
-	presetID    string
-	touch       bool
-	mode        BrowserMode // "human" / "headless"
-	stealth     bool
-	hasViewport bool
-	hasUA       bool
-	hasMode     bool
-	persona     *Persona // 可选:携带 Shell/Network/Env facet,运行时经 applyPersonaEmulation realize
+	documentProxy string
+	documentOwner *documentLaunchOwner
+	viewportW     int
+	viewportH     int
+	userAgent     string
+	presetID      string
+	touch         bool
+	mode          BrowserMode // "human" / "headless"
+	stealth       bool
+	hasViewport   bool
+	hasUA         bool
+	hasMode       bool
+	persona       *Persona // 可选:携带 Shell/Network/Env facet,运行时经 applyPersonaEmulation realize
 }
 
 // BrowserOption 是可选参数函数类型。
 type BrowserOption func(*browserOptions)
+
+func withDocumentNetwork(proxyURL string, owner *documentLaunchOwner) BrowserOption {
+	return func(o *browserOptions) { o.documentProxy = proxyURL; o.documentOwner = owner }
+}
 
 // WithViewport 设置视口大小。
 func WithViewport(w, h int) BrowserOption {
@@ -320,6 +327,7 @@ const cursorDetectScript = `
 // browserCoreImpl 实现 BrowserCore 接口。
 // 组合 SnapshotEngine + ActionEngine + LiveViewEngine + TakeoverController。
 type browserCoreImpl struct {
+	documentRuntime    *documentRuntimePolicy
 	mu                 sync.RWMutex
 	allocCtx           context.Context
 	allocCancel        context.CancelFunc
@@ -437,6 +445,9 @@ func (impl *browserCoreImpl) liveTopURL(ctx context.Context) string {
 // 先用 BuildDetachedChromeArgs fork 本机 Chrome，再通过 RemoteAllocator attach，
 // 避免 CLI/测试入口绕过 CGVirtualDisplay/Workspace。
 func NewBrowserCore(ctx context.Context, profileID string, optFns ...BrowserOption) (BrowserCore, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	launcher := NewChromeLauncher()
 	supervisor := NewChromeSupervisor()
 
@@ -476,27 +487,32 @@ func NewBrowserCore(ctx context.Context, profileID string, optFns ...BrowserOpti
 	}
 
 	fingerprintPresetID := inferFingerprintPresetID(*bopts)
-	defaultPreset := ResolveRuntimeFingerprintPreset(fingerprintPresetID, chromePath)
-	if defaultPreset == nil {
+	var defaultPreset *FingerprintPreset
+	if bopts.documentProxy == "" {
+		defaultPreset = ResolveRuntimeFingerprintPreset(fingerprintPresetID, chromePath)
+	}
+	if defaultPreset == nil && bopts.documentProxy == "" {
 		defaultPreset = BuiltinPresets[fingerprintPresetID]
 	}
-	if defaultPreset == nil {
+	if defaultPreset == nil && bopts.documentProxy == "" {
 		return nil, fmt.Errorf("browser: unknown preset_id %q", fingerprintPresetID)
 	}
 
 	launch, err := launchControlledBrowserCoreChrome(ctx, controlledBrowserCoreLaunchOptions{
-		chromePath:   chromePath,
-		profilePath:  profilePath,
-		ownerKey:     ownerKey,
-		mode:         runtimeMode,
-		presetID:     fingerprintPresetID,
-		preset:       defaultPreset,
-		width:        width,
-		height:       height,
-		userAgent:    bopts.userAgent,
-		hasUserAgent: bopts.hasUA,
-		touch:        bopts.touch,
-		stealth:      bopts.stealth,
+		chromePath:    chromePath,
+		profilePath:   profilePath,
+		ownerKey:      ownerKey,
+		mode:          runtimeMode,
+		presetID:      fingerprintPresetID,
+		preset:        defaultPreset,
+		width:         width,
+		height:        height,
+		userAgent:     bopts.userAgent,
+		hasUserAgent:  bopts.hasUA,
+		touch:         bopts.touch,
+		stealth:       bopts.stealth,
+		documentProxy: bopts.documentProxy,
+		documentOwner: bopts.documentOwner,
 	})
 	if err != nil {
 		return nil, err
@@ -504,15 +520,20 @@ func NewBrowserCore(ctx context.Context, profileID string, optFns ...BrowserOpti
 
 	allocCtx, allocCancel := chromedp.NewRemoteAllocator(ctx, launch.wsURL)
 	browserCtx, browserCancel := chromedp.NewContext(allocCtx, chromedp.WithErrorf(chromedpErrorf))
-	cleanupLaunch := func() {
+	cleanupLaunch := func() error {
 		browserCancel()
 		allocCancel()
-		cleanupControlledBrowserCoreLaunch(launch, profilePath, ownerKey)
+		return cleanupControlledBrowserCoreLaunch(launch, profilePath, ownerKey)
 	}
 
 	if err := chromedp.Run(browserCtx); err != nil {
-		cleanupLaunch()
-		return nil, fmt.Errorf("%w: CDP connection failed: %v", ErrCDPDisconnected, err)
+		if bopts.documentProxy != "" {
+			handle := launch.chromeHandle
+			cleanupErr := cleanupLaunch()
+			diagnostic := documentChromeExitDiagnostics(handle)
+			return nil, errors.Join(fmt.Errorf("%w: CDP connection failed: %v; %s", ErrCDPDisconnected, err, diagnostic), cleanupErr)
+		}
+		return nil, errors.Join(fmt.Errorf("%w: CDP connection failed: %v", ErrCDPDisconnected, err), cleanupLaunch())
 	}
 
 	if defaultPreset != nil {
@@ -531,7 +552,7 @@ func NewBrowserCore(ctx context.Context, profileID string, optFns ...BrowserOpti
 	}
 
 	// Persona Shell/Network/Env facet realization(与 stealth 姿态正交,两模式都应用)。
-	if bopts.persona != nil {
+	if bopts.persona != nil && bopts.documentProxy == "" {
 		_ = chromedp.Run(browserCtx, chromedp.ActionFunc(func(ctx context.Context) error {
 			return applyPersonaEmulation(ctx, bopts.persona)
 		}))
@@ -595,7 +616,13 @@ func NewBrowserCore(ctx context.Context, profileID string, optFns ...BrowserOpti
 	// 输入派发窗口的第二把锁按浏览器实例键控 —— 两个会话可能坐在同一个浏览器上
 	// (mux-host 多 tab),前台归属必须在一次输入的生命周期内不被抢走。
 	impl.bindRuntimeInputIdentity(impl.wsURL, impl.chromePID)
-	tracker.SetupListeners(browserCtx)
+	if bopts.documentProxy != "" {
+		if err := impl.configureDocumentRuntime(); err != nil {
+			return nil, errors.Join(err, cleanupLaunch())
+		}
+	} else {
+		tracker.SetupListeners(browserCtx)
+	}
 
 	return impl, nil
 }
@@ -612,21 +639,24 @@ func (impl *browserCoreImpl) bindRuntimeInputIdentity(wsURL string, inputPID int
 }
 
 type controlledBrowserCoreLaunchOptions struct {
-	chromePath   string
-	profilePath  string
-	ownerKey     IdentityKey
-	mode         BrowserMode
-	presetID     string
-	preset       *FingerprintPreset
-	width        int
-	height       int
-	userAgent    string
-	hasUserAgent bool
-	touch        bool
-	stealth      bool
+	documentProxy string
+	documentOwner *documentLaunchOwner
+	chromePath    string
+	profilePath   string
+	ownerKey      IdentityKey
+	mode          BrowserMode
+	presetID      string
+	preset        *FingerprintPreset
+	width         int
+	height        int
+	userAgent     string
+	hasUserAgent  bool
+	touch         bool
+	stealth       bool
 }
 
 type controlledBrowserCoreLaunchResult struct {
+	document       bool
 	wsURL          string
 	chromePID      int
 	chromeHandle   ChromeHandle
@@ -636,6 +666,9 @@ type controlledBrowserCoreLaunchResult struct {
 }
 
 func launchControlledBrowserCoreChrome(ctx context.Context, opts controlledBrowserCoreLaunchOptions) (*controlledBrowserCoreLaunchResult, error) {
+	if opts.documentProxy != "" && opts.mode != ModeHeadless {
+		return nil, errors.New("document browser requires headless mode")
+	}
 	mode := opts.mode
 	mode = NormalizeBrowserMode(mode, ModeHeadless)
 
@@ -647,7 +680,7 @@ func launchControlledBrowserCoreChrome(ctx context.Context, opts controlledBrows
 		height = DefaultViewportHeight
 	}
 
-	result := &controlledBrowserCoreLaunchResult{}
+	result := &controlledBrowserCoreLaunchResult{document: opts.documentProxy != ""}
 	var extraArgs []string
 	var virtualX, virtualY int
 
@@ -685,33 +718,33 @@ func launchControlledBrowserCoreChrome(ctx context.Context, opts controlledBrows
 		return nil, fmt.Errorf("browser: unsupported browser mode %q", mode)
 	}
 
-	cdpPort, err := findAvailableCDPPort()
-	if err != nil {
-		cleanupControlledBrowserCoreLaunch(result, opts.profilePath, opts.ownerKey)
-		return nil, fmt.Errorf("browser: allocate CDP port: %w", err)
-	}
+	var cdpPort int
+	var launchArgs []string
 
-	userAgent := ""
-	if opts.hasUserAgent {
-		userAgent = opts.userAgent
-	}
-	launchArgs := BuildDetachedChromeArgs(DetachedChromeLaunchOptions{
-		DebugPort:  cdpPort,
-		ProfileDir: opts.profilePath,
-		Width:      width,
-		Height:     height,
-		PresetID:   opts.presetID,
-		UserAgent:  userAgent,
-		Touch:      opts.touch,
-		Mode:       mode,
-		Stealth:    opts.stealth,
-	})
-	for _, arg := range extraArgs {
-		launchArgs = appendChromeArgBeforeURL(launchArgs, arg)
-	}
-	if proxy, source := resolveBrowserPoolProxy(); proxy != "" {
-		launchArgs = appendChromeArgBeforeURL(launchArgs, "--proxy-server="+proxy)
-		log.Printf("[BROWSER] controlled launch proxy-server=%s (from %s)", proxy, source)
+	if opts.documentProxy != "" {
+		var err error
+		launchArgs, err = prepareDocumentLaunch(opts.profilePath, opts.documentProxy, 0, width, height)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		var err error
+		cdpPort, err = findAvailableCDPPort()
+		if err != nil {
+			return nil, errors.Join(fmt.Errorf("browser: allocate CDP port: %w", err), cleanupControlledBrowserCoreLaunch(result, opts.profilePath, opts.ownerKey))
+		}
+		userAgent := ""
+		if opts.hasUserAgent {
+			userAgent = opts.userAgent
+		}
+		launchArgs = BuildDetachedChromeArgs(DetachedChromeLaunchOptions{DebugPort: cdpPort, ProfileDir: opts.profilePath, Width: width, Height: height, PresetID: opts.presetID, UserAgent: userAgent, Touch: opts.touch, Mode: mode, Stealth: opts.stealth})
+		for _, arg := range extraArgs {
+			launchArgs = appendChromeArgBeforeURL(launchArgs, arg)
+		}
+		if proxy, source := resolveBrowserPoolProxy(); proxy != "" {
+			launchArgs = appendChromeArgBeforeURL(launchArgs, "--proxy-server="+proxy)
+			log.Printf("[BROWSER] controlled launch proxy-server=%s (from %s)", proxy, source)
+		}
 	}
 
 	var handle ChromeHandle
@@ -719,7 +752,7 @@ func launchControlledBrowserCoreChrome(ctx context.Context, opts controlledBrows
 		h, err := result.workspace.LaunchChromeInSpace(ChromeLaunchSpec{
 			ChromePath:   opts.chromePath,
 			Args:         launchArgs,
-			DebugPort:    cdpPort,
+			DebugPort:    documentDebugPort(cdpPort, opts.documentProxy),
 			ReadyTimeout: BrowserMuxHostLaunchReadyTimeout,
 		})
 		if err != nil {
@@ -728,11 +761,18 @@ func launchControlledBrowserCoreChrome(ctx context.Context, opts controlledBrows
 		}
 		handle = h
 	} else {
-		h, err := startChromeProcess(ChromeLaunchSpec{
-			ChromePath:   opts.chromePath,
-			Args:         launchArgs,
-			DebugPort:    cdpPort,
-			ReadyTimeout: BrowserMuxHostLaunchReadyTimeout,
+		launchChrome := startChromeProcess
+		if opts.documentProxy != "" {
+			launchChrome = startChromeProcessOwned
+		}
+		h, err := launchChrome(ChromeLaunchSpec{
+			LaunchContext: documentLaunchContext(ctx, opts.documentProxy),
+			documentRead:  opts.documentProxy != "",
+			documentOwner: opts.documentOwner,
+			ChromePath:    opts.chromePath,
+			Args:          launchArgs,
+			DebugPort:     documentDebugPort(cdpPort, opts.documentProxy),
+			ReadyTimeout:  BrowserMuxHostLaunchReadyTimeout,
 		})
 		if err != nil {
 			cleanupControlledBrowserCoreLaunch(result, opts.profilePath, opts.ownerKey)
@@ -744,9 +784,12 @@ func launchControlledBrowserCoreChrome(ctx context.Context, opts controlledBrows
 	result.chromePID = handle.PID()
 	result.wsURL = handle.WSURL()
 
+	if opts.documentProxy != "" {
+		endpoint, _ := url.Parse(result.wsURL)
+		cdpPort, _ = strconv.Atoi(endpoint.Port())
+	}
 	if err := WriteProfileOwnerMarker(opts.profilePath, opts.ownerKey, result.chromePID, cdpPort); err != nil {
-		cleanupControlledBrowserCoreLaunch(result, opts.profilePath, opts.ownerKey)
-		return nil, fmt.Errorf("browser: write profile owner marker: %w", err)
+		return nil, errors.Join(fmt.Errorf("browser: write profile owner marker: %w", err), cleanupControlledBrowserCoreLaunch(result, opts.profilePath, opts.ownerKey))
 	}
 
 	if result.virtualDisplay != nil {
@@ -788,27 +831,46 @@ func launchControlledBrowserCoreChrome(ctx context.Context, opts controlledBrows
 	return result, nil
 }
 
-func cleanupControlledBrowserCoreLaunch(result *controlledBrowserCoreLaunchResult, profilePath string, ownerKey IdentityKey) {
+func cleanupControlledBrowserCoreLaunch(result *controlledBrowserCoreLaunchResult, profilePath string, ownerKey IdentityKey) error {
 	if result == nil {
-		return
+		return nil
 	}
+	// Document startup failures only signal here. The job owns the sole
+	// independent cleanup deadline and waits through documentLaunchOwner.
+	if result.document && result.chromeHandle != nil {
+		if handle, ok := result.chromeHandle.(*chromeHandleImpl); ok {
+			handle.signalKill()
+			return nil
+		}
+	}
+	var cleanupErr error
 	if result.chromeHandle != nil {
-		_ = result.chromeHandle.Kill()
-		result.chromeHandle = nil
+		cleanupErr = errors.Join(cleanupErr, result.chromeHandle.Kill())
+		if result.document && cleanupErr == nil {
+			cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			cleanupErr = waitDocumentProcessGroup(cleanupCtx, result.chromePID)
+			cancel()
+		}
+		if cleanupErr == nil {
+			result.chromeHandle = nil
+		}
 	}
 	if result.displayMgr != nil {
-		_ = result.displayMgr.Close()
+		cleanupErr = errors.Join(cleanupErr, result.displayMgr.Close())
 		result.displayMgr = nil
 	}
 	if result.virtualDisplay != nil {
-		_ = result.virtualDisplay.Close()
+		cleanupErr = errors.Join(cleanupErr, result.virtualDisplay.Close())
 		result.virtualDisplay = nil
 	}
 	if result.workspace != nil {
-		_ = result.workspace.Close()
+		cleanupErr = errors.Join(cleanupErr, result.workspace.Close())
 		result.workspace = nil
 	}
-	RemoveProfileOwnerMarker(profilePath, ownerKey)
+	if cleanupErr == nil {
+		RemoveProfileOwnerMarker(profilePath, ownerKey)
+	}
+	return cleanupErr
 }
 
 // handleCrash 处理 Chrome 崩溃，尝试自动重启。
@@ -1481,6 +1543,9 @@ func (impl *browserCoreImpl) DispatchInput(ctx context.Context, event *InputEven
 
 // Close 关闭 Browser，释放资源。
 func (impl *browserCoreImpl) Close(ctx context.Context) error {
+	if impl.documentRuntime != nil {
+		return impl.closeDocumentRuntime(ctx)
+	}
 	impl.mu.Lock()
 	defer impl.mu.Unlock()
 

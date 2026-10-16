@@ -3,7 +3,9 @@ name: dw-browser
 description: Observe and operate real browser sessions with the DW-Browser v2 CLI, preserving visible evidence, Human control and deterministic journey assertions. Use for browser tasks through this tool; ordinary software editing does not need it.
 ---
 
-# DW-Browser 0.12.1-v2 tool protocol
+# DW-Browser 0.13.0-v2 tool protocol
+
+Choose by task: UI experience, screenshots and interaction use `open` → `observe` → `act` (or `once` for one capture); deterministic acceptance uses `journey`; background public DOM acquisition uses `document URL --timeout 30s --max-html-bytes 8388608 --max-network-bytes 33554432`. `document` returns `dw.document.v1` with `content` and `representation=dom-html`, without screenshots or caller JavaScript. XML/RSS/Atom return an `unsupported_content_type` reason instead of a browser viewer masquerading as source. It owns an isolated disposable headless browser, never attaches a session or user profile, and grants no arbitrary eval. Its `page-requests-public-only` policy covers webpage requests through one Chrome-wide DNS-pinned proxy; it is not an OS firewall. Child targets are not paused or reattached. Chrome's own sandbox stays enabled. Windows fails before launch because verified process-tree cleanup is unavailable. The returned `url` is the actual main-frame location; `declared_canonical_url` is only an untrusted DOM hint. DOM-ready is not a promise that site-specific async content is complete. Budgets fail rather than truncate.
 
 Create with `open URL --id NAME --scenario app-test-explore --persona desktop --mode headless --evidence DIR`. Creation environment is inherited by every later process. `open` rejects an existing ID. Use `session viewport --id NAME --size 880x720` to resize the same browser.
 
@@ -15,7 +17,7 @@ A command error reports phase/dispatch_state/recovery. Unknown or partial dispat
 
 `htr takeover --id NAME` really blocks AI input; `htr yield --id NAME` restores authority and requires fresh observation. Status/help are diagnostic and never recover a runtime. Headless and intentionally visible native tabs need no display host; headed mode retains its verified display guard. Close only sessions you created with `close --id NAME`.
 
-For public browsing choose `webvisit`; writes retain origin/allow-host gating. For deterministic regression choose `app-test-baseline`; internal LLM use is forbidden. Use one typed `journey --file FILE` runner with persistent locators and assertions. A candidate trace is not an accepted baseline. `check` exits 0 only for required PASS, 1 for FAIL, 2 for BLOCKED/runtime/evidence/argument errors. Other exit 0 means complete delivery, not product acceptance. stdout is one JSON; `--output` saves that JSON, `--screenshot` names a PNG and creation `--evidence` names the evidence root.
+For interactive public browsing choose `webvisit`; writes retain origin/allow-host gating. That write policy is not a public-only network sandbox; use `document` when that boundary is required. For deterministic regression choose `app-test-baseline`; internal LLM use is forbidden. Use one typed `journey --file FILE` runner with persistent locators and assertions. A candidate trace is not an accepted baseline. `check` exits 0 only for required PASS, 1 for FAIL, 2 for BLOCKED/runtime/evidence/argument errors. Other exit 0 means complete delivery, not product acceptance. stdout is one JSON; `--output` saves that JSON, `--screenshot` names a PNG and creation `--evidence` names the evidence root.
 
 For exact required flags, positional counts, enums and conditional rules, read [the generated command reference](references/commands.md), or invoke `help COMMAND` / `capabilities` from this same executable.
 

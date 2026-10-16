@@ -1,7 +1,7 @@
 #compdef dw-browser
 _dw_browser_v2() {
  local -a candidates
- if (( CURRENT == 2 )); then candidates=(act audit capabilities check close completion cookie-import diff eval export-contract gc help htr journey muxhost observe once open persona profile protocol record session skills tabs version wait); _describe 'command' candidates; return; fi
+ if (( CURRENT == 2 )); then candidates=(act audit capabilities check close completion cookie-import diff document eval export-contract gc help htr journey muxhost observe once open persona profile protocol record session skills tabs version wait); _describe 'command' candidates; return; fi
  case "${words[2]} ${words[3]}" in
  'session status') candidates=('--id' '--output' '--lock-wait' '--verbose' ); _describe 'flag' candidates; return;;
  'session list') candidates=('--output' '--lock-wait' '--verbose' ); _describe 'flag' candidates; return;;
@@ -58,6 +58,7 @@ _dw_browser_v2() {
  'completion') candidates=('--output' '--lock-wait' '--verbose' );;
  'cookie-import') candidates=('--id' '--browser' '--domain' '--output' '--lock-wait' '--verbose' );;
  'diff') candidates=('--output' '--lock-wait' '--verbose' );;
+ 'document') candidates=('--timeout' '--max-html-bytes' '--max-network-bytes' '--output' '--lock-wait' '--verbose' );;
  'eval') candidates=('--id' '--output' '--lock-wait' '--verbose' );;
  'export-contract') candidates=('--directory' '--output' '--lock-wait' '--verbose' );;
  'gc') candidates=('--older-than' '--dry-run' '--all' '--output' '--lock-wait' '--verbose' );;

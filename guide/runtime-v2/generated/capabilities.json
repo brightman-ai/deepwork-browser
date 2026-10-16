@@ -402,7 +402,7 @@
     },
     {
       "command": "once",
-      "summary": "Create, observe and close a short-lived reading session",
+      "summary": "Capture one canonical UI observation in an owned short-lived session",
       "flags": [
         {
           "name": "--scenario",
@@ -538,6 +538,47 @@
       ],
       "required": [
         "--scenario"
+      ],
+      "min_args": 1,
+      "max_args": 1,
+      "diagnostic": false
+    },
+    {
+      "command": "document",
+      "summary": "Read public URL DOM in an isolated disposable headless browser; no screenshot or session",
+      "flags": [
+        {
+          "name": "--timeout",
+          "takes_value": true,
+          "value_type": "duration"
+        },
+        {
+          "name": "--max-html-bytes",
+          "takes_value": true,
+          "value_type": "integer"
+        },
+        {
+          "name": "--max-network-bytes",
+          "takes_value": true,
+          "value_type": "integer"
+        },
+        {
+          "name": "--output",
+          "takes_value": true,
+          "value_type": "string",
+          "infrastructure": "output"
+        },
+        {
+          "name": "--lock-wait",
+          "takes_value": true,
+          "value_type": "lock-duration",
+          "infrastructure": "locking"
+        },
+        {
+          "name": "--verbose",
+          "takes_value": false,
+          "infrastructure": "logging"
+        }
       ],
       "min_args": 1,
       "max_args": 1,
@@ -3694,5 +3735,5 @@
     }
   ],
   "schema_version": "dw.capabilities.v2",
-  "version": "0.12.1-v2"
+  "version": "0.13.0-v2"
 }

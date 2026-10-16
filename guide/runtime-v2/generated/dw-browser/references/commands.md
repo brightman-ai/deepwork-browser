@@ -1,4 +1,4 @@
-# DW-Browser 0.12.1-v2 command contract
+# DW-Browser 0.13.0-v2 command contract
 
 Generated from executable declarations. Flags on attached sessions inherit creation environment. `--output` is JSON; `--screenshot` is PNG. Absolute and locator-relative points require `--observation-id` from the exact capture; opaque ref-relative points supply capture identity in the token. Gesture endpoints share that identity.
 
@@ -44,7 +44,7 @@ Close only the named session. Positional arguments: 0..0. Required flags: --id.
 
 ## `once`
 
-Create, observe and close a short-lived reading session. Positional arguments: 1..1. Required flags: --scenario.
+Capture one canonical UI observation in an owned short-lived session. Positional arguments: 1..1. Required flags: --scenario.
 
 - `--scenario` VALUE (string); values app-test-explore|app-test-baseline|webvisit
 - `--mode` VALUE (string); values headless|headed|visible
@@ -65,6 +65,17 @@ Create, observe and close a short-lived reading session. Positional arguments: 1
 - `--tree`
 - `--all`
 - `--annotate`
+- `--output` VALUE (string)
+- `--lock-wait` VALUE (lock-duration)
+- `--verbose`
+
+## `document`
+
+Read public URL DOM in an isolated disposable headless browser; no screenshot or session. Positional arguments: 1..1. Required flags: .
+
+- `--timeout` VALUE (duration)
+- `--max-html-bytes` VALUE (integer)
+- `--max-network-bytes` VALUE (integer)
 - `--output` VALUE (string)
 - `--lock-wait` VALUE (lock-duration)
 - `--verbose`
