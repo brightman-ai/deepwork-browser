@@ -7,7 +7,7 @@ package browser
 #include <CFNetwork/CFNetwork.h>
 #include <CoreFoundation/CoreFoundation.h>
 #include <stdlib.h>
-static int dw_document_proxy_int(CFDictionaryRef d, const char *name) {
+static int dw_public_proxy_int(CFDictionaryRef d, const char *name) {
  CFStringRef key = CFStringCreateWithCString(NULL, name, kCFStringEncodingUTF8);
  CFTypeRef value = CFDictionaryGetValue(d, key);
  CFRelease(key);
@@ -17,7 +17,7 @@ static int dw_document_proxy_int(CFDictionaryRef d, const char *name) {
  else if (value) return -1;
  return result;
 }
-static int dw_document_proxy_string(CFDictionaryRef d, const char *name, char *out, int size) {
+static int dw_public_proxy_string(CFDictionaryRef d, const char *name, char *out, int size) {
  CFStringRef key = CFStringCreateWithCString(NULL, name, kCFStringEncodingUTF8);
  CFTypeRef value = CFDictionaryGetValue(d, key);
  CFRelease(key);
@@ -34,8 +34,8 @@ import (
 )
 
 // Snapshot only: never modifies system settings or executes PAC.
-func readDocumentSystemProxySettings() (documentSystemProxySettings, string, error) {
-	var result documentSystemProxySettings
+func readSystemProxySettings() (publicSystemProxySettings, string, error) {
+	var result publicSystemProxySettings
 	d := C.CFNetworkCopySystemProxySettings()
 	if d == 0 {
 		return result, "macos-system", errors.New("cannot read system proxy settings")
@@ -44,13 +44,13 @@ func readDocumentSystemProxySettings() (documentSystemProxySettings, string, err
 	number := func(key string) int {
 		k := C.CString(key)
 		defer C.free(unsafe.Pointer(k))
-		return int(C.dw_document_proxy_int(d, k))
+		return int(C.dw_public_proxy_int(d, k))
 	}
 	value := func(key string) (string, error) {
 		k := C.CString(key)
 		defer C.free(unsafe.Pointer(k))
 		var b [4096]C.char
-		if C.dw_document_proxy_string(d, k, &b[0], C.int(len(b))) == 0 {
+		if C.dw_public_proxy_string(d, k, &b[0], C.int(len(b))) == 0 {
 			return "", errors.New("invalid system proxy host setting")
 		}
 		return C.GoString(&b[0]), nil

@@ -21,8 +21,8 @@ func TestDocumentAcquisitionFailureReceipt(t *testing.T) {
 		{"timeout", context.DeadlineExceeded, complete, "timeout"},
 		{"canceled", context.Canceled, complete, "canceled"},
 		{"cleanup", &documentCleanupFailure{errors.New("slot release failed")}, complete, "cleanup_failed"},
-		{"network policy", &documentPolicyFailure{errors.New("byte budget")}, complete, "network_policy"},
-		{"timeout and enforcement", errors.Join(context.DeadlineExceeded, &documentPolicyFailure{errors.New("byte budget")}), complete, "network_policy"},
+		{"network policy", &publicNetworkPolicyFailure{errors.New("byte budget")}, complete, "network_policy"},
+		{"timeout and enforcement", errors.Join(context.DeadlineExceeded, &publicNetworkPolicyFailure{errors.New("byte budget")}), complete, "network_policy"},
 		{"unsupported and cleanup", errors.Join(&UnsupportedDocumentContentError{ContentType: "application/rss+xml"}, &documentCleanupFailure{errors.New("browser close failed")}), complete, "cleanup_failed"},
 		{"unsupported incomplete cleanup", &UnsupportedDocumentContentError{ContentType: "application/rss+xml"}, DocumentCleanup{NetworkClosed: true}, "cleanup_failed"},
 	} {
@@ -115,7 +115,7 @@ func TestDocumentFailureReasonSeparatesCleanupContextErrors(t *testing.T) {
 		{"request deadline and cleanup deadline", errors.Join(fmt.Errorf("read: %w", context.DeadlineExceeded), &documentCleanupFailure{context.DeadlineExceeded}), "timeout"},
 		{"request cancellation and cleanup deadline", errors.Join(fmt.Errorf("read: %w", context.Canceled), &documentCleanupFailure{context.DeadlineExceeded}), "canceled"},
 		{"request deadline and cleanup failure", errors.Join(context.DeadlineExceeded, &documentCleanupFailure{errors.New("close failed")}), "timeout"},
-		{"policy and cleanup deadline", errors.Join(&documentPolicyFailure{errors.New("network byte budget")}, &documentCleanupFailure{context.DeadlineExceeded}), "network_policy"},
+		{"policy and cleanup deadline", errors.Join(&publicNetworkPolicyFailure{errors.New("network byte budget")}, &documentCleanupFailure{context.DeadlineExceeded}), "network_policy"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := documentFailureReason(tc.cause); got != tc.want {
@@ -147,7 +147,7 @@ func TestDocumentCleanupContextReceiptStage(t *testing.T) {
 }
 
 func TestDocumentTransportFailureReason(t *testing.T) {
-	transport := &documentTransportFailure{errors.New("upstream refused")}
+	transport := &publicNetworkTransportFailure{errors.New("upstream refused")}
 	for _, tc := range []struct {
 		name  string
 		cause error
@@ -157,7 +157,7 @@ func TestDocumentTransportFailureReason(t *testing.T) {
 		{"transport and cleanup", errors.Join(transport, &documentCleanupFailure{context.DeadlineExceeded}), "network_transport"},
 		{"request deadline and transport", errors.Join(context.DeadlineExceeded, transport), "timeout"},
 		{"request cancellation and transport", errors.Join(context.Canceled, transport), "canceled"},
-		{"policy and transport", errors.Join(&documentPolicyFailure{errors.New("byte budget")}, transport), "network_policy"},
+		{"policy and transport", errors.Join(&publicNetworkPolicyFailure{errors.New("byte budget")}, transport), "network_policy"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := documentFailureReason(tc.cause); got != tc.want {

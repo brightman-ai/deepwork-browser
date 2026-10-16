@@ -63,7 +63,7 @@ func TestDocumentDuplicateContentTypeLive(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			doc, err := fetchDocumentWithNetwork(context.Background(), DocumentRequest{NetworkRoute: DocumentNetworkDirect, URL: "http://headers.example/" + tc.name, Timeout: 15 * time.Second}, opts)
+			doc, err := fetchDocumentWithNetwork(context.Background(), DocumentRequest{NetworkRoute: NetworkRouteDirect, URL: "http://headers.example/" + tc.name, Timeout: 15 * time.Second}, opts)
 			if tc.conflict {
 				var invalid *DocumentContentTypeError
 				var unsupported *UnsupportedDocumentContentError

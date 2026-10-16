@@ -8,6 +8,7 @@ require (
 	github.com/chromedp/chromedp v0.15.1
 	github.com/mattn/go-sqlite3 v1.14.37
 	golang.org/x/crypto v0.48.0
+	golang.org/x/net v0.50.0
 	gopkg.in/yaml.v3 v3.0.1
 )
 

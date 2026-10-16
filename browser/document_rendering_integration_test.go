@@ -40,7 +40,7 @@ func TestDocumentRenderingModesLive(t *testing.T) {
 	}
 	for _, mode := range []BrowserMode{ModeHeadless, ModeHeaded} {
 		t.Run(string(mode), func(t *testing.T) {
-			doc, err := fetchDocumentWithNetwork(context.Background(), DocumentRequest{URL: "http://rendering.example/article", Mode: mode, NetworkRoute: DocumentNetworkDirect, Timeout: 20 * time.Second}, opts)
+			doc, err := fetchDocumentWithNetwork(context.Background(), DocumentRequest{URL: "http://rendering.example/article", Mode: mode, NetworkRoute: NetworkRouteDirect, Timeout: 20 * time.Second}, opts)
 			if err != nil {
 				t.Fatal(err)
 			}

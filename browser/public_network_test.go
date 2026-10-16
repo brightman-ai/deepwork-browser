@@ -24,7 +24,7 @@ func publicTestEnvironment(t *testing.T) {
 	}
 }
 func publicTestOptions() PublicNetworkOptions {
-	return PublicNetworkOptions{NetworkRoute: DocumentNetworkDirect, Timeout: 3 * time.Second, MaxBytes: 1 << 20, MaxRequests: 10}
+	return PublicNetworkOptions{NetworkRoute: NetworkRouteDirect, Timeout: 3 * time.Second, MaxBytes: 1 << 20, MaxRequests: 10}
 }
 func publicTestGuard(t *testing.T, opts PublicNetworkOptions) *PublicNetworkGuard {
 	t.Helper()
@@ -42,26 +42,26 @@ func publicClient(g *PublicNetworkGuard) *http.Client {
 }
 func TestPublicDocumentIPPolicy(t *testing.T) {
 	for _, ip := range []string{"0.0.0.0", "10.1.2.3", "100.64.0.1", "127.0.0.1", "169.254.169.254", "172.16.0.1", "192.168.1.1", "192.0.2.1", "198.18.1.1", "198.51.100.2", "203.0.113.1", "224.0.0.1", "255.255.255.255", "::", "::1", "::ffff:127.0.0.1", "::ffff:192.168.0.1", "fe80::1", "fc00::1", "ff02::1", "64:ff9b::a00:1", "2001:db8::1", "2002:a00:1::1", "3ffe::1", "3fff::1", "4000::1", "3000::1", "2d00::1", "2000::1", "2001:1000::1", "2001:6000::1", "2420::1", "2622::1"} {
-		if IsPublicDocumentIP(netip.MustParseAddr(ip)) {
+		if IsPublicIP(netip.MustParseAddr(ip)) {
 			t.Errorf("accepted %s", ip)
 		}
 	}
 	for _, ip := range []string{"1.1.1.1", "8.8.8.8", "::ffff:8.8.8.8", "2606:4700:4700::1111", "2001:4860:4860::8888", "2410::1", "2a10::1", "2630::1"} {
-		if !IsPublicDocumentIP(netip.MustParseAddr(ip)) {
+		if !IsPublicIP(netip.MustParseAddr(ip)) {
 			t.Errorf("rejected %s", ip)
 		}
 	}
 }
-func TestValidatePublicDocumentURL(t *testing.T) {
+func TestValidatePublicURL(t *testing.T) {
 	for _, raw := range []string{"file:///etc/passwd", "data:text/plain,x", "ftp://example.com", "https://u:p@example.com", "http://127.0.0.1", "http://[::ffff:127.0.0.1]", "http://[fe80::1%25en0]", "http://example.com:22", "http://example.com:0", "http:///x"} {
-		if _, e := ValidatePublicDocumentURL(raw, nil); e == nil {
+		if _, e := ValidatePublicURL(raw, nil); e == nil {
 			t.Errorf("accepted %s", raw)
 		}
 	}
-	if _, e := ValidatePublicDocumentURL("https://example.com/path", nil); e != nil {
+	if _, e := ValidatePublicURL("https://example.com/path", nil); e != nil {
 		t.Fatal(e)
 	}
-	if _, e := ValidatePublicDocumentURL("https://example.com:8443", []uint16{8443}); e != nil {
+	if _, e := ValidatePublicURL("https://example.com:8443", []uint16{8443}); e != nil {
 		t.Fatal(e)
 	}
 }
@@ -269,7 +269,7 @@ func TestPublicNetworkRejectsUnsupportedEnvironmentProxy(t *testing.T) {
 	publicTestEnvironment(t)
 	t.Setenv("HTTPS_PROXY", "socks5://proxy.test:3128")
 	opts := publicTestOptions()
-	opts.NetworkRoute = DocumentNetworkSystem
+	opts.NetworkRoute = NetworkRouteSystem
 	if g, e := StartPublicNetworkGuard(context.Background(), opts); e == nil {
 		g.Close()
 		t.Fatal("silently bypassed upstream proxy")

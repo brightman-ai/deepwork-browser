@@ -18,7 +18,7 @@ func TestDocumentCLIContract(t *testing.T) {
 		{"https://example.com/", "--timeout=2s", "--max-html-bytes=1234", "--max-network-bytes=5678", "--network-route=system"},
 	} {
 		r, err := parseDocumentRequest(args)
-		if err != nil || r.NetworkRoute != browser.DocumentNetworkSystem || r.URL != "https://example.com/" || r.Timeout != 2*time.Second || r.MaxHTMLBytes != 1234 || r.MaxNetworkBytes != 5678 {
+		if err != nil || r.NetworkRoute != browser.NetworkRouteSystem || r.URL != "https://example.com/" || r.Timeout != 2*time.Second || r.MaxHTMLBytes != 1234 || r.MaxNetworkBytes != 5678 {
 			t.Fatalf("request %+v err %v", r, err)
 		}
 	}
@@ -38,14 +38,14 @@ func TestDocumentCLIContract(t *testing.T) {
 			t.Fatalf("unsafe/invalid document arguments accepted: %v", args)
 		}
 	}
-	if direct, err := parseDocumentRequest([]string{"https://example.com/", "--network-route", "direct"}); err != nil || direct.NetworkRoute != browser.DocumentNetworkDirect {
+	if direct, err := parseDocumentRequest([]string{"https://example.com/", "--network-route", "direct"}); err != nil || direct.NetworkRoute != browser.NetworkRouteDirect {
 		t.Fatalf("explicit direct route lost: %+v %v", direct, err)
 	}
 }
 
 func TestDocumentFailureDiagnosticTransport(t *testing.T) {
 	cause := context.DeadlineExceeded
-	diagnostic := browser.DocumentFailureDiagnostic{Schema: browser.DocumentFailureSchema, RequestedURL: "https://example.com/start", Stage: "navigation", Reason: "timeout", Policy: browser.DocumentPolicy{DocumentNetworkRouting: browser.DocumentNetworkRouting{RequestedNetworkRoute: browser.DocumentNetworkSystem, EffectiveTransport: "system-http-proxy-numeric-CONNECT", NetworkRouteSource: "macos-system", NumericTargetPinning: true, TrustedProxyDelegation: true}, Network: "page-requests-public-only"}, Cleanup: browser.DocumentCleanup{NetworkClosed: true}, Timing: browser.DocumentAcquisitionTiming{NavigationMS: 123, CleanupMS: 5, ElapsedMS: 128}}
+	diagnostic := browser.DocumentFailureDiagnostic{Schema: browser.DocumentFailureSchema, RequestedURL: "https://example.com/start", Stage: "navigation", Reason: "timeout", Policy: browser.DocumentPolicy{NetworkRouting: browser.NetworkRouting{RequestedNetworkRoute: browser.NetworkRouteSystem, EffectiveTransport: "system-http-proxy-numeric-CONNECT", NetworkRouteSource: "macos-system", NumericTargetPinning: true, TrustedProxyDelegation: true}, Network: "page-requests-public-only"}, Cleanup: browser.DocumentCleanup{NetworkClosed: true}, Timing: browser.DocumentAcquisitionTiming{NavigationMS: 123, CleanupMS: 5, ElapsedMS: 128}}
 	result, err := documentFailureResult(browser.DocumentRequest{URL: diagnostic.RequestedURL}, &browser.DocumentAcquisitionError{Diagnostic: diagnostic, Cause: cause})
 	if !errors.Is(err, cause) {
 		t.Fatalf("lost cause: %v", err)

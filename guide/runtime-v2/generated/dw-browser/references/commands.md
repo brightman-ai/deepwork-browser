@@ -1,4 +1,4 @@
-# DW-Browser 0.16.0-v2 command contract
+# DW-Browser 0.17.0-v2 command contract
 
 Generated from executable declarations. Flags on attached sessions inherit creation environment. `--output` is JSON; `--screenshot` is PNG. Absolute and locator-relative points require `--observation-id` from the exact capture; opaque ref-relative points supply capture identity in the token. Gesture endpoints share that identity.
 
@@ -69,20 +69,49 @@ Capture one canonical UI observation in an owned short-lived session. Positional
 - `--lock-wait` VALUE (lock-duration)
 - `--verbose`
 
+## `fetch`
+
+Save a complete public HTTP response body without JavaScript or a browser. Positional arguments: 1..1. Required flags: --save.
+
+Usage: `fetch URL --save FILE [--timeout 20s] [--max-bytes 8388608] [--max-network-bytes 33554432] [--network-route system|direct] [--dns-resolver system|https://PUBLIC_NUMERIC_IP/dns-query]`
+
+- `URL`: Public HTTP(S) URL whose response body is saved without JavaScript, cookies or browser rendering.
+
+Use fetch for unrendered HTML, images or files; document for browser-rendered DOM; open/observe for UI. --save writes the complete body; stdout and --output contain dw.resource.v1 metadata and body_file only. Existing save files are replaced only after successful acquisition and network cleanup. Save and metadata paths must differ. Default system route; direct is explicit, with no automatic route or tool fallback. Delivery commits in order: body rename, optional metadata file, then stdout. Each committed output remains if a later delivery fails. Encoding or metadata-write failures exit 2 and, when stdout works, report diagnostics preserving byte counts without body_file. A stdout failure returns exit 2 and stderr; an already committed metadata file may still contain successful body_file metadata. Inspect available committed metadata or settle budgets conservatively. Consumers verify MIME/signature and meaning: an HTTP 200 challenge page is not an image or accepted article. DNS resolver choice is per call: system by default, or an explicit public numeric-IP HTTPS /dns-query endpoint. Only use that endpoint when the caller explicitly chooses a public DNS strategy; never switch after a timeout. No resolver fallback, environment override or cross-call cache. Resolver DNS traffic shares the acquisition network-byte budget. A third-party resolver learns queried hostnames and the client/proxy source IP, not the original URL path or response content; existing proxy trust remains. TLS must validate its IP SAN.
+
+Example: `dw-browser fetch https://example.com/image.png --save ./image.png --output ./image.meta.json`
+
+Example: `dw-browser fetch https://example.com/article --save ./article.html --network-route direct`
+
+Example: `dw-browser fetch https://example.com/article --save ./article.html --dns-resolver https://1.1.1.1/dns-query`
+
+- `--save` VALUE (string); Required body file; existing parent directory must be writable. Complete bytes are published atomically.
+- `--timeout` VALUE (duration); Positive acquisition budget; default 20s.
+- `--max-bytes` VALUE (integer); Maximum decoded response-body bytes; default 8388608 (8 MiB); oversize fails without partial output.
+- `--max-network-bytes` VALUE (integer); Guard network-accounting budget; default 33554432 (32 MiB), separate from decoded body bytes; includes DNS traffic.
+- `--network-route` VALUE (string); values system|direct; system (default) honors supported trusted proxy settings; direct deliberately ignores them. Both validate public destinations.
+- `--dns-resolver` VALUE (string); system (default), or HTTPS endpoint at a literal public IP with default/443 port and exact /dns-query path; no userinfo, query or fragment. TLS must validate the resolver IP SAN.
+- `--output` VALUE (string); JSON metadata file, never the response body; must not alias --save.
+- `--lock-wait` VALUE (lock-duration)
+- `--verbose`
+
 ## `document`
 
 Read public URL DOM in a disposable browser target; no screenshot or session. Positional arguments: 1..1. Required flags: .
 
-Usage: `document URL [--mode headless|headed] [--network-route system|direct] [--timeout DURATION]`
+Usage: `document URL [--mode headless|headed] [--network-route system|direct] [--timeout DURATION] [--dns-resolver system|https://PUBLIC_NUMERIC_IP/dns-query]`
 
 - `URL`: Public HTTP(S) URL; no existing browser session or profile is used.
 
-Default headless, system route. Headed uses a windowless hidden target, not a visible browser and not UI acceptance evidence. No mode fallback or automatic challenge retry. System route honors supported trusted proxy configuration only after validating numeric public destinations; direct deliberately ignores proxy configuration. A captured login or verification page is not article acceptance. Read rendering, policy, cleanup and failure diagnostics.
+Default headless, system route. Headed uses a windowless hidden target, not a visible browser and not UI acceptance evidence. No mode fallback or automatic challenge retry. System route honors supported trusted proxy configuration only after validating numeric public destinations; direct deliberately ignores proxy configuration. A captured login or verification page is not article acceptance. Read rendering, policy, cleanup and failure diagnostics. DNS resolver choice is per call: system by default, or an explicit public numeric-IP HTTPS /dns-query endpoint. Only use that endpoint when the caller explicitly chooses a public DNS strategy; never switch after a timeout. No resolver fallback, environment override or cross-call cache. Resolver DNS traffic shares the acquisition network-byte budget. A third-party resolver learns queried hostnames and the client/proxy source IP, not the original URL path or response content; existing proxy trust remains. TLS must validate its IP SAN.
+
+Example: `dw-browser document https://example.com/article --dns-resolver https://1.1.1.1/dns-query`
 
 - `--timeout` VALUE (duration); Whole read budget including queue and browser startup; cleanup has an independent bounded deadline.
 - `--max-html-bytes` VALUE (integer)
 - `--max-network-bytes` VALUE (integer)
 - `--network-route` VALUE (string); values system|direct; Transport configuration: system (default) or explicit direct; public destination validation remains required in both.
+- `--dns-resolver` VALUE (string); system (default), or HTTPS endpoint at a literal public IP with default/443 port and exact /dns-query path; no userinfo, query or fragment. TLS must validate the resolver IP SAN.
 - `--mode` VALUE (string); values headless|headed; DOM rendering: headless (default) or headful hidden target without a native window
 - `--output` VALUE (string)
 - `--lock-wait` VALUE (lock-duration)

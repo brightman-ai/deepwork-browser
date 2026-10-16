@@ -1,6 +1,6 @@
 _dw_browser_v2() {
  local cur="${COMP_WORDS[COMP_CWORD]}" prev="${COMP_WORDS[COMP_CWORD-1]}" choices=""
- if (( COMP_CWORD == 1 )); then choices='act audit capabilities check close completion cookie-import diff document eval export-contract gc help htr journey muxhost observe once open persona profile protocol record session skills tabs version wait'; else
+ if (( COMP_CWORD == 1 )); then choices='act audit capabilities check close completion cookie-import diff document eval export-contract fetch gc help htr journey muxhost observe once open persona profile protocol record session skills tabs version wait'; else
  case "${COMP_WORDS[1]} ${COMP_WORDS[2]}" in
  'session status') choices='--id --output --lock-wait --verbose ';;
  'session list') choices='--output --lock-wait --verbose ';;
@@ -57,9 +57,10 @@ _dw_browser_v2() {
  'completion') choices='--output --lock-wait --verbose ';;
  'cookie-import') choices='--id --browser --domain --output --lock-wait --verbose ';;
  'diff') choices='--output --lock-wait --verbose ';;
- 'document') choices='--timeout --max-html-bytes --max-network-bytes --network-route --mode --output --lock-wait --verbose ';;
+ 'document') choices='--timeout --max-html-bytes --max-network-bytes --network-route --dns-resolver --mode --output --lock-wait --verbose ';;
  'eval') choices='--id --output --lock-wait --verbose ';;
  'export-contract') choices='--directory --output --lock-wait --verbose ';;
+ 'fetch') choices='--save --timeout --max-bytes --max-network-bytes --network-route --dns-resolver --output --lock-wait --verbose ';;
  'gc') choices='--older-than --dry-run --all --output --lock-wait --verbose ';;
  'help') choices='--output --lock-wait --verbose ';;
  'htr') choices='status takeover yield share ';;

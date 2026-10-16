@@ -9,9 +9,10 @@ import (
 // CommandResult separates delivered command data from product verdicts. Code
 // is the classified exit status; errors retain phase/dispatch/recovery facts.
 type CommandResult struct {
-	Payload any
-	Code    int
-	cause   error
+	DeliveryFailurePayload func(error) any `json:"-"`
+	Payload                any
+	Code                   int
+	cause                  error
 }
 
 func commandResult(payload any, code int) CommandResult {

@@ -2,6 +2,21 @@
 
 The runtime uses one typed Action kernel, one canonical observation contract and one typed journey runner. Historical evidence/reports are preserved. Installing a built binary is an explicit delivery action; external callers migrate using this contract.
 
+In 0.17.0-v2, `fetch URL --save FILE` adds a browser-free public HTTP GET kernel
+for complete body bytes, with typed metadata and failure accounting. It shares
+the public guard with `document`; these remain distinct representations with no
+automatic fallback. Both readers add per-call `--dns-resolver system` (default)
+or an explicitly trusted numeric HTTPS DNS endpoint. This does not change the
+computer's DNS, retry through a different resolver, or relax private-address
+rejection. See [fetch](fetch.md).
+
+Go consumers replace `DocumentNetworkRoute` / `DocumentNetworkRouting` with
+`NetworkRoute` / `NetworkRouting`, and constants with `NetworkRouteSystem` /
+`NetworkRouteDirect`. `ValidatePublicDocumentURL` becomes `ValidatePublicURL`,
+and `IsPublicDocumentIP` becomes `IsPublicIP`.
+These are shared public-resource concepts; no legacy aliases remain. The
+existing `document` CLI and representation retain their meanings.
+
 In 0.16.0-v2, `document` keeps headless as its default and adds explicit headed
 rendering through a windowless hidden target. The default network route becomes
 `system`, using supported trusted proxy configuration after numeric public-IP

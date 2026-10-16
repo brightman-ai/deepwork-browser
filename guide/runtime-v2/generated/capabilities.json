@@ -547,11 +547,97 @@
       "arguments": [
         {
           "name": "URL",
+          "description": "Public HTTP(S) URL whose response body is saved without JavaScript, cookies or browser rendering."
+        }
+      ],
+      "usage": "fetch URL --save FILE [--timeout 20s] [--max-bytes 8388608] [--max-network-bytes 33554432] [--network-route system|direct] [--dns-resolver system|https://PUBLIC_NUMERIC_IP/dns-query]",
+      "examples": [
+        "dw-browser fetch https://example.com/image.png --save ./image.png --output ./image.meta.json",
+        "dw-browser fetch https://example.com/article --save ./article.html --network-route direct",
+        "dw-browser fetch https://example.com/article --save ./article.html --dns-resolver https://1.1.1.1/dns-query"
+      ],
+      "guidance": "Use fetch for unrendered HTML, images or files; document for browser-rendered DOM; open/observe for UI. --save writes the complete body; stdout and --output contain dw.resource.v1 metadata and body_file only. Existing save files are replaced only after successful acquisition and network cleanup. Save and metadata paths must differ. Default system route; direct is explicit, with no automatic route or tool fallback. Delivery commits in order: body rename, optional metadata file, then stdout. Each committed output remains if a later delivery fails. Encoding or metadata-write failures exit 2 and, when stdout works, report diagnostics preserving byte counts without body_file. A stdout failure returns exit 2 and stderr; an already committed metadata file may still contain successful body_file metadata. Inspect available committed metadata or settle budgets conservatively. Consumers verify MIME/signature and meaning: an HTTP 200 challenge page is not an image or accepted article. DNS resolver choice is per call: system by default, or an explicit public numeric-IP HTTPS /dns-query endpoint. Only use that endpoint when the caller explicitly chooses a public DNS strategy; never switch after a timeout. No resolver fallback, environment override or cross-call cache. Resolver DNS traffic shares the acquisition network-byte budget. A third-party resolver learns queried hostnames and the client/proxy source IP, not the original URL path or response content; existing proxy trust remains. TLS must validate its IP SAN.",
+      "command": "fetch",
+      "summary": "Save a complete public HTTP response body without JavaScript or a browser",
+      "flags": [
+        {
+          "description": "Required body file; existing parent directory must be writable. Complete bytes are published atomically.",
+          "name": "--save",
+          "takes_value": true,
+          "value_type": "string"
+        },
+        {
+          "description": "Positive acquisition budget; default 20s.",
+          "name": "--timeout",
+          "takes_value": true,
+          "value_type": "duration"
+        },
+        {
+          "description": "Maximum decoded response-body bytes; default 8388608 (8 MiB); oversize fails without partial output.",
+          "name": "--max-bytes",
+          "takes_value": true,
+          "value_type": "integer"
+        },
+        {
+          "description": "Guard network-accounting budget; default 33554432 (32 MiB), separate from decoded body bytes; includes DNS traffic.",
+          "name": "--max-network-bytes",
+          "takes_value": true,
+          "value_type": "integer"
+        },
+        {
+          "description": "system (default) honors supported trusted proxy settings; direct deliberately ignores them. Both validate public destinations.",
+          "name": "--network-route",
+          "takes_value": true,
+          "values": [
+            "system",
+            "direct"
+          ],
+          "value_type": "string"
+        },
+        {
+          "description": "system (default), or HTTPS endpoint at a literal public IP with default/443 port and exact /dns-query path; no userinfo, query or fragment. TLS must validate the resolver IP SAN.",
+          "name": "--dns-resolver",
+          "takes_value": true,
+          "value_type": "string"
+        },
+        {
+          "description": "JSON metadata file, never the response body; must not alias --save.",
+          "name": "--output",
+          "takes_value": true,
+          "value_type": "string",
+          "infrastructure": "output"
+        },
+        {
+          "name": "--lock-wait",
+          "takes_value": true,
+          "value_type": "lock-duration",
+          "infrastructure": "locking"
+        },
+        {
+          "name": "--verbose",
+          "takes_value": false,
+          "infrastructure": "logging"
+        }
+      ],
+      "required": [
+        "--save"
+      ],
+      "min_args": 1,
+      "max_args": 1,
+      "diagnostic": false
+    },
+    {
+      "arguments": [
+        {
+          "name": "URL",
           "description": "Public HTTP(S) URL; no existing browser session or profile is used."
         }
       ],
-      "usage": "document URL [--mode headless|headed] [--network-route system|direct] [--timeout DURATION]",
-      "guidance": "Default headless, system route. Headed uses a windowless hidden target, not a visible browser and not UI acceptance evidence. No mode fallback or automatic challenge retry. System route honors supported trusted proxy configuration only after validating numeric public destinations; direct deliberately ignores proxy configuration. A captured login or verification page is not article acceptance. Read rendering, policy, cleanup and failure diagnostics.",
+      "usage": "document URL [--mode headless|headed] [--network-route system|direct] [--timeout DURATION] [--dns-resolver system|https://PUBLIC_NUMERIC_IP/dns-query]",
+      "examples": [
+        "dw-browser document https://example.com/article --dns-resolver https://1.1.1.1/dns-query"
+      ],
+      "guidance": "Default headless, system route. Headed uses a windowless hidden target, not a visible browser and not UI acceptance evidence. No mode fallback or automatic challenge retry. System route honors supported trusted proxy configuration only after validating numeric public destinations; direct deliberately ignores proxy configuration. A captured login or verification page is not article acceptance. Read rendering, policy, cleanup and failure diagnostics. DNS resolver choice is per call: system by default, or an explicit public numeric-IP HTTPS /dns-query endpoint. Only use that endpoint when the caller explicitly chooses a public DNS strategy; never switch after a timeout. No resolver fallback, environment override or cross-call cache. Resolver DNS traffic shares the acquisition network-byte budget. A third-party resolver learns queried hostnames and the client/proxy source IP, not the original URL path or response content; existing proxy trust remains. TLS must validate its IP SAN.",
       "command": "document",
       "summary": "Read public URL DOM in a disposable browser target; no screenshot or session",
       "flags": [
@@ -579,6 +665,12 @@
             "system",
             "direct"
           ],
+          "value_type": "string"
+        },
+        {
+          "description": "system (default), or HTTPS endpoint at a literal public IP with default/443 port and exact /dns-query path; no userinfo, query or fragment. TLS must validate the resolver IP SAN.",
+          "name": "--dns-resolver",
+          "takes_value": true,
           "value_type": "string"
         },
         {
@@ -3794,5 +3886,5 @@
     }
   ],
   "schema_version": "dw.capabilities.v2",
-  "version": "0.16.0-v2"
+  "version": "0.17.0-v2"
 }

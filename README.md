@@ -46,6 +46,14 @@ without screenshots or arbitrary eval. It restricts webpage requests to validate
 public destinations, with supported system proxy routing after numeric-IP validation;
 it is not an OS firewall. Failures include typed diagnostics without a usable partial DOM. See the [document contract](guide/runtime-v2/document.md).
 
+For complete HTTP body bytes without a browser, use
+`dw-browser fetch https://example.com/image.png --save ./image.png`.
+The receipt reports size, SHA-256, actual routing and cleanup. Both public readers
+default to system DNS; an explicitly trusted public DNS-over-HTTPS source can be
+selected per call with `--dns-resolver https://1.1.1.1/dns-query`.
+No failure automatically changes tools, DNS source or route. See the
+[fetch contract](guide/runtime-v2/fetch.md) for budgets, file ownership and failures.
+
 The same executable generates [the tool-use skill](guide/runtime-v2/generated/dw-browser/SKILL.md), [command reference](guide/runtime-v2/generated/dw-browser/references/commands.md), capabilities and completion:
 
 ```sh

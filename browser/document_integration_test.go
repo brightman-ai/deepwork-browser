@@ -208,7 +208,7 @@ func TestDocumentLive(t *testing.T) {
 				deadline = 10 * time.Second
 			}
 			started := time.Now()
-			doc, err := fetchDocumentWithNetwork(context.Background(), DocumentRequest{NetworkRoute: DocumentNetworkDirect, URL: "http://" + host + tc.path, Timeout: deadline, MaxHTMLBytes: tc.html, MaxNetworkBytes: tc.network}, options)
+			doc, err := fetchDocumentWithNetwork(context.Background(), DocumentRequest{NetworkRoute: NetworkRouteDirect, URL: "http://" + host + tc.path, Timeout: deadline, MaxHTMLBytes: tc.html, MaxNetworkBytes: tc.network}, options)
 			t.Logf("elapsed=%s error=%v", time.Since(started), err)
 			if !tc.noPage && fixtureHits.Load() <= beforeFixture {
 				t.Fatalf("fixture never loaded; cannot classify this as a guarded request test: %v", err)

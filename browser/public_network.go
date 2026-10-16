@@ -6,6 +6,7 @@ package browser
 // one request for accounting purposes, and its encrypted bytes count in both directions.
 import (
 	"context"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"io"
@@ -30,6 +31,7 @@ type publicProxyFailureKind string
 const (
 	publicProxyPolicyFailure    publicProxyFailureKind = "policy"
 	publicProxyTransportFailure publicProxyFailureKind = "transport"
+	publicProxyDNSFailure       publicProxyFailureKind = "dns"
 )
 
 func publicProxyError(w http.ResponseWriter, message string, status int, kind publicProxyFailureKind) {
@@ -43,14 +45,20 @@ func (g *PublicNetworkGuard) proxyFailureKind(err error) publicProxyFailureKind 
 	if errors.As(err, &denied) || g.PolicyError() != nil {
 		return publicProxyPolicyFailure
 	}
+	var dns *DNSResolutionError
+	if errors.As(err, &dns) {
+		return publicProxyDNSFailure
+	}
 	return publicProxyTransportFailure
 }
 
 type PublicNetworkOptions struct {
+	DNSResolver     string
+	resolverRootCAs *x509.CertPool // Owned TLS resolver fixtures only.
 	// The low-level guard defaults to direct. FetchDocument explicitly selects
 	// its normalized system/default route; fixture callers choose direct.
-	NetworkRoute  DocumentNetworkRoute
-	routeSnapshot *documentRouteSnapshot
+	NetworkRoute  NetworkRoute
+	routeSnapshot *publicRouteSnapshot
 	Timeout       time.Duration
 	MaxBytes      int64
 	MaxRequests   int64
@@ -75,7 +83,10 @@ type PublicNetworkStats struct {
 	Bytes          int64
 }
 type PublicNetworkGuard struct {
-	route          *documentRouteSnapshot
+	dnsFailures    map[string]publicDNSFailureObservation
+	dnsClient      *http.Client
+	dnsTransport   *http.Transport
+	route          *publicRouteSnapshot
 	handlers       sync.WaitGroup
 	closing        bool
 	ctx            context.Context
@@ -130,7 +141,7 @@ var publicIPv6AllocatedPrefixes = func() []netip.Prefix {
 	return out
 }()
 
-func IsPublicDocumentIP(ip netip.Addr) bool {
+func IsPublicIP(ip netip.Addr) bool {
 	if !ip.IsValid() || ip.Zone() != "" {
 		return false
 	}
@@ -169,15 +180,15 @@ func publicPortAllowed(port uint16, allowed []uint16) bool {
 	return false
 }
 
-// ValidatePublicDocumentURL validates syntax/literal IP only. DNS is validated
+// ValidatePublicURL validates syntax/literal IP only. DNS is validated
 // again when the proxy dials; this preflight never substitutes for that check.
-func ValidatePublicDocumentURL(raw string, allowedPorts []uint16) (*url.URL, error) {
+func ValidatePublicURL(raw string, allowedPorts []uint16) (*url.URL, error) {
 	u, err := url.Parse(raw)
 	if err != nil {
 		return nil, err
 	}
 	if (u.Scheme != "http" && u.Scheme != "https") || u.Opaque != "" || u.User != nil || u.Hostname() == "" || strings.Contains(u.Hostname(), "%") {
-		return nil, errors.New("document URL requires http(s), hostname and no credentials or zone")
+		return nil, errors.New("public URL requires http(s), hostname and no credentials or zone")
 	}
 	port := uint64(80)
 	if u.Scheme == "https" {
@@ -192,20 +203,25 @@ func ValidatePublicDocumentURL(raw string, allowedPorts []uint16) (*url.URL, err
 	if !publicPortAllowed(uint16(port), allowedPorts) {
 		return nil, errors.New("destination port is not allowed")
 	}
-	if ip, e := netip.ParseAddr(u.Hostname()); e == nil && !IsPublicDocumentIP(ip) {
+	if ip, e := netip.ParseAddr(u.Hostname()); e == nil && !IsPublicIP(ip) {
 		return nil, errors.New("destination IP is not public")
 	}
 	return u, nil
 }
 func StartPublicNetworkGuard(parent context.Context, opts PublicNetworkOptions) (*PublicNetworkGuard, error) {
+	var resolverErr error
+	opts.DNSResolver, resolverErr = ValidateDNSResolver(opts.DNSResolver)
+	if resolverErr != nil {
+		return nil, resolverErr
+	}
 	route := opts.routeSnapshot
 	if route == nil {
 		selected := opts.NetworkRoute
 		if selected == "" {
-			selected = DocumentNetworkDirect
+			selected = NetworkRouteDirect
 		}
 		var err error
-		route, err = resolveDocumentNetworkRoute(selected)
+		route, err = resolveNetworkRoute(selected)
 		if err != nil {
 			return nil, err
 		}
@@ -222,8 +238,11 @@ func StartPublicNetworkGuard(parent context.Context, opts PublicNetworkOptions) 
 		cancel()
 		return nil, err
 	}
-	g := &PublicNetworkGuard{route: route, ctx: ctx, cancel: cancel, opts: opts, listener: ln, conns: make(map[*publicTrackedConn]struct{}), serveDone: make(chan struct{}), closeDone: make(chan struct{})}
+	g := &PublicNetworkGuard{dnsFailures: make(map[string]publicDNSFailureObservation), route: route, ctx: ctx, cancel: cancel, opts: opts, listener: ln, conns: make(map[*publicTrackedConn]struct{}), serveDone: make(chan struct{}), closeDone: make(chan struct{})}
 	g.transport = &http.Transport{Proxy: nil, DialContext: g.dial, DisableKeepAlives: true, ForceAttemptHTTP2: false, ResponseHeaderTimeout: opts.Timeout, MaxResponseHeaderBytes: 64 << 10}
+	if opts.DNSResolver != SystemDNSResolver {
+		g.dnsClient = newPublicDNSClient(g)
+	}
 	g.server = &http.Server{Handler: g, ReadHeaderTimeout: 5 * time.Second, MaxHeaderBytes: 64 << 10, BaseContext: func(net.Listener) context.Context { return ctx }}
 	go func() {
 		defer close(g.serveDone)
@@ -309,6 +328,9 @@ func (g *PublicNetworkGuard) closeWorker() {
 		_ = c.Close()
 	}
 	g.transport.CloseIdleConnections()
+	if g.dnsTransport != nil {
+		g.dnsTransport.CloseIdleConnections()
+	}
 	g.connections.Wait()
 	g.handlers.Wait()
 }
@@ -348,22 +370,26 @@ func (g *PublicNetworkGuard) dialScheme(ctx context.Context, network, address, s
 	var ips []netip.Addr
 	if ip, e := netip.ParseAddr(host); e == nil {
 		ips = []netip.Addr{ip}
-	} else if g.opts.lookupIP != nil {
-		ips, err = g.opts.lookupIP(ctx, host)
 	} else {
-		ips, err = net.DefaultResolver.LookupNetIP(ctx, "ip", host)
+		ips, err = g.resolvePublicDNS(ctx, host)
 	}
 	if err != nil {
+		g.observeDNSFailure(address, err)
 		return nil, err
 	}
 	if len(ips) == 0 {
-		return nil, errors.New("DNS returned no addresses")
+		err := &DNSResolutionError{Resolver: g.opts.DNSResolver, Host: host, Reason: "empty_answers", Cause: errors.New("DNS returned no addresses")}
+		g.observeDNSFailure(address, err)
+		return nil, err
 	}
 	for _, ip := range ips {
-		if !IsPublicDocumentIP(ip) {
-			return nil, publicDestinationDenied(fmt.Sprintf("non-public DNS destination for %s", host))
+		if !IsPublicIP(ip) {
+			err := publicDestinationDenied(fmt.Sprintf("non-public DNS destination for %s", host))
+			g.observeDNSFailure(address, err)
+			return nil, err
 		}
 	}
+	g.clearDNSFailure(address)
 	dial := g.opts.dialContext
 	if dial == nil {
 		dial = (&net.Dialer{}).DialContext
@@ -386,7 +412,7 @@ func (g *PublicNetworkGuard) dialScheme(ctx context.Context, network, address, s
 		var conn net.Conn
 		var err error
 		if proxyAddress != "" {
-			conn, err = dialDocumentProxyTunnel(attemptCtx, proxyAddress, target, dial)
+			conn, err = dialPublicProxyTunnel(attemptCtx, proxyAddress, target, dial)
 		} else {
 			conn, err = dial(attemptCtx, "tcp", target)
 		}
@@ -417,7 +443,7 @@ func (g *PublicNetworkGuard) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		g.connect(w, r)
 		return
 	}
-	u, err := ValidatePublicDocumentURL(r.URL.String(), g.opts.AllowedPorts)
+	u, err := ValidatePublicURL(r.URL.String(), g.opts.AllowedPorts)
 	if err != nil || u.Scheme != "http" {
 		if err == nil {
 			err = errors.New("HTTPS requires CONNECT")
@@ -456,7 +482,11 @@ func (g *PublicNetworkGuard) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(resp.StatusCode)
 	// A site/resource disconnect is not a global policy failure. The budget
 	// writer independently records fatal budget overruns before returning errors.
-	_, _ = io.Copy(&publicBudgetWriter{g: g, w: w}, resp.Body)
+	if _, err := io.Copy(&publicBudgetWriter{g: g, w: w}, resp.Body); err != nil {
+		// Do not synthesize a clean downstream EOF after an incomplete upstream
+		// body. Abort this response without poisoning unrelated resource reads.
+		panic(http.ErrAbortHandler)
+	}
 }
 func stripPublicHopHeaders(h http.Header) {
 	for _, v := range h.Values("Connection") {

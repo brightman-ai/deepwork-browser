@@ -186,8 +186,6 @@ func runSkillsListResult(args []string) (commandOutput CommandResult, resultErr 
 	}
 	commandOutput.Payload = map[string]any{"skills": skillRows}
 	return finishCommand(commandOutput, exitOK)
-
-	return commandOutput, nil
 }
 
 // ============================================================
@@ -249,8 +247,6 @@ func runSkillsReadResult(args []string) (commandOutput CommandResult, resultErr 
 	}
 	commandOutput.appendContent(fmt.Sprintf("## %s\n%s", actionName, section))
 	return finishCommand(commandOutput, exitOK)
-
-	return commandOutput, nil
 }
 
 // ============================================================
@@ -352,8 +348,6 @@ func runSkillsWriteResult(args []string) (commandOutput CommandResult, resultErr
 
 	commandOutput.appendContent(fmt.Sprintf("dw-browser: wrote action %q to skill %q\n", actionName, name))
 	return finishCommand(commandOutput, exitOK)
-
-	return commandOutput, nil
 }
 
 // readStdin reads all content from stdin.

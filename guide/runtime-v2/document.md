@@ -181,3 +181,17 @@ Human verification flow remain explicit consumer decisions, not site-specific
 browser scripts or a false unsupported-content-type claim.
 
 See [0.16.0 runtime diagnosis and acceptance](document-runtime-acceptance.md).
+
+
+## Shared DNS selection and representation
+
+`document` and `fetch` share `--dns-resolver system` by default. An explicitly
+trusted numeric HTTPS DNS endpoint can be selected per call, for example
+`--dns-resolver https://1.1.1.1/dns-query`. See the [shared DNS contract](fetch.md#explicit-dns-source)
+for strict endpoint/TLS checks, both-family answer validation, privacy and budget
+accounting. No timeout automatically selects a public resolver; the system DNS
+configuration is never changed. Receipts report `policy.dns_resolver`.
+
+Use `fetch URL --save FILE` when the required result is complete HTTP body bytes
+such as an image or unrendered HTML. `document` continues to return browser DOM;
+it never switches to downloading resource bytes based on MIME or failure.

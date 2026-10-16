@@ -32,11 +32,12 @@ type documentLaunchOwner struct {
 }
 
 type documentRuntimePolicy struct {
-	mu           sync.Mutex
-	err          error
-	transportErr error
-	blocked      int64
-	contentType  string
+	mu            sync.Mutex
+	err           error
+	transportErr  error
+	blocked       int64
+	contentType   string
+	navigationURL string
 }
 
 func (p *documentRuntimePolicy) fail(err error) {
@@ -70,6 +71,13 @@ func (p *documentRuntimePolicy) observeGuardFailure(rawURL string, headers map[s
 		p.mu.Lock()
 		if p.transportErr == nil {
 			p.transportErr = errors.New("main document transport failed through network guard")
+		}
+		p.mu.Unlock()
+	} else if marker == "1" && kind == string(publicProxyDNSFailure) {
+		u, _ := url.Parse(rawURL)
+		p.mu.Lock()
+		if p.transportErr == nil {
+			p.transportErr = &DNSResolutionError{Host: u.Hostname(), Reason: "resolution_failed", Cause: errors.New("main document DNS resolution failed through network guard")}
 		}
 		p.mu.Unlock()
 	} else {
@@ -168,6 +176,11 @@ func (impl *browserCoreImpl) configureDocumentRuntime() error {
 		}
 		mainFrameID := tree.Frame.ID
 		chromedp.ListenTarget(ctx, func(event interface{}) {
+			if request, ok := event.(*network.EventRequestWillBeSent); ok && request.Type == network.ResourceTypeDocument && request.FrameID == mainFrameID && request.Request != nil {
+				policy.mu.Lock()
+				policy.navigationURL = request.Request.URL
+				policy.mu.Unlock()
+			}
 			response, ok := event.(*network.EventResponseReceived)
 			if !ok || response.Type != network.ResourceTypeDocument || response.FrameID != mainFrameID || response.Response == nil {
 				return
@@ -281,6 +294,15 @@ func documentCoreTransportError(core BrowserCore) error {
 	return nil
 }
 
+func documentCoreNavigationURL(core BrowserCore) string {
+	if impl, ok := core.(*browserCoreImpl); ok && impl.documentRuntime != nil {
+		impl.documentRuntime.mu.Lock()
+		defer impl.documentRuntime.mu.Unlock()
+		return impl.documentRuntime.navigationURL
+	}
+	return ""
+}
+
 // A short interval is used only for reaping this call's own process group.
 const documentReapPoll = 20 * time.Millisecond
 
@@ -381,7 +403,7 @@ func installDocumentTargetGuards(ctx context.Context, policy *documentRuntimePol
 						if err != nil {
 							reject = true
 						} else if u.Scheme != "data" && u.Scheme != "blob" {
-							if _, err := ValidatePublicDocumentURL(event.Request.URL, nil); err != nil {
+							if _, err := ValidatePublicURL(event.Request.URL, nil); err != nil {
 								reject = true
 							}
 						}

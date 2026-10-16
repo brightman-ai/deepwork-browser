@@ -14,7 +14,7 @@ func TestDocumentRequestDefaultsAndValidation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if r.Mode != ModeHeadless || r.NetworkRoute != DocumentNetworkSystem || r.Timeout != 30*time.Second || r.MaxHTMLBytes != 8<<20 || r.MaxNetworkBytes != 32<<20 {
+	if r.Mode != ModeHeadless || r.NetworkRoute != NetworkRouteSystem || r.Timeout != 30*time.Second || r.MaxHTMLBytes != 8<<20 || r.MaxNetworkBytes != 32<<20 {
 		t.Fatalf("wrong defaults: %+v", r)
 	}
 	for _, input := range []DocumentRequest{
@@ -27,7 +27,7 @@ func TestDocumentRequestDefaultsAndValidation(t *testing.T) {
 			t.Errorf("accepted invalid request %+v", input)
 		}
 	}
-	custom := DocumentRequest{Mode: ModeHeaded, NetworkRoute: DocumentNetworkDirect, URL: "https://example.com/", Timeout: time.Second, MaxHTMLBytes: 128, MaxNetworkBytes: 1024}
+	custom := DocumentRequest{DNSResolver: SystemDNSResolver, Mode: ModeHeaded, NetworkRoute: NetworkRouteDirect, URL: "https://example.com/", Timeout: time.Second, MaxHTMLBytes: 128, MaxNetworkBytes: 1024}
 	got, err := normalizeDocumentRequest(custom)
 	if err != nil || got != custom {
 		t.Fatalf("custom budgets lost: %+v %v", got, err)

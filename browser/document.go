@@ -22,8 +22,9 @@ const DocumentSchema = "dw.document.v1"
 // DocumentRequest is a public URL read, never a script or a session attachment.
 // Zero budgets select the defaults. Timeout covers queueing, startup and reading.
 type DocumentRequest struct {
+	DNSResolver     string
 	Mode            BrowserMode
-	NetworkRoute    DocumentNetworkRoute
+	NetworkRoute    NetworkRoute
 	URL             string
 	Timeout         time.Duration
 	MaxHTMLBytes    int64
@@ -43,7 +44,7 @@ type DocumentReadiness struct {
 }
 
 type DocumentPolicy struct {
-	DocumentNetworkRouting
+	NetworkRouting
 	Network         string `json:"network"`
 	Profile         string `json:"profile"`
 	JavaScript      string `json:"javascript"`
@@ -107,7 +108,11 @@ func normalizeDocumentRequest(r DocumentRequest) (DocumentRequest, error) {
 	if err != nil {
 		return r, err
 	}
-	r.NetworkRoute, err = normalizeDocumentNetworkRoute(r.NetworkRoute)
+	r.NetworkRoute, err = normalizeNetworkRoute(r.NetworkRoute)
+	if err != nil {
+		return r, err
+	}
+	r.DNSResolver, err = ValidateDNSResolver(r.DNSResolver)
 	if err != nil {
 		return r, err
 	}
@@ -123,7 +128,7 @@ func normalizeDocumentRequest(r DocumentRequest) (DocumentRequest, error) {
 	if r.MaxNetworkBytes == 0 {
 		r.MaxNetworkBytes = 32 << 20
 	}
-	if _, err := ValidatePublicDocumentURL(r.URL, nil); err != nil {
+	if _, err := ValidatePublicURL(r.URL, nil); err != nil {
 		return r, fmt.Errorf("document URL: %w", err)
 	}
 	return r, nil
@@ -146,10 +151,11 @@ func fetchDocumentWithNetwork(parent context.Context, request DocumentRequest, n
 	}
 	requestedRoute := request.NetworkRoute
 	if requestedRoute == "" {
-		requestedRoute = DocumentNetworkSystem
+		requestedRoute = NetworkRouteSystem
 	}
-	policy := DocumentPolicy{DocumentNetworkRouting: DocumentNetworkRouting{RequestedNetworkRoute: requestedRoute, EffectiveTransport: "not-started", NetworkRouteSource: "unresolved", NumericTargetPinning: true}, Network: "page-requests-public-only", Profile: documentProfilePolicy(rendering.Mode), JavaScript: "fixed-isolated-dom-read"}
+	policy := DocumentPolicy{NetworkRouting: NetworkRouting{DNSResolver: dnsResolverForReceipt(request.DNSResolver), RequestedNetworkRoute: requestedRoute, EffectiveTransport: "not-started", NetworkRouteSource: "unresolved", NumericTargetPinning: true}, Network: "page-requests-public-only", Profile: documentProfilePolicy(rendering.Mode), JavaScript: "fixed-isolated-dom-read"}
 	defer func() {
+		resultErr = withDNSFailureContext(resultErr, policy.DNSResolver)
 		attempt.diagnostic.Policy, attempt.diagnostic.Rendering = policy, rendering
 		if doc != nil {
 			doc.Rendering = rendering
@@ -173,12 +179,14 @@ func fetchDocumentWithNetwork(parent context.Context, request DocumentRequest, n
 		return nil, fmt.Errorf("document acquisition: %w", err)
 	}
 	attempt.advance("startup")
-	route, err := resolveDocumentNetworkRoute(r.NetworkRoute)
-	policy.DocumentNetworkRouting = route.receipt
+	route, err := resolveNetworkRoute(r.NetworkRoute)
+	route.receipt.DNSResolver = r.DNSResolver
+	policy.NetworkRouting = route.receipt
 	if err != nil {
 		return nil, fmt.Errorf("document network route: %w", err)
 	}
 	networkOptions.NetworkRoute, networkOptions.routeSnapshot = r.NetworkRoute, route
+	networkOptions.DNSResolver = r.DNSResolver
 	if err := documentRuntimeAvailable(); err != nil {
 		return nil, err
 	}
@@ -258,10 +266,10 @@ func fetchDocumentWithNetwork(parent context.Context, request DocumentRequest, n
 			policyErr = errors.Join(policyErr, finalPolicyErr)
 		}
 		if policyErr != nil {
-			resultErr = errors.Join(resultErr, &documentPolicyFailure{fmt.Errorf("document network policy: %w", policyErr)})
+			resultErr = errors.Join(resultErr, &publicNetworkPolicyFailure{fmt.Errorf("document network policy: %w", policyErr)})
 		}
 		if transportErr := documentCoreTransportError(core); transportErr != nil {
-			resultErr = errors.Join(resultErr, &documentTransportFailure{transportErr})
+			resultErr = errors.Join(resultErr, &publicNetworkTransportFailure{transportErr})
 		}
 		if cleanup.BrowserClosed {
 			if removeErr := os.RemoveAll(profilePath); removeErr != nil {
@@ -271,7 +279,7 @@ func fetchDocumentWithNetwork(parent context.Context, request DocumentRequest, n
 			}
 		}
 		stats := guard.Stats()
-		policy = DocumentPolicy{DocumentNetworkRouting: route.receipt, Network: "page-requests-public-only", Profile: documentProfilePolicy(r.Mode), JavaScript: "fixed-isolated-dom-read", MaxHTMLBytes: r.MaxHTMLBytes, MaxNetworkBytes: r.MaxNetworkBytes, NetworkRequests: stats.Requests, NetworkBytes: stats.Bytes, BlockedRequests: stats.DeniedRequests + documentCoreBlockedRequests(core)}
+		policy = DocumentPolicy{NetworkRouting: route.receipt, Network: "page-requests-public-only", Profile: documentProfilePolicy(r.Mode), JavaScript: "fixed-isolated-dom-read", MaxHTMLBytes: r.MaxHTMLBytes, MaxNetworkBytes: r.MaxNetworkBytes, NetworkRequests: stats.Requests, NetworkBytes: stats.Bytes, BlockedRequests: stats.DeniedRequests + documentCoreBlockedRequests(core)}
 	}()
 	if err := ctx.Err(); err != nil {
 		return nil, fmt.Errorf("document deadline: %w", err)
@@ -291,6 +299,7 @@ func fetchDocumentWithNetwork(parent context.Context, request DocumentRequest, n
 	defer cancelRun()
 	var finalURL string
 	attempt.advance("navigation")
+	navigationStarted := time.Now()
 	var payload documentDOMPayload
 	err = chromedp.Run(runCtx, chromedp.ActionFunc(func(c context.Context) error {
 		_, _, text, download, err := page.Navigate(r.URL).Do(c)
@@ -306,7 +315,11 @@ func fetchDocumentWithNetwork(parent context.Context, request DocumentRequest, n
 		return nil
 	}))
 	if err != nil {
-		return nil, documentReadError(ctx, guard, err)
+		observed := documentCoreNavigationURL(core)
+		if observed == "" {
+			observed = r.URL
+		}
+		return nil, documentNavigationError(ctx, guard, observed, navigationStarted, err)
 	}
 	attempt.advance("read")
 	ticker := time.NewTicker(50 * time.Millisecond)
@@ -364,14 +377,14 @@ func fetchDocumentWithNetwork(parent context.Context, request DocumentRequest, n
 	if payload.TooLarge || int64(len(payload.HTML)) > r.MaxHTMLBytes {
 		return nil, &documentBudgetFailure{errors.New("document HTML byte budget exceeded")}
 	}
-	if _, err := ValidatePublicDocumentURL(finalURL, nil); err != nil {
+	if _, err := ValidatePublicURL(finalURL, nil); err != nil {
 		return nil, fmt.Errorf("document final URL: %w", err)
 	}
 	if err := errors.Join(guard.PolicyError(), documentCorePolicyError(core)); err != nil {
-		return nil, &documentPolicyFailure{fmt.Errorf("document network policy: %w", err)}
+		return nil, &publicNetworkPolicyFailure{fmt.Errorf("document network policy: %w", err)}
 	}
 	if err := documentCoreTransportError(core); err != nil {
-		return nil, &documentTransportFailure{err}
+		return nil, &publicNetworkTransportFailure{err}
 	}
 	if err := guard.Err(); err != nil {
 		return nil, documentReadError(ctx, guard, err)
@@ -419,7 +432,7 @@ func settleDocumentReceipt(doc *Document, err error, policy DocumentPolicy, clea
 
 func documentReadError(ctx context.Context, guard *PublicNetworkGuard, err error) error {
 	if policyErr := guard.PolicyError(); policyErr != nil {
-		return &documentPolicyFailure{fmt.Errorf("document network policy: %w", policyErr)}
+		return &publicNetworkPolicyFailure{fmt.Errorf("document network policy: %w", policyErr)}
 	}
 	// A child with the same deadline can report first, before ctx.Err updates.
 	if errors.Is(err, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
@@ -429,6 +442,13 @@ func documentReadError(ctx context.Context, guard *PublicNetworkGuard, err error
 		return fmt.Errorf("document canceled: %w", errors.Join(err, ctx.Err()))
 	}
 	return fmt.Errorf("document read: %w", err)
+}
+
+func documentNavigationError(ctx context.Context, guard *PublicNetworkGuard, rawURL string, since time.Time, err error) error {
+	if err == nil {
+		return nil
+	}
+	return documentReadError(ctx, guard, errors.Join(err, guard.dnsFailureForURL(rawURL, since)))
 }
 
 type documentDOMPayload struct {

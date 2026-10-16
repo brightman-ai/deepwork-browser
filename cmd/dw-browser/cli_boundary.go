@@ -48,15 +48,27 @@ func emitCLIResult(result CommandResult, err error, path string) int {
 	if payload == nil {
 		payload = map[string]any{"success": code == exitOK, "delivery": "complete"}
 	}
+	deliveryFailure := func(cause error) []byte {
+		response := map[string]any{"success": false, "phase": "delivery", "dispatch_state": "unknown", "error": cause.Error(), "recovery": "Inspect the runtime before repeating a mutating command"}
+		if result.DeliveryFailurePayload != nil {
+			response["partial_result"] = result.DeliveryFailurePayload(cause)
+			response["recovery"] = "Inspect the diagnostic; body publication may already have committed. No body is advertised as usable by this failed delivery"
+		}
+		data, err := json.Marshal(response)
+		if err != nil {
+			data, _ = json.Marshal(map[string]any{"success": false, "phase": "delivery", "dispatch_state": "unknown", "error": cause.Error()})
+		}
+		return data
+	}
 	data, e := json.MarshalIndent(payload, "", "  ")
 	if e != nil {
 		code = exitRunErr
-		data, _ = json.Marshal(map[string]any{"success": false, "phase": "delivery", "dispatch_state": "unknown", "error": e.Error(), "recovery": "Inspect the runtime before repeating a mutating command"})
+		data = deliveryFailure(e)
 	}
 	if path != "" {
 		if e = writeResultFile(path, append(data, '\n')); e != nil {
 			code = exitRunErr
-			data, _ = json.Marshal(map[string]any{"success": false, "phase": "delivery", "dispatch_state": "unknown", "error": e.Error(), "recovery": "Inspect the runtime before repeating a mutating command"})
+			data = deliveryFailure(e)
 		}
 	}
 	if _, e = fmt.Fprintln(os.Stdout, string(data)); e != nil {
@@ -100,6 +112,11 @@ func runCLI(argv []string) (code int) {
 		return emitCLIResult(CommandResult{}, commandError("validation", exitRunErr, e), "")
 	}
 	clean, _, path := projectCommandArguments(def, args)
+	if def.ValidateOutputs != nil {
+		if e = def.ValidateOutputs(clean, path); e != nil {
+			return emitCLIResult(CommandResult{}, commandError("validation", exitRunErr, e), "")
+		}
+	}
 	if path != "" {
 		probe, e := os.CreateTemp(filepath.Dir(path), ".dw-output-probe-*")
 		if e != nil {

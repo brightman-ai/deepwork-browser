@@ -16,43 +16,43 @@ import (
 	"time"
 )
 
-func TestDocumentNetworkRouteConfiguration(t *testing.T) {
+func TestNetworkRouteConfiguration(t *testing.T) {
 	publicTestEnvironment(t)
 	t.Setenv("HTTPS_PROXY", "http://127.0.0.1:1080")
-	route, err := resolveDocumentNetworkRoute("")
+	route, err := resolveNetworkRoute("")
 	if err != nil || route.httpsProxy != "127.0.0.1:1080" || route.httpProxy != "" || route.receipt.NetworkRouteSource != "environment" || !route.receipt.TrustedProxyDelegation {
 		t.Fatalf("route %+v %v", route, err)
 	}
 	for _, bad := range []string{"socks5://127.0.0.1:1080", "https://proxy.example:443", "http://user:secret@proxy.example", "http://proxy.example/path", "http://proxy.example:0"} {
 		t.Setenv("HTTPS_PROXY", bad)
-		if _, err := resolveDocumentNetworkRoute(DocumentNetworkSystem); err == nil || strings.Contains(err.Error(), "secret") {
+		if _, err := resolveNetworkRoute(NetworkRouteSystem); err == nil || strings.Contains(err.Error(), "secret") {
 			t.Fatalf("unsafe proxy accepted or credential exposed: %v", err)
 		}
-		if direct, err := resolveDocumentNetworkRoute(DocumentNetworkDirect); err != nil || direct.httpsProxy != "" || direct.receipt.TrustedProxyDelegation {
+		if direct, err := resolveNetworkRoute(NetworkRouteDirect); err != nil || direct.httpsProxy != "" || direct.receipt.TrustedProxyDelegation {
 			t.Fatalf("direct did not ignore env %+v %v", direct, err)
 		}
 	}
 	t.Setenv("HTTPS_PROXY", "http://127.0.0.1:1080")
 	t.Setenv("https_proxy", "http://127.0.0.1:1081")
-	if _, err := resolveDocumentNetworkRoute(DocumentNetworkSystem); err == nil {
+	if _, err := resolveNetworkRoute(NetworkRouteSystem); err == nil {
 		t.Fatal("conflicting case variants accepted")
 	}
 }
 
-func TestDocumentNetworkRouteStaticSystemSettings(t *testing.T) {
+func TestNetworkRouteStaticSystemSettings(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
-		settings documentSystemProxySettings
+		settings publicSystemProxySettings
 		reject   bool
 	}{
-		{"http-and-socks", documentSystemProxySettings{HTTPEnabled: true, HTTPSEnabled: true, SOCKSEnabled: true, HTTPHost: "127.0.0.1", HTTPSHost: "127.0.0.1", HTTPPort: 1080, HTTPSPort: 1081}, false},
-		{"pac", documentSystemProxySettings{PACEnabled: true}, true},
-		{"discovery", documentSystemProxySettings{AutoDiscoveryEnabled: true}, true},
-		{"socks-only", documentSystemProxySettings{SOCKSEnabled: true}, true},
-		{"invalid-port", documentSystemProxySettings{HTTPEnabled: true, HTTPHost: "proxy.example", HTTPPort: 0}, true},
+		{"http-and-socks", publicSystemProxySettings{HTTPEnabled: true, HTTPSEnabled: true, SOCKSEnabled: true, HTTPHost: "127.0.0.1", HTTPSHost: "127.0.0.1", HTTPPort: 1080, HTTPSPort: 1081}, false},
+		{"pac", publicSystemProxySettings{PACEnabled: true}, true},
+		{"discovery", publicSystemProxySettings{AutoDiscoveryEnabled: true}, true},
+		{"socks-only", publicSystemProxySettings{SOCKSEnabled: true}, true},
+		{"invalid-port", publicSystemProxySettings{HTTPEnabled: true, HTTPHost: "proxy.example", HTTPPort: 0}, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			s := &documentRouteSnapshot{}
+			s := &publicRouteSnapshot{}
 			err := s.applySystemSettings(tc.settings)
 			if (err != nil) != tc.reject {
 				t.Fatalf("route %+v err %v", s, err)
@@ -105,7 +105,7 @@ func TestDocumentProxyTunnelPreservesBufferedBytesAndLifetime(t *testing.T) {
 		fmt.Fprint(c, "pong")
 	})
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	c, err := dialDocumentProxyTunnel(ctx, "127.0.0.1:1080", "8.8.8.8:443", dial)
+	c, err := dialPublicProxyTunnel(ctx, "127.0.0.1:1080", "8.8.8.8:443", dial)
 	if err != nil {
 		cancel()
 		t.Fatal(err)
@@ -131,7 +131,7 @@ func TestDocumentProxyTunnelRejectsResponseAndHostname(t *testing.T) {
 			dial := tunnelFixture(t, func(c net.Conn) { _, _ = http.ReadRequest(bufio.NewReader(c)); fmt.Fprint(c, response) })
 			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 			defer cancel()
-			if c, err := dialDocumentProxyTunnel(ctx, "127.0.0.1:1080", "8.8.8.8:443", dial); err == nil {
+			if c, err := dialPublicProxyTunnel(ctx, "127.0.0.1:1080", "8.8.8.8:443", dial); err == nil {
 				c.Close()
 				t.Fatal("accepted rejected/incomplete CONNECT")
 			}
@@ -139,7 +139,7 @@ func TestDocumentProxyTunnelRejectsResponseAndHostname(t *testing.T) {
 	}
 	for _, target := range []string{"public.example:443", "127.0.0.1:443", "[::ffff:127.0.0.1]:443"} {
 		var calls int
-		_, err := dialDocumentProxyTunnel(context.Background(), "127.0.0.1:1080", target, func(context.Context, string, string) (net.Conn, error) {
+		_, err := dialPublicProxyTunnel(context.Background(), "127.0.0.1:1080", target, func(context.Context, string, string) (net.Conn, error) {
 			calls++
 			return nil, errors.New("unexpected dial")
 		})
@@ -166,7 +166,7 @@ func TestDocumentProxyTunnelCancellationAndDeadline(t *testing.T) {
 				defer c()
 			}
 			done := make(chan error, 1)
-			go func() { _, err := dialDocumentProxyTunnel(ctx, "127.0.0.1:1080", "8.8.8.8:443", dial); done <- err }()
+			go func() { _, err := dialPublicProxyTunnel(ctx, "127.0.0.1:1080", "8.8.8.8:443", dial); done <- err }()
 			<-entered
 			if !deadline {
 				cancel()
@@ -215,7 +215,7 @@ func TestPublicNetworkSystemProxyKeepsPinnedHTTPBody(t *testing.T) {
 	defer proxy.Close()
 	endpoint := strings.TrimPrefix(proxy.URL, "http://")
 	opts := publicTestOptions()
-	opts.routeSnapshot = &documentRouteSnapshot{httpProxy: endpoint, httpsProxy: "127.0.0.1:1"}
+	opts.routeSnapshot = &publicRouteSnapshot{httpProxy: endpoint, httpsProxy: "127.0.0.1:1"}
 	opts.lookupIP = func(context.Context, string) ([]netip.Addr, error) {
 		return []netip.Addr{netip.MustParseAddr("8.8.8.8")}, nil
 	}
@@ -233,7 +233,7 @@ func TestPublicNetworkSystemProxyKeepsPinnedHTTPBody(t *testing.T) {
 
 func TestPublicNetworkSystemProxyRejectsMixedDNSBeforeTransport(t *testing.T) {
 	opts := publicTestOptions()
-	opts.routeSnapshot = &documentRouteSnapshot{httpProxy: "127.0.0.1:1080"}
+	opts.routeSnapshot = &publicRouteSnapshot{httpProxy: "127.0.0.1:1080"}
 	opts.lookupIP = func(context.Context, string) ([]netip.Addr, error) {
 		return []netip.Addr{netip.MustParseAddr("8.8.8.8"), netip.MustParseAddr("127.0.0.1")}, nil
 	}
@@ -275,7 +275,7 @@ func TestPublicNetworkSystemProxySelectsSchemeNotPort(t *testing.T) {
 	defer hp.Close()
 	defer sp.Close()
 	opts := publicTestOptions()
-	opts.routeSnapshot = &documentRouteSnapshot{httpProxy: strings.TrimPrefix(hp.URL, "http://"), httpsProxy: strings.TrimPrefix(sp.URL, "http://")}
+	opts.routeSnapshot = &publicRouteSnapshot{httpProxy: strings.TrimPrefix(hp.URL, "http://"), httpsProxy: strings.TrimPrefix(sp.URL, "http://")}
 	g := publicTestGuard(t, opts)
 	for _, request := range []struct{ scheme, target string }{{"http", "8.8.8.8:443"}, {"https", "8.8.8.8:80"}} {
 		c, err := g.dialScheme(context.Background(), "tcp", request.target, request.scheme)
@@ -319,7 +319,7 @@ func TestPublicNetworkSystemProxyRetriesOnlyPinnedSnapshot(t *testing.T) {
 	}))
 	defer proxy.Close()
 	opts := publicTestOptions()
-	opts.routeSnapshot = &documentRouteSnapshot{httpsProxy: strings.TrimPrefix(proxy.URL, "http://")}
+	opts.routeSnapshot = &publicRouteSnapshot{httpsProxy: strings.TrimPrefix(proxy.URL, "http://")}
 	opts.lookupIP = func(context.Context, string) ([]netip.Addr, error) {
 		lookups.Add(1)
 		return []netip.Addr{netip.MustParseAddr("8.8.8.8"), netip.MustParseAddr("1.1.1.1")}, nil
@@ -337,7 +337,7 @@ func TestPublicNetworkSystemProxyRetriesOnlyPinnedSnapshot(t *testing.T) {
 
 func TestPublicNetworkSystemProxyFailureNeverDialsTargetDirect(t *testing.T) {
 	opts := publicTestOptions()
-	opts.routeSnapshot = &documentRouteSnapshot{httpsProxy: "127.0.0.1:1080"}
+	opts.routeSnapshot = &publicRouteSnapshot{httpsProxy: "127.0.0.1:1080"}
 	opts.lookupIP = func(context.Context, string) ([]netip.Addr, error) {
 		return []netip.Addr{netip.MustParseAddr("8.8.8.8"), netip.MustParseAddr("1.1.1.1")}, nil
 	}
@@ -359,7 +359,7 @@ func TestPublicNetworkSystemProxyFailureNeverDialsTargetDirect(t *testing.T) {
 	}
 }
 
-func TestDocumentNetworkRouteFailureReceiptBeforeBrowser(t *testing.T) {
+func TestNetworkRouteFailureReceiptBeforeBrowser(t *testing.T) {
 	publicTestEnvironment(t)
 	t.Setenv("ALL_PROXY", "socks5://user:secret@127.0.0.1:1080")
 	doc, err := FetchDocument(context.Background(), DocumentRequest{URL: "https://example.com/"})
@@ -368,7 +368,7 @@ func TestDocumentNetworkRouteFailureReceiptBeforeBrowser(t *testing.T) {
 		t.Fatalf("route failure lost safe receipt: %v", err)
 	}
 	p := failure.Diagnostic.Policy
-	if p.RequestedNetworkRoute != DocumentNetworkSystem || p.NetworkRouteSource != "environment" || p.EffectiveTransport != "not-started" || !p.NumericTargetPinning || p.TrustedProxyDelegation {
+	if p.RequestedNetworkRoute != NetworkRouteSystem || p.NetworkRouteSource != "environment" || p.EffectiveTransport != "not-started" || !p.NumericTargetPinning || p.TrustedProxyDelegation {
 		t.Fatalf("unsettled route receipt: %+v", p)
 	}
 }

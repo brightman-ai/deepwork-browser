@@ -20,7 +20,11 @@ func parseDocumentRequest(args []string) (browser.DocumentRequest, error) {
 	if err != nil {
 		return browser.DocumentRequest{}, err
 	}
-	request := browser.DocumentRequest{URL: positional[0], NetworkRoute: browser.DocumentNetworkSystem, Mode: browser.ModeHeadless}
+	request := browser.DocumentRequest{URL: positional[0], NetworkRoute: browser.NetworkRouteSystem, Mode: browser.ModeHeadless}
+	request.DNSResolver, err = browser.ValidateDNSResolver(options["--dns-resolver"])
+	if err != nil {
+		return request, fmt.Errorf("--dns-resolver: %w", err)
+	}
 	if raw, ok := options["--mode"]; ok {
 		request.Mode = browser.BrowserMode(raw)
 		if request.Mode != browser.ModeHeadless && request.Mode != browser.ModeHeaded {
@@ -28,12 +32,12 @@ func parseDocumentRequest(args []string) (browser.DocumentRequest, error) {
 		}
 	}
 	if raw, ok := options["--network-route"]; ok {
-		request.NetworkRoute = browser.DocumentNetworkRoute(raw)
-		if request.NetworkRoute != browser.DocumentNetworkSystem && request.NetworkRoute != browser.DocumentNetworkDirect {
+		request.NetworkRoute = browser.NetworkRoute(raw)
+		if request.NetworkRoute != browser.NetworkRouteSystem && request.NetworkRoute != browser.NetworkRouteDirect {
 			return request, fmt.Errorf("--network-route requires system or direct")
 		}
 	}
-	if _, err := browser.ValidatePublicDocumentURL(request.URL, nil); err != nil {
+	if _, err := browser.ValidatePublicURL(request.URL, nil); err != nil {
 		return request, err
 	}
 	if raw, ok := options["--timeout"]; ok {

@@ -46,27 +46,20 @@ type DocumentAcquisitionError struct {
 func (e *DocumentAcquisitionError) Error() string { return e.Cause.Error() }
 func (e *DocumentAcquisitionError) Unwrap() error { return e.Cause }
 
-type documentPolicyFailure struct{ error }
-
-func (e *documentPolicyFailure) Unwrap() error { return e.error }
-
 type documentCleanupFailure struct{ error }
 
 func (e *documentCleanupFailure) Unwrap() error { return e.error }
-
-type documentTransportFailure struct{ error }
-
-func (e *documentTransportFailure) Unwrap() error { return e.error }
 
 type documentBudgetFailure struct{ error }
 
 func (e *documentBudgetFailure) Unwrap() error { return e.error }
 
 func documentFailureReason(err error) string {
-	var policy *documentPolicyFailure
+	var policy *publicNetworkPolicyFailure
 	var cleanup *documentCleanupFailure
-	var transport *documentTransportFailure
+	var transport *publicNetworkTransportFailure
 	var budget *documentBudgetFailure
+	var dns *DNSResolutionError
 	switch {
 	case errors.As(err, &policy):
 		return "network_policy"
@@ -74,6 +67,8 @@ func documentFailureReason(err error) string {
 		return "timeout"
 	case documentAcquisitionCauseIs(err, context.Canceled):
 		return "canceled"
+	case errors.As(err, &dns):
+		return "dns_resolution"
 	case errors.As(err, &transport):
 		return "network_transport"
 	case errors.As(err, &cleanup):

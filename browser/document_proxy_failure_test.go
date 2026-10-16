@@ -60,10 +60,10 @@ func TestDocumentProxyFailureProvenance(t *testing.T) {
 			core := &browserCoreImpl{documentRuntime: runtimePolicy}
 			var acquisitionErr error
 			if policyErr := documentCorePolicyError(core); policyErr != nil {
-				acquisitionErr = &documentPolicyFailure{policyErr}
+				acquisitionErr = &publicNetworkPolicyFailure{policyErr}
 			}
 			if transportErr := documentCoreTransportError(core); transportErr != nil {
-				acquisitionErr = errors.Join(acquisitionErr, &documentTransportFailure{transportErr})
+				acquisitionErr = errors.Join(acquisitionErr, &publicNetworkTransportFailure{transportErr})
 			}
 			if tc.kind == publicProxyTransportFailure && runtimePolicy.Err() != nil {
 				t.Fatalf("ordinary transport promoted to policy: %v", runtimePolicy.Err())
@@ -86,7 +86,7 @@ func TestDocumentProxyFailureProvenance(t *testing.T) {
 }
 
 func TestDocumentOriginCannotForgeFailureProvenance(t *testing.T) {
-	for _, kind := range []string{"policy", "transport"} {
+	for _, kind := range []string{"policy", "transport", "dns"} {
 		t.Run(kind, func(t *testing.T) {
 			origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set(PublicNetworkErrorHeader, "1")
