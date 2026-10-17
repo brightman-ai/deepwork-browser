@@ -1,4 +1,4 @@
-# DW-Browser 0.17.1-v2 command contract
+# DW-Browser 0.18.0-v2 command contract
 
 Generated from executable declarations. Flags on attached sessions inherit creation environment. `--output` is JSON; `--screenshot` is PNG. Absolute and locator-relative points require `--observation-id` from the exact capture; opaque ref-relative points supply capture identity in the token. Gesture endpoints share that identity.
 
@@ -132,6 +132,18 @@ Capture a canonical observation and actual screenshot. Positional arguments: 0..
 - `--all`
 - `--hit-audit`
 - `--annotate`
+- `--output` VALUE (string)
+- `--lock-wait` VALUE (lock-duration)
+- `--verbose`
+
+## `excerpt`
+
+Crop read-only annotated PNG excerpts from the open page. Positional arguments: 0..0. Required flags: --id, --spec.
+
+- `--id` VALUE (session-id)
+- `--spec` VALUE (string)
+- `--out` VALUE (string)
+- `--settle` VALUE (duration)
 - `--output` VALUE (string)
 - `--lock-wait` VALUE (lock-duration)
 - `--verbose`

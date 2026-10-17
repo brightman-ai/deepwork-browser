@@ -794,6 +794,56 @@
       "diagnostic": false
     },
     {
+      "command": "excerpt",
+      "summary": "Crop read-only annotated PNG excerpts from the open page",
+      "flags": [
+        {
+          "name": "--id",
+          "takes_value": true,
+          "value_type": "session-id"
+        },
+        {
+          "name": "--spec",
+          "takes_value": true,
+          "value_type": "string"
+        },
+        {
+          "name": "--out",
+          "takes_value": true,
+          "value_type": "string"
+        },
+        {
+          "name": "--settle",
+          "takes_value": true,
+          "value_type": "duration"
+        },
+        {
+          "name": "--output",
+          "takes_value": true,
+          "value_type": "string",
+          "infrastructure": "output"
+        },
+        {
+          "name": "--lock-wait",
+          "takes_value": true,
+          "value_type": "lock-duration",
+          "infrastructure": "locking"
+        },
+        {
+          "name": "--verbose",
+          "takes_value": false,
+          "infrastructure": "logging"
+        }
+      ],
+      "required": [
+        "--id",
+        "--spec"
+      ],
+      "min_args": 0,
+      "max_args": 0,
+      "diagnostic": false
+    },
+    {
       "command": "check",
       "summary": "Judge required assertions against one canonical observation",
       "flags": [
@@ -3886,5 +3936,5 @@
     }
   ],
   "schema_version": "dw.capabilities.v2",
-  "version": "0.17.1-v2"
+  "version": "0.18.0-v2"
 }

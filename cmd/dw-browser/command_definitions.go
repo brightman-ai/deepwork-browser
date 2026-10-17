@@ -107,6 +107,7 @@ func commandDefinitions() []CommandDefinition {
 	add("fetch", "Save a complete public HTTP response body without JavaScript or a browser", runFetchResult, flags("save timeout max-bytes max-network-bytes network-route dns-resolver", ""), []string{"--save"}, 1, 1, false)
 	add("document", "Read public URL DOM in a disposable browser target; no screenshot or session", runDocumentResult, documentFlags, nil, 1, 1, false)
 	add("observe", "Capture a canonical observation and actual screenshot", runObserveResult, id(flags("screenshot content scope top budget", "health tree all hit-audit annotate")), []string{"--id"}, 0, 0, false)
+	add("excerpt", "Crop read-only annotated PNG excerpts from the open page", runExcerptResult, id(flags("spec out settle", "")), []string{"--id", "--spec"}, 0, 0, false)
 	add("check", "Judge required assertions against one canonical observation", runCheckResult, flags("id observation assert file using vision-url vision-provider vision-model vision-api-key", ""), nil, 0, 0, false)
 	add("diff", "Compare two canonical observations", runDiffResult, nil, nil, 2, 2, true)
 	add("wait", "Wait for one assertion or a declared duration", runWaitResult, flags("id assert timeout duration", ""), []string{"--id"}, 0, 0, false)
@@ -472,7 +473,7 @@ func flagValueType(name string) string {
 		return "integer"
 	case "x", "y", "end-x", "end-y", "delta-x", "delta-y":
 		return "number"
-	case "timeout", "duration", "older-than", "min-age", "idle-ttl":
+	case "timeout", "duration", "settle", "older-than", "min-age", "idle-ttl":
 		return "duration"
 	case "lock-wait":
 		return "lock-duration"
