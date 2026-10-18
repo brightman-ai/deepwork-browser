@@ -1,7 +1,9 @@
 _dw_browser_v2() {
  local cur="${COMP_WORDS[COMP_CWORD]}" prev="${COMP_WORDS[COMP_CWORD-1]}" choices=""
- if (( COMP_CWORD == 1 )); then choices='act audit capabilities check close completion cookie-import diff document eval export-contract fetch gc help htr journey muxhost observe once open persona profile protocol record session skills tabs version wait'; else
+ if (( COMP_CWORD == 1 )); then choices='act audit capabilities check close completion cookie-import diff document eval excerpt export-contract fetch gc help htr journey muxhost observe once open pdf persona profile protocol record session skills tabs version wait'; else
  case "${COMP_WORDS[1]} ${COMP_WORDS[2]}" in
+ 'pdf preview') choices='--file --pages --dpi --out --network-route --output --lock-wait --verbose ';;
+ 'pdf excerpt') choices='--file --spec --out --network-route --output --lock-wait --verbose ';;
  'session status') choices='--id --output --lock-wait --verbose ';;
  'session list') choices='--output --lock-wait --verbose ';;
  'session viewport') choices='--id --size --output --lock-wait --verbose ';;
@@ -59,6 +61,7 @@ _dw_browser_v2() {
  'diff') choices='--output --lock-wait --verbose ';;
  'document') choices='--timeout --max-html-bytes --max-network-bytes --network-route --dns-resolver --mode --output --lock-wait --verbose ';;
  'eval') choices='--id --output --lock-wait --verbose ';;
+ 'excerpt') choices='--id --spec --out --settle --output --lock-wait --verbose ';;
  'export-contract') choices='--directory --output --lock-wait --verbose ';;
  'fetch') choices='--save --timeout --max-bytes --max-network-bytes --network-route --dns-resolver --output --lock-wait --verbose ';;
  'gc') choices='--older-than --dry-run --all --output --lock-wait --verbose ';;
@@ -69,6 +72,7 @@ _dw_browser_v2() {
  'observe') choices='--id --screenshot --content --scope --top --budget --health --tree --all --hit-audit --annotate --output --lock-wait --verbose ';;
  'once') choices='--scenario --mode --persona --engine --safari-device --viewport --profile --evidence --allow-host --browser-chrome --user-agent --goal --stealth --screenshot --content --health --tree --all --annotate --output --lock-wait --verbose ';;
  'open') choices='--scenario --mode --persona --engine --safari-device --viewport --profile --evidence --allow-host --browser-chrome --user-agent --goal --stealth --id --output --lock-wait --verbose ';;
+ 'pdf') choices='preview excerpt ';;
  'persona') choices='list ';;
  'profile') choices='list import prune ';;
  'protocol') choices='--output --lock-wait --verbose ';;

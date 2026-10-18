@@ -107,6 +107,9 @@ func commandDefinitions() []CommandDefinition {
 	add("fetch", "Save a complete public HTTP response body without JavaScript or a browser", runFetchResult, flags("save timeout max-bytes max-network-bytes network-route dns-resolver", ""), []string{"--save"}, 1, 1, false)
 	add("document", "Read public URL DOM in a disposable browser target; no screenshot or session", runDocumentResult, documentFlags, nil, 1, 1, false)
 	add("observe", "Capture a canonical observation and actual screenshot", runObserveResult, id(flags("screenshot content scope top budget", "health tree all hit-audit annotate")), []string{"--id"}, 0, 0, false)
+	add("excerpt", "Crop read-only annotated PNG screenshot excerpts from the open page", runExcerptResult, id(flags("spec out settle", "")), []string{"--id", "--spec"}, 0, 0, false)
+	add("pdf preview", "Render PDF or office-document pages as PNG images", runPdfPreviewResult, flags("file pages dpi out network-route", ""), []string{"--file"}, 0, 0, false)
+	add("pdf excerpt", "Crop annotated PNG screenshot excerpts from PDF pages by phrase or box", runPdfExcerptResult, flags("file spec out network-route", ""), []string{"--file", "--spec"}, 0, 0, false)
 	add("check", "Judge required assertions against one canonical observation", runCheckResult, flags("id observation assert file using vision-url vision-provider vision-model vision-api-key", ""), nil, 0, 0, false)
 	add("diff", "Compare two canonical observations", runDiffResult, nil, nil, 2, 2, true)
 	add("wait", "Wait for one assertion or a declared duration", runWaitResult, flags("id assert timeout duration", ""), []string{"--id"}, 0, 0, false)
@@ -167,6 +170,60 @@ func commandDefinitions() []CommandDefinition {
 			}
 		}
 		switch d.Path {
+		case "excerpt":
+			d.Usage = "excerpt --id SESSION --spec '<json array | @file | ->' [--out DIR] [--settle 500ms]"
+			d.Arguments = []CLIArgument{{Name: "--spec", Description: "JSON array; each entry becomes one cropped PNG screenshot: {name, targets:[...], highlight:[phrases], box_style:{color:\"#rrggbb\", width:int(css px)}, highlight_color:\"#rrggbb\", crop_margin:int(css px)}. targets resolve elements on the open page: \"id:ELEMID\" by DOM id (dots allowed, no CSS escaping needed), \"title:ELEMID\" for the .ltx_title inside that id (arXiv headings), or a bare value as a CSS selector. highlight phrases are matched inside the target text with whitespace tolerance, skipping MathML annotations and spanning inline links/emphasis; each match is painted with a translucent highlighter and every matched line keeps readable text."}}
+			d.Guidance = "Screenshot verb (read-only observation class): crops page regions as PNG images with a red box around the target union and translucent highlights over chosen phrases — built for quoting web originals (papers, docs) into markdown. It never mutates the page, needs no write grant or allow-host, and does not invalidate observation refs (a 20-image batch needs no re-observe). One full-page capture serves the whole spec. Unresolved targets and unmatched phrases are explicit per-entry business results in missing (exit stays 0); entries whose targets all miss produce no file. warnings reports fixed/sticky elements overlapping the box and images still loading. Elements taller than the viewport are captured whole. Style defaults: red 3px box, #ffe94d highlight, 14px crop margin; override per entry with box_style/highlight_color/crop_margin."
+			d.Examples = []string{
+				`dw-browser excerpt --id paper --spec '[{"name":"readout","targets":["id:S6.SS2.SSS0.Px1"],"highlight":["Instant readouts have approximately 2–8% higher latency"]}]'`,
+				`dw-browser excerpt --id paper --spec @spec.json --out ./shots`,
+			}
+			for fi := range d.Flags {
+				switch d.Flags[fi].Name {
+				case "--spec":
+					d.Flags[fi].Description = "JSON array of screenshot entries: [{name, targets:[\"id:X\"|\"title:X\"|css], highlight:[phrases], box_style?, highlight_color?, crop_margin?}]; or @file / - for stdin"
+				case "--out":
+					d.Flags[fi].Description = "output directory for the PNGs (default: evidence/excerpts/<session>)"
+				case "--settle":
+					d.Flags[fi].Description = "wait before collecting (fonts/images settle after load), e.g. 500ms"
+				}
+			}
+		case "pdf preview":
+			d.Usage = "pdf preview --file <path|url> [--pages 1-3] [--dpi 150] [--out DIR] [--network-route system|direct]"
+			d.Arguments = []CLIArgument{{Name: "--file", Description: "Local PDF path, or http(s) URL downloaded through the fetch network boundary; office documents (docx/pptx/xlsx/odt…) are converted to PDF via libreoffice automatically."}}
+			d.Guidance = "Page-image verb (no browser session): renders chosen pages of a local or downloaded PDF (office documents convert first, kind reported in source.kind) as PNG files for reading/preview. Needs poppler-utils; office input additionally needs libreoffice (both fail loud with install hints when missing). Pages are 1-based; --pages takes comma-separated ranges like 2,5-7 clamped to the page count. Default dpi 150 (36–600). This is static rendering, not UI observation: it cannot prove interactive behavior."
+			d.Examples = []string{"dw-browser pdf preview --file paper.pdf --pages 1-3 --out ./pages", "dw-browser pdf preview --file https://arxiv.org/pdf/2610.17309 --pages 1"}
+			for fi := range d.Flags {
+				switch d.Flags[fi].Name {
+				case "--file":
+					d.Flags[fi].Description = "local PDF/office file path or http(s) URL"
+				case "--pages":
+					d.Flags[fi].Description = "1-based pages: \"3\" or \"1-3\" or \"2,5-7\" (default 1)"
+				case "--dpi":
+					d.Flags[fi].Description = "render resolution 36–600 (default 150)"
+				case "--out":
+					d.Flags[fi].Description = "output directory (default evidence/pdf-preview)"
+				case "--network-route":
+					d.Flags[fi].Description = "URL download route: system (default, honors validated proxy config) or direct (ignores proxies, explicit choice)"
+				}
+			}
+		case "pdf excerpt":
+			d.Usage = "pdf excerpt --file <path|url> --spec '<json array | @file | ->' [--out DIR] [--network-route system|direct]"
+			d.Arguments = []CLIArgument{{Name: "--spec", Description: "JSON array; each entry becomes one cropped PNG screenshot from a PDF page: {name, page, phrases:[...], boxes:[[x0,y0,x1,y1],...] in PDF points (72dpi space, origin top-left), box_style:{color:\"#rrggbb\", width:int(render px)}, highlight_color:\"#rrggbb\", crop_margin:int(render px at 200 dpi)}. phrases are matched as a contiguous word sequence (NFKC-normalized, typographic dashes/quotes folded to ASCII, punctuation-affix tolerant) via poppler word bounding boxes — multi-line matches highlight each matched word. The red box is drawn around the union of boxes and matched words; crop adds a margin around it."}}
+			d.Guidance = "Screenshot verb (static PDF counterpart of excerpt): crops annotated PNG excerpts from PDF pages — red box around the target union, translucent highlighter over matched phrases — for quoting paper originals into markdown when the HTML version is missing or loses figures. Same style defaults as excerpt (red 3px, #ffe94d, 14px margin). Word-level matching means a phrase must appear verbatim (after normalization); unmatched phrases are explicit per-entry results in missing (exit stays 0), entries with no match and no boxes produce no file. page_out_of_range is reported in warnings. Needs poppler-utils; office input additionally needs libreoffice. Rendering runs at a fixed 200 dpi for text sharpness. Not a UI observation."
+			d.Examples = []string{
+				`dw-browser pdf excerpt --file paper.pdf --spec '[{"name":"latency-table","page":7,"phrases":["Single-pass decision readouts"],"boxes":[[60,95,540,320]]}]'`,
+			}
+			for fi := range d.Flags {
+				switch d.Flags[fi].Name {
+				case "--file":
+					d.Flags[fi].Description = "local PDF/office file path or http(s) URL"
+				case "--spec":
+					d.Flags[fi].Description = "JSON array of entries: [{name, page, phrases?, boxes?, box_style?, highlight_color?, crop_margin?}]; or @file / - for stdin"
+				case "--out":
+					d.Flags[fi].Description = "output directory (default evidence/pdf-excerpts)"
+				}
+			}
 		case "fetch":
 			d.ValidateOutputs = validateFetchOutputs
 			d.Arguments = []CLIArgument{{Name: "URL", Description: "Public HTTP(S) URL whose response body is saved without JavaScript, cookies or browser rendering."}}
@@ -274,6 +331,7 @@ func commandDefinitions() []CommandDefinition {
 			}
 		}
 	}
+	applyGuidanceDocs(defs)
 	return defs
 }
 
@@ -468,11 +526,11 @@ func flagValueType(name string) string {
 	switch name {
 	case "id":
 		return "session-id"
-	case "top", "budget", "count", "steps", "threshold", "width", "height", "owner-pid", "debug-port", "max-html-bytes", "max-bytes", "max-network-bytes":
+	case "top", "budget", "count", "steps", "threshold", "width", "height", "owner-pid", "debug-port", "dpi", "max-html-bytes", "max-bytes", "max-network-bytes":
 		return "integer"
 	case "x", "y", "end-x", "end-y", "delta-x", "delta-y":
 		return "number"
-	case "timeout", "duration", "older-than", "min-age", "idle-ttl":
+	case "timeout", "duration", "settle", "older-than", "min-age", "idle-ttl":
 		return "duration"
 	case "lock-wait":
 		return "lock-duration"

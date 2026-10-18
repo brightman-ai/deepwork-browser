@@ -29,7 +29,7 @@ import (
 	"github.com/chromedp/chromedp"
 )
 
-const version = "0.17.2-v2"
+const version = "0.19.0-v2"
 
 // ActionEngine returns its own explicit error at 15s. The CLI watchdog is a
 // slightly wider process-level fence covering every BrowserCore implementation.

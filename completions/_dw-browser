@@ -1,8 +1,10 @@
 #compdef dw-browser
 _dw_browser_v2() {
  local -a candidates
- if (( CURRENT == 2 )); then candidates=(act audit capabilities check close completion cookie-import diff document eval export-contract fetch gc help htr journey muxhost observe once open persona profile protocol record session skills tabs version wait); _describe 'command' candidates; return; fi
+ if (( CURRENT == 2 )); then candidates=(act audit capabilities check close completion cookie-import diff document eval excerpt export-contract fetch gc help htr journey muxhost observe once open pdf persona profile protocol record session skills tabs version wait); _describe 'command' candidates; return; fi
  case "${words[2]} ${words[3]}" in
+ 'pdf preview') candidates=('--file' '--pages' '--dpi' '--out' '--network-route' '--output' '--lock-wait' '--verbose' ); _describe 'flag' candidates; return;;
+ 'pdf excerpt') candidates=('--file' '--spec' '--out' '--network-route' '--output' '--lock-wait' '--verbose' ); _describe 'flag' candidates; return;;
  'session status') candidates=('--id' '--output' '--lock-wait' '--verbose' ); _describe 'flag' candidates; return;;
  'session list') candidates=('--output' '--lock-wait' '--verbose' ); _describe 'flag' candidates; return;;
  'session viewport') candidates=('--id' '--size' '--output' '--lock-wait' '--verbose' ); _describe 'flag' candidates; return;;
@@ -60,6 +62,7 @@ _dw_browser_v2() {
  'diff') candidates=('--output' '--lock-wait' '--verbose' );;
  'document') candidates=('--timeout' '--max-html-bytes' '--max-network-bytes' '--network-route' '--dns-resolver' '--mode' '--output' '--lock-wait' '--verbose' );;
  'eval') candidates=('--id' '--output' '--lock-wait' '--verbose' );;
+ 'excerpt') candidates=('--id' '--spec' '--out' '--settle' '--output' '--lock-wait' '--verbose' );;
  'export-contract') candidates=('--directory' '--output' '--lock-wait' '--verbose' );;
  'fetch') candidates=('--save' '--timeout' '--max-bytes' '--max-network-bytes' '--network-route' '--dns-resolver' '--output' '--lock-wait' '--verbose' );;
  'gc') candidates=('--older-than' '--dry-run' '--all' '--output' '--lock-wait' '--verbose' );;
@@ -70,6 +73,7 @@ _dw_browser_v2() {
  'observe') candidates=('--id' '--screenshot' '--content' '--scope' '--top' '--budget' '--health' '--tree' '--all' '--hit-audit' '--annotate' '--output' '--lock-wait' '--verbose' );;
  'once') candidates=('--scenario' '--mode' '--persona' '--engine' '--safari-device' '--viewport' '--profile' '--evidence' '--allow-host' '--browser-chrome' '--user-agent' '--goal' '--stealth' '--screenshot' '--content' '--health' '--tree' '--all' '--annotate' '--output' '--lock-wait' '--verbose' );;
  'open') candidates=('--scenario' '--mode' '--persona' '--engine' '--safari-device' '--viewport' '--profile' '--evidence' '--allow-host' '--browser-chrome' '--user-agent' '--goal' '--stealth' '--id' '--output' '--lock-wait' '--verbose' );;
+ 'pdf') candidates=('preview' 'excerpt' );;
  'persona') candidates=('list' );;
  'profile') candidates=('list' 'import' 'prune' );;
  'protocol') candidates=('--output' '--lock-wait' '--verbose' );;
