@@ -1,5 +1,34 @@
 # Document runtime acceptance — 0.16.0-v2
 
+## 0.17.2 headed-session hardening
+
+This supplemental section records the follow-up headed-session work; the older
+0.16.0 evidence below remains historical. Cross-process session attach now
+restores target discovery and no-front activation. Headed input requires a live,
+identity-matched mux-host state and a contained Chrome window; missing or stale
+facts fail before input. The browser target is activated through the target graph
+without `Page.bringToFront`, so an attach cannot use an ordinary window-fronting
+operation to escape an isolated display.
+
+Virtual-display placement now accounts for the requested Chrome window size.
+Failed launches write an early owned-profile marker and reclaim the exact Chrome
+process group if containment or CDP window enforcement fails. The cleanup path
+does not scan or kill unrelated browser processes.
+
+The standard headed WeChat probe used an owned profile and original long URL. On
+a built-in-display-only run, the owned headed runtime was created and an explicit
+page-target CDP probe reached the same `/mp/wappoc_appmsgcaptcha` challenge; it
+did not return article content. That is evidence that standard headed does not
+automatically defeat the site's server decision. A later run on a machine with
+two external displays failed closed because Chrome was outside the virtual
+display containment boundary; it did not move external windows or claim success.
+
+AI may inspect and operate ordinary visible verification controls through the
+normal `observe` → `act` path after a stable session. Scan, SMS, account identity
+or other external-factor confirmation remains a Human handoff. Challenge DOM is
+never relabeled as article content, and no URL rewrite, cookie import, user
+profile attachment or CAPTCHA bypass was added.
+
 Verified on macOS arm64, installed Chrome 155.0.8059.80. This covers owned
 headless and headful hidden DOM targets. It does not certify traditional GUI
 headed execution, other platforms, or automatic passage through site challenges.

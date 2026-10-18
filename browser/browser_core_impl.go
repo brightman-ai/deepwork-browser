@@ -728,7 +728,7 @@ func launchControlledBrowserCoreChrome(ctx context.Context, opts controlledBrows
 			if err := vd.Ensure(); err != nil {
 				return nil, fmt.Errorf("browser: headed mode unavailable on macOS: CGVirtualDisplay setup failed: %w", err)
 			}
-			virtualX, virtualY = vd.WindowPosition()
+			virtualX, virtualY = vd.WindowPositionForWindow(width, height)
 			extraArgs = append(extraArgs, fmt.Sprintf("--window-position=%d,%d", virtualX, virtualY))
 			result.virtualDisplay = vd
 		default:
@@ -1888,11 +1888,25 @@ func (impl *browserCoreImpl) RestoreRefsFromSession(refs []SessionRef) {
 // NewBrowserCoreFromSession 连接到已有 Chrome 实例（通过 CDP WebSocket URL）。
 // 用于 session 模式：open 后 snap/act/get/wait 都连接到同一个 Chrome 进程。
 func NewBrowserCoreFromSession(ctx context.Context, wsURL string, targetID string, presetID string, personaID string, modes ...BrowserMode) (SessionCore, error) {
+	return newBrowserCoreFromSession(ctx, wsURL, targetID, presetID, personaID, nil, modes...)
+}
+
+// NewBrowserCoreFromSessionWithForegroundGuard preserves the display
+// containment policy when attaching from another process. The callback is
+// checked before any target activation and fails closed.
+func NewBrowserCoreFromSessionWithForegroundGuard(ctx context.Context, wsURL string, targetID string, presetID string, personaID string, foregroundGuard func() error, modes ...BrowserMode) (SessionCore, error) {
+	return newBrowserCoreFromSession(ctx, wsURL, targetID, presetID, personaID, foregroundGuard, modes...)
+}
+
+func newBrowserCoreFromSession(ctx context.Context, wsURL string, targetID string, presetID string, personaID string, foregroundGuard func() error, modes ...BrowserMode) (SessionCore, error) {
 	var allocCtxOpts []chromedp.ExecAllocatorOption
 	_ = allocCtxOpts
 	runtimeMode := ModeVisible
 	if len(modes) > 0 {
 		runtimeMode = NormalizeBrowserMode(modes[0], ModeVisible)
+	}
+	if runtimeMode == ModeHeaded && foregroundGuard == nil {
+		return nil, fmt.Errorf("browser: headed session attach requires a foreground containment guard")
 	}
 
 	// Session attach 命令复用的是“已经存在的页面 target”。
@@ -1956,6 +1970,29 @@ func NewBrowserCoreFromSession(ctx context.Context, wsURL string, targetID strin
 	actEngine := newActionEngine(snapEngine)
 	liveEngine := newLiveViewEngine(DefaultViewportWidth, DefaultViewportHeight)
 	takeoverCtrl := newTakeoverController(browserCtx)
+	tracker := NewTargetTracker(browserCtx)
+	if runtimeMode == ModeHeaded {
+		// An attached headed session belongs to the mux-host display. Keep all
+		// target activation in no-front mode so Page.bringToFront cannot escape
+		// that display into the Human desktop.
+		tracker.SetNoFrontMode(true)
+		if foregroundGuard != nil {
+			tracker.SetForegroundGuard(func(_ target.ID, _ string) error { return foregroundGuard() })
+		}
+		actEngine.targetActivation = func(context.Context) (bool, error) {
+			if foregroundGuard == nil {
+				return false, fmt.Errorf("attached headed session has no foreground containment guard")
+			}
+			if err := foregroundGuard(); err != nil {
+				return false, err
+			}
+			if err := tracker.activateBrowserTargetNoFront(tracker.ActiveTargetID(), "attached_input"); err != nil {
+				return false, err
+			}
+			return false, nil
+		}
+	}
+	tracker.SetupListeners(browserCtx)
 
 	impl := &browserCoreImpl{
 		allocCtx:          allocCtx,
@@ -1979,6 +2016,7 @@ func NewBrowserCoreFromSession(ctx context.Context, wsURL string, targetID strin
 		liveViewportH:     DefaultViewportHeight,
 		liveViewportDPR:   1,
 		sessionAttached:   true,
+		targetTracker:     tracker,
 	}
 	if sessionPreset != nil {
 		impl.liveViewportW = sessionPreset.ViewportW

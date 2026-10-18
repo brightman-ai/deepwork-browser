@@ -1,4 +1,4 @@
-# Public resource fetch acceptance — 0.17.1-v2
+# Public resource fetch acceptance — 0.17.2-v2
 
 The typed fetch and explicit DNS contracts passed independent source review and
 owned transport tests on macOS/arm64. **Hugging Face nine-image coverage remains

@@ -2,6 +2,15 @@
 
 The runtime uses one typed Action kernel, one canonical observation contract and one typed journey runner. Historical evidence/reports are preserved. Installing a built binary is an explicit delivery action; external callers migrate using this contract.
 
+In 0.17.2-v2, cross-process headed session attach restores target tracking and
+no-front activation. Input now requires a live, identity-matched mux-host
+containment check and uses target activation without `Page.bringToFront`.
+Headed virtual-display window placement accounts for the requested window size;
+failed launches publish an early owner marker so their exact Chrome process tree
+can be reclaimed. A containment failure remains a fail-closed runtime error.
+This hardens the browser boundary; it does not make a site's server challenge
+pass or certify the WeChat long-link case.
+
 In 0.17.0-v2, `fetch URL --save FILE` adds a browser-free public HTTP GET kernel
 for complete body bytes, with typed metadata and failure accounting. It shares
 the public guard with `document`; these remain distinct representations with no

@@ -63,7 +63,10 @@ type actionEngine struct {
 	// 取第二把锁。空 = 构造不出键,输入临界区退化为不加锁(见 AcquireBrowserInputLock)。
 	browserInputKey string
 	authorityCheck  func(context.Context, bool, string) error
-	operationID     string
+	// targetActivation is injectable for attached headed sessions. Those
+	// sessions must validate display containment but never call Page.bringToFront.
+	targetActivation func(context.Context) (bool, error)
+	operationID      string
 }
 
 // setBrowserInputKey 由 browserCoreImpl 在构造完成后注入。单写者:构造期写,执行期只读。
@@ -1996,7 +1999,11 @@ func (e *actionEngine) enterInputDispatchWindowForRequest(ctx context.Context, n
 	if !activate {
 		return release, false, "", nil
 	}
-	brought, err = ensureTargetFrontmost(ctx)
+	activationFn := e.targetActivation
+	if activationFn == nil {
+		activationFn = ensureTargetFrontmost
+	}
+	brought, err = activationFn(ctx)
 	if err != nil {
 		release()
 		return func() {}, false, "", err

@@ -3,7 +3,7 @@ name: dw-browser
 description: Observe and operate real browser sessions with the DW-Browser v2 CLI, preserving visible evidence, Human control and deterministic journey assertions. Use for browser tasks through this tool; ordinary software editing does not need it.
 ---
 
-# DW-Browser 0.17.1-v2 tool protocol
+# DW-Browser 0.17.2-v2 tool protocol
 
 Choose by task: DW-Browser primarily supports real Web experience, exploration and acceptance. Use `open` → `observe` → `act` for UI tasks (`once` for one capture), and typed `journey` steps with assertions for deterministic acceptance. Auxiliary background reads use `document URL` for rendered DOM or `fetch URL --save FILE` for an HTTP response body. Choose the required task and evidence explicitly; a successful read receipt cannot prove UI visibility, successful interaction or an accepted baseline.
 

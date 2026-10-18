@@ -333,6 +333,35 @@ func (vdm *VirtualDisplayManager) WindowPosition() (x, y int) {
 	return vx + offset, vy + offset
 }
 
+// WindowPositionForWindow returns a staggered origin that keeps the requested
+// Chrome window fully inside the virtual display. WindowPosition historically
+// only considered the display size; at a 1920x1080 viewport that allowed the
+// first 50px stagger to place the right/bottom edge outside the display.
+func (vdm *VirtualDisplayManager) WindowPositionForWindow(windowW, windowH int) (x, y int) {
+	n := int(atomic.AddInt64(&vdm.instanceCount, 1) - 1)
+	const step = 50
+	vdm.mu.Lock()
+	vx, vy, vw, vh := vdm.x, vdm.y, vdm.w, vdm.h
+	vdm.mu.Unlock()
+	maxX, maxY := vw-windowW, vh-windowH
+	if maxX < 0 {
+		maxX = 0
+	}
+	if maxY < 0 {
+		maxY = 0
+	}
+	offset := n * step
+	if maxX > 0 {
+		offset %= maxX + 1
+	} else {
+		offset = 0
+	}
+	if maxY > 0 && offset > maxY {
+		offset %= maxY + 1
+	}
+	return vx + offset, vy + offset
+}
+
 // WindowPosition returns (offset, offset) — exported helper for tests that
 // need a deterministic position without consuming an instance slot.
 //

@@ -25,6 +25,10 @@ func (vdm *VirtualDisplayManager) WindowPosition() (x, y int) {
 	return 0, 0
 }
 
+func (vdm *VirtualDisplayManager) WindowPositionForWindow(windowW, windowH int) (x, y int) {
+	return 0, 0
+}
+
 // WindowPositionAt returns (offset, offset) — helper for tests.
 func (vdm *VirtualDisplayManager) WindowPositionAt(offset int) (x, y int) {
 	return offset, offset

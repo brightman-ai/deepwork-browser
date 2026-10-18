@@ -167,6 +167,41 @@ func BrowserMuxHostRuntimeDir(hostID string) string {
 	return filepath.Join(BrowserMuxHostRootDir(), sanitizeBrowserRuntimeID(hostID))
 }
 
+// cleanupFailedBrowserMuxRuntime is used when the mux-host process exits before
+// publishing a usable runtime to its caller. The host normally owns this
+// cleanup; this caller-side fallback closes only the exact Chrome PID recorded
+// in that runtime's own manifest, preventing a failed headed launch from
+// leaking helpers after a containment/handshake error.
+func cleanupFailedBrowserMuxRuntime(runtimeID string) {
+	state, err := LoadBrowserRuntimeState(runtimeID)
+	if err != nil || state == nil || state.ChromePID <= 0 {
+		return
+	}
+	KillChromeProcessGroup(state.ChromePID)
+}
+
+// cleanupFailedBrowserMuxProfile covers the pre-manifest startup window. The
+// owner marker is written immediately after Chrome forks, before display
+// containment and CDP window enforcement, so a mux-host timeout can still
+// recover the exact owned PID without scanning or killing unrelated Chrome.
+func cleanupFailedBrowserMuxProfile(profileDir string) {
+	if strings.TrimSpace(profileDir) == "" {
+		return
+	}
+	body, err := os.ReadFile(filepath.Join(profileDir, deepworkProfileOwnerFile))
+	if err != nil {
+		return
+	}
+	var marker deepworkProfileOwner
+	if json.Unmarshal(body, &marker) != nil || marker.ChromePID <= 0 {
+		return
+	}
+	log.Printf("[BROWSER-MUX-HOST] AUDIT: failed_runtime_profile_reap profile=%s chrome_pid=%d", profileDir, marker.ChromePID)
+	KillChromeProcessTree(marker.ChromePID)
+	KillChromeProcessGroupID(ChromeProcessGroupID(marker.ChromePID))
+	_ = os.Remove(filepath.Join(profileDir, deepworkProfileOwnerFile))
+}
+
 func BrowserMuxHostManifestPath(hostID string) string {
 	return filepath.Join(BrowserMuxHostRuntimeDir(hostID), "muxhost.json")
 }
@@ -304,6 +339,8 @@ func EnsureBrowserMuxHost(ctx context.Context, req BrowserMuxHostRequest) (*Brow
 		}
 		select {
 		case err := <-exitCh:
+			cleanupFailedBrowserMuxRuntime(req.RuntimeID)
+			cleanupFailedBrowserMuxProfile(req.ProfileDir)
 			return nil, fmt.Errorf("browser_mux_host: muxhost %s exited before ready after %s: %v (log=%s; last_ready_err=%v)",
 				req.MuxHostID, time.Since(startedAt).Round(time.Millisecond), err, hostLogPath, lastErr)
 		default:
@@ -319,6 +356,8 @@ func EnsureBrowserMuxHost(ctx context.Context, req BrowserMuxHostRequest) (*Brow
 	if cmd.Process != nil {
 		_ = cmd.Process.Kill()
 	}
+	cleanupFailedBrowserMuxRuntime(req.RuntimeID)
+	cleanupFailedBrowserMuxProfile(req.ProfileDir)
 	return nil, fmt.Errorf("browser_mux_host: muxhost %s not ready after %s (log=%s; last_ready_err=%v)",
 		req.MuxHostID, BrowserMuxHostReadyTimeout, hostLogPath, lastErr)
 }
@@ -523,7 +562,7 @@ func (s *browserMuxHostServer) startRuntime(ctx context.Context, req BrowserMuxH
 		req.MuxHostID, req.RuntimeID, time.Since(profileStartedAt).Milliseconds())
 
 	displayStartedAt := time.Now()
-	displayBackend, displayID, posX, posY, virtualDisp, displayMgr, ownsDisplay, err := s.ensureRuntimeDisplay(req.Mode)
+	displayBackend, displayID, posX, posY, virtualDisp, displayMgr, ownsDisplay, err := s.ensureRuntimeDisplay(req.Mode, req.Width, req.Height)
 	if err != nil {
 		return nil, err
 	}
@@ -576,6 +615,20 @@ func (s *browserMuxHostServer) startRuntime(ctx context.Context, req BrowserMuxH
 		}
 		return nil, fmt.Errorf("browser_mux_host: launch chrome: %w", err)
 	}
+	// Publish ownership before display containment. A launch can fail during
+	// bounds enforcement before the runtime manifest exists; the marker gives
+	// the caller a durable PID to reap in that window.
+	if err := WriteProfileOwnerMarkerWithMetadata(req.ProfileDir, browserMuxHostIdentityKey(req), handle.PID(), port, ProfileOwnerMetadata{
+		BrowserSessionID: req.BrowserSessionID, BrowserMuxHostID: req.MuxHostID,
+		BrowserMuxHostPID: os.Getpid(), RuntimeID: req.RuntimeID,
+		ProfileID: req.ProfileID, DisplayBackend: displayBackend, DisplayID: displayID,
+	}); err != nil {
+		killMuxHostChrome(handle)
+		if ownsDisplay {
+			cleanupBrowserMuxHostDisplay(virtualDisp, displayMgr)
+		}
+		return nil, fmt.Errorf("browser_mux_host: write early owner marker: %w", err)
+	}
 	log.Printf("[BROWSER-MUX-HOST] runtime_start_step step=launch_chrome muxhost_id=%s runtime_id=%s chrome_pid=%d debug_port=%d elapsed_ms=%d",
 		req.MuxHostID, req.RuntimeID, handle.PID(), port, time.Since(chromeStartedAt).Milliseconds())
 	displayVerified := displayBackend == "none" || displayBackend == "xvfb" || displayBackend == "native"
@@ -588,7 +641,8 @@ func (s *browserMuxHostServer) startRuntime(ctx context.Context, req BrowserMuxH
 		if containmentErr != nil {
 			enforceStartedAt := time.Now()
 			if err := enforceBrowserMuxHostWindow(handle.WSURL(), req.Width, req.Height, posX, posY); err != nil {
-				_ = handle.Kill()
+				killMuxHostChrome(handle)
+				cleanupFailedBrowserMuxProfile(req.ProfileDir)
 				if ownsDisplay {
 					cleanupBrowserMuxHostDisplay(virtualDisp, displayMgr)
 				}
@@ -598,7 +652,8 @@ func (s *browserMuxHostServer) startRuntime(ctx context.Context, req BrowserMuxH
 				req.MuxHostID, req.RuntimeID, handle.PID(), time.Since(enforceStartedAt).Milliseconds())
 			containmentStartedAt = time.Now()
 			if err := virtualDisp.VerifyChromeContained(handle.PID(), BrowserMuxHostWindowContainmentTimeout); err != nil {
-				_ = handle.Kill()
+				killMuxHostChrome(handle)
+				cleanupFailedBrowserMuxProfile(req.ProfileDir)
 				if ownsDisplay {
 					cleanupBrowserMuxHostDisplay(virtualDisp, displayMgr)
 				}
@@ -672,7 +727,7 @@ func (s *browserMuxHostServer) startRuntime(ctx context.Context, req BrowserMuxH
 		DisplayVerified:       displayVerified,
 		ChromeWindowContained: windowContained,
 	}); err != nil {
-		_ = handle.Kill()
+		killMuxHostChrome(handle)
 		if ownsDisplay {
 			cleanupBrowserMuxHostDisplay(virtualDisp, displayMgr)
 		}
@@ -680,7 +735,7 @@ func (s *browserMuxHostServer) startRuntime(ctx context.Context, req BrowserMuxH
 	}
 	if err := writeBrowserRuntimeManifest(&state); err != nil {
 		RemoveProfileOwnerMarker(req.ProfileDir, rt.identityKey)
-		_ = handle.Kill()
+		killMuxHostChrome(handle)
 		if ownsDisplay {
 			cleanupBrowserMuxHostDisplay(virtualDisp, displayMgr)
 		}
@@ -1170,7 +1225,7 @@ func browserMuxHostServeArgs(req BrowserMuxHostRequest) []string {
 	return args
 }
 
-func (s *browserMuxHostServer) ensureRuntimeDisplay(mode BrowserMode) (backend string, displayID uint32, x int, y int, vd *VirtualDisplayManager, dm *DisplayManager, ownsDisplay bool, err error) {
+func (s *browserMuxHostServer) ensureRuntimeDisplay(mode BrowserMode, windowW, windowH int) (backend string, displayID uint32, x int, y int, vd *VirtualDisplayManager, dm *DisplayManager, ownsDisplay bool, err error) {
 	mode = NormalizeBrowserMode(mode, ModeHeaded)
 	if mode == ModeHeaded && runtime.GOOS == "darwin" {
 		s.displayMu.Lock()
@@ -1181,7 +1236,7 @@ func (s *browserMuxHostServer) ensureRuntimeDisplay(mode BrowserMode) (backend s
 		if err := s.virtualDisp.Ensure(); err != nil {
 			return "", 0, 0, 0, nil, nil, false, fmt.Errorf("browser_mux_host: headed mode unavailable on macOS: CGVirtualDisplay setup failed: %w", err)
 		}
-		x, y = s.virtualDisp.WindowPosition()
+		x, y = s.virtualDisp.WindowPositionForWindow(windowW, windowH)
 		return "cgvirtualdisplay", s.virtualDisp.DisplayID(), x, y, s.virtualDisp, nil, false, nil
 	}
 	if mode == ModeHeaded && runtime.GOOS == "linux" {
@@ -1242,6 +1297,23 @@ func cleanupBrowserMuxHostDisplay(vd *VirtualDisplayManager, dm *DisplayManager)
 	}
 	if vd != nil {
 		_ = vd.Close()
+	}
+}
+
+// killMuxHostChrome closes a failed launch before it can become a runtime
+// manifest. Capture the process group while the leader is alive, then perform
+// an explicit second group kill after the handle's normal cleanup. This keeps
+// containment failures from leaking Chrome helpers when the mux host exits.
+func killMuxHostChrome(handle ChromeHandle) {
+	if handle == nil {
+		return
+	}
+	pgid := ChromeProcessGroupID(handle.PID())
+	if err := handle.Kill(); err != nil {
+		log.Printf("[BROWSER-MUX-HOST] AUDIT: failed_runtime_kill pid=%d err=%v", handle.PID(), err)
+	}
+	if pgid > 0 {
+		KillChromeProcessGroupID(pgid)
 	}
 }
 

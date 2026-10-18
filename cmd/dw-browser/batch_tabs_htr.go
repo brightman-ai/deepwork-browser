@@ -358,6 +358,55 @@ func ensureForegroundAllowedE(ctx context.Context, info *browser.SessionInfo, cm
 	}
 	return nil
 }
+
+// validateAttachedRuntimeIdentity prevents a stale session file from lending
+// an input guard to a different mux-host runtime.
+func validateAttachedRuntimeIdentity(info *browser.SessionInfo, state *browser.BrowserMuxHostState) error {
+	if info == nil || state == nil {
+		return fmt.Errorf("attached runtime identity unavailable")
+	}
+	for name, value := range map[string]string{
+		"runtime_id":          info.RuntimeID,
+		"browser_mux_host_id": info.BrowserMuxHostID,
+		"ws_url":              info.WSURL,
+	} {
+		if strings.TrimSpace(value) == "" {
+			return fmt.Errorf("attached runtime identity missing %s", name)
+		}
+	}
+	if browser.NormalizeBrowserMode(info.Mode, browser.ModeVisible) == browser.ModeHeaded {
+		for name, value := range map[string]string{"runtime_id": info.RuntimeID, "browser_mux_host_id": info.BrowserMuxHostID, "ws_url": info.WSURL} {
+			if value == "" {
+				return fmt.Errorf("attached runtime identity missing %s", name)
+			}
+		}
+	}
+	checks := []struct{ name, expected, actual string }{
+		{"runtime_id", info.RuntimeID, state.RuntimeID},
+		{"browser_mux_host_id", info.BrowserMuxHostID, state.MuxHostID},
+		{"browser_session_id", info.BrowserSessionID, state.BrowserSessionID},
+		{"ws_url", info.WSURL, state.WSURL},
+		{"browser_run_id", info.BrowserRunID, state.BrowserRunID},
+	}
+	for _, check := range checks {
+		if check.expected != "" && check.expected != check.actual {
+			return fmt.Errorf("attached runtime identity mismatch %s", check.name)
+		}
+	}
+	if info.ChromePID != 0 && info.ChromePID != state.ChromePID {
+		return fmt.Errorf("attached runtime identity mismatch chrome_pid")
+	}
+	if info.DisplayID != 0 && info.DisplayID != state.DisplayID {
+		return fmt.Errorf("attached runtime identity mismatch display_id")
+	}
+	if info.Mode != "" && browser.NormalizeBrowserMode(info.Mode, browser.ModeVisible) != browser.NormalizeBrowserMode(state.Mode, browser.ModeVisible) {
+		return fmt.Errorf("attached runtime identity mismatch mode")
+	}
+	if browser.NormalizeBrowserMode(info.Mode, browser.ModeVisible) == browser.ModeHeaded && browser.NormalizeBrowserMode(state.Mode, browser.ModeVisible) != browser.ModeHeaded {
+		return fmt.Errorf("attached runtime identity mismatch mode")
+	}
+	return nil
+}
 func acquireSessionRuntimeInputLock(info *browser.SessionInfo) (*browser.BrowserInputLock, error) {
 	return browser.AcquireBrowserInputLock(browser.BrowserInputKey(info.WSURL, info.ChromePID), browser.DefaultBrowserInputLockWait)
 }

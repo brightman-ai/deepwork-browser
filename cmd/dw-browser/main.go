@@ -29,7 +29,7 @@ import (
 	"github.com/chromedp/chromedp"
 )
 
-const version = "0.17.1-v2"
+const version = "0.17.2-v2"
 
 // ActionEngine returns its own explicit error at 15s. The CLI watchdog is a
 // slightly wider process-level fence covering every BrowserCore implementation.
@@ -860,7 +860,27 @@ func connectSessionE(ctx context.Context, sessionInfo *browser.SessionInfo, cmdN
 	}
 
 	runtimeMode := browser.NormalizeBrowserMode(sessionInfo.Mode, browser.ModeVisible)
-	impl, err := browser.NewBrowserCoreFromSession(ctx, sessionInfo.WSURL, targetID, presetID, personaID, runtimeMode)
+	var foregroundGuard func() error
+	if runtimeMode == browser.ModeHeaded {
+		foregroundGuard = func() error {
+			state, err := browser.LoadBrowserRuntimeState(sessionInfo.RuntimeID)
+			if err != nil {
+				return fmt.Errorf("headed attach foreground guard: runtime state unavailable: %w", err)
+			}
+			live, err := browser.BrowserMuxHostHealth(ctx, state)
+			if err != nil {
+				return fmt.Errorf("headed attach foreground guard: mux-host health failed: %w", err)
+			}
+			if err := validateAttachedRuntimeIdentity(sessionInfo, live); err != nil {
+				return fmt.Errorf("headed attach foreground guard: %w", err)
+			}
+			if !live.DisplayVerified || !live.ChromeWindowContained || !live.ChromeAlive {
+				return fmt.Errorf("headed attach foreground guard: display_verified=%t chrome_window_contained=%t chrome_alive=%t", live.DisplayVerified, live.ChromeWindowContained, live.ChromeAlive)
+			}
+			return nil
+		}
+	}
+	impl, err := browser.NewBrowserCoreFromSessionWithForegroundGuard(ctx, sessionInfo.WSURL, targetID, presetID, personaID, foregroundGuard, runtimeMode)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "dw-browser %s: connect to session failed: %v\n", cmdName, err)
 		return nil, fmt.Errorf("%s: session connection or environment validation failed", cmdName)
@@ -1130,7 +1150,19 @@ func ensureSessionBrowserMuxHostReadyE(ctx context.Context, sessionInfo *browser
 	if targetID, terr := ensurePageTargetReady(state.WSURL, state.DebugPort); terr == nil {
 		sessionInfo.TargetID = targetID
 		if strings.TrimSpace(sessionInfo.PageURL) != "" {
-			if impl, cerr := browser.NewBrowserCoreFromSession(hostCtx, state.WSURL, targetID, sessionInfo.PresetID, sessionInfo.PersonaID, sessionInfo.Mode); cerr == nil {
+			var recoveryGuard func() error
+			if browser.NormalizeBrowserMode(sessionInfo.Mode, browser.ModeVisible) == browser.ModeHeaded {
+				recoveryGuard = func() error {
+					if err := validateAttachedRuntimeIdentity(sessionInfo, state); err != nil {
+						return err
+					}
+					if !state.DisplayVerified || !state.ChromeWindowContained || !state.ChromeAlive {
+						return fmt.Errorf("headed recovery foreground guard: display is not verified or Chrome is not contained")
+					}
+					return nil
+				}
+			}
+			if impl, cerr := browser.NewBrowserCoreFromSessionWithForegroundGuard(hostCtx, state.WSURL, targetID, sessionInfo.PresetID, sessionInfo.PersonaID, recoveryGuard, sessionInfo.Mode); cerr == nil {
 				applyInteractionScenario(impl, sessionInfo.Scenario)
 				if snap, nerr := impl.Navigate(hostCtx, sessionInfo.PageURL); nerr == nil && snap != nil {
 					sessionInfo.PageURL = snap.URL
@@ -2676,7 +2708,16 @@ func runOpenResult(args []string) (commandOutput CommandResult, resultErr error)
 		return exit(exitRunErr)
 	}
 
-	impl, err := browser.NewBrowserCoreFromSession(ctx, wsURL, initialTargetID, sessionPresetID, sessionPersonaID, mode)
+	var foregroundGuard func() error
+	if mode == browser.ModeHeaded {
+		foregroundGuard = func() error {
+			if hostState == nil || !hostState.DisplayVerified || !hostState.ChromeWindowContained || !hostState.ChromeAlive {
+				return fmt.Errorf("headed open foreground guard: owned display is not verified or Chrome is not contained")
+			}
+			return nil
+		}
+	}
+	impl, err := browser.NewBrowserCoreFromSessionWithForegroundGuard(ctx, wsURL, initialTargetID, sessionPresetID, sessionPersonaID, foregroundGuard, mode)
 	if err != nil {
 		commandOutput.note("dw-browser open: connect: %v\n", err)
 		return exit(exitRunErr)
