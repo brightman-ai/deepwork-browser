@@ -2,7 +2,7 @@
 
 The runtime uses one typed Action kernel, one canonical observation contract and one typed journey runner. Historical evidence/reports are preserved. Installing a built binary is an explicit delivery action; external callers migrate using this contract.
 
-In 0.17.2-v2, cross-process headed session attach restores target tracking and
+In 0.19.0-v2, cross-process headed session attach restores target tracking and
 no-front activation. Input now requires a live, identity-matched mux-host
 containment check and uses target activation without `Page.bringToFront`.
 Headed virtual-display window placement accounts for the requested window size;
