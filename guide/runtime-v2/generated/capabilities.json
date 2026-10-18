@@ -219,6 +219,12 @@
   ],
   "commands": [
     {
+      "usage": "help [COMMAND]",
+      "examples": [
+        "dw-browser help observe",
+        "dw-browser help \"pdf excerpt\""
+      ],
+      "guidance": "Returns the same executable command contract: flags with value types and descriptions, required arguments, and per-command usage/guidance/examples. Read `help COMMAND` before first use of any command; it is authoritative for this exact binary version.",
       "command": "help",
       "summary": "Show the same executable command contract",
       "flags": [
@@ -245,10 +251,17 @@
       "diagnostic": true
     },
     {
+      "usage": "open URL --id NAME --scenario {app-test-explore|app-test-baseline|webvisit} [--persona desktop|mobile] [--mode headless|headed|visible] [--viewport WxH] [--evidence DIR] [--allow-host HOST]",
+      "examples": [
+        "dw-browser open http://localhost:8080/portal/chat --id chat1 --scenario app-test-explore",
+        "dw-browser open https://arxiv.org/html/2610.17309v1 --id paper --scenario webvisit"
+      ],
+      "guidance": "Creates the browser session every later --id command operates on; the creation environment (scenario/persona/viewport/evidence root) is inherited by every later process and cannot be changed in place. --scenario is required and sets the interaction contract: app-test-explore for interactive exploration, app-test-baseline for deterministic regression (internal LLM locked), webvisit for real public sites (writes gated except --allow-host). Duplicate IDs are rejected. Use session viewport to resize later. Close only sessions you created.",
       "command": "open",
       "summary": "Create one session; duplicate IDs are rejected",
       "flags": [
         {
+          "description": "interaction contract: app-test-explore (interactive exploration), app-test-baseline (deterministic regression), webvisit (real public site; writes gated except --allow-host)",
           "name": "--scenario",
           "takes_value": true,
           "values": [
@@ -259,6 +272,7 @@
           "value_type": "string"
         },
         {
+          "description": "headless (default), headed (windowless hidden target) or visible",
           "name": "--mode",
           "takes_value": true,
           "values": [
@@ -269,6 +283,7 @@
           "value_type": "string"
         },
         {
+          "description": "environment fidelity bundle: desktop (default) or mobile (iPhone bundle + Safari chrome simulation; required for mobile UX acceptance)",
           "name": "--persona",
           "takes_value": true,
           "value_type": "string"
@@ -288,6 +303,7 @@
           "value_type": "string"
         },
         {
+          "description": "initial viewport WxH (mobile sizes require --persona mobile)",
           "name": "--viewport",
           "takes_value": true,
           "value_type": "string"
@@ -298,11 +314,13 @@
           "value_type": "string"
         },
         {
+          "description": "evidence root directory for observations/screenshots",
           "name": "--evidence",
           "takes_value": true,
           "value_type": "string"
         },
         {
+          "description": "trusted host whose writes are always allowed (webvisit)",
           "name": "--allow-host",
           "takes_value": true,
           "value_type": "string"
@@ -363,6 +381,11 @@
       "diagnostic": false
     },
     {
+      "usage": "close --id NAME [--force]",
+      "examples": [
+        "dw-browser close --id chat1"
+      ],
+      "guidance": "Closes exactly the named session you created and tears down its runtime. --force is the escape hatch for a wedged close; normal flow never needs it. Other sessions are untouched.",
       "command": "close",
       "summary": "Close only the named session",
       "flags": [
@@ -372,6 +395,7 @@
           "value_type": "session-id"
         },
         {
+          "description": "force-close a wedged session (escape hatch)",
           "name": "--force",
           "takes_value": false
         },
@@ -401,6 +425,11 @@
       "diagnostic": false
     },
     {
+      "usage": "once URL --scenario NAME [--screenshot PATH] [--content text|list|table] [--health] [--tree] [--all]",
+      "examples": [
+        "dw-browser once http://localhost:8080 --scenario app-test-explore --screenshot shot.png"
+      ],
+      "guidance": "One canonical observation in an owned short-lived session: creates, captures, closes — for quick look/see checks that do not need follow-up interaction. Same flags as observe plus creation flags. When you need to act after looking, use open + observe instead.",
       "command": "once",
       "summary": "Capture one canonical UI observation in an owned short-lived session",
       "flags": [
@@ -706,6 +735,12 @@
       "diagnostic": false
     },
     {
+      "usage": "observe --id NAME [--screenshot PATH] [--content text|list|table] [--health] [--tree] [--top N] [--budget B] [--all] [--annotate] [--hit-audit]",
+      "examples": [
+        "dw-browser observe --id chat1 --screenshot shot.png",
+        "dw-browser observe --id chat1 --health"
+      ],
+      "guidance": "The perception verb: returns the thin default {elements@rN, user_state, run_id, step}; additive flags are freely combined. --screenshot writes the actual PNG and returns its path — read the real PNG before visual actions. Channel states distinguish captured/unavailable/not-requested; an unavailable channel cannot prove zero errors. @rN refs share one space with act: `act \"click @r3\"` resolves the refs this observe just returned. --all is a census without operable refs. Reobserve after an action, resize, tab switch, navigation or intervention before using any ref or screenshot coordinate. --annotate draws the browser-chrome occlusion evidence outline (mobile persona debugging), not content annotation — for annotated content crops use excerpt.",
       "command": "observe",
       "summary": "Capture a canonical observation and actual screenshot",
       "flags": [
@@ -715,11 +750,13 @@
           "value_type": "session-id"
         },
         {
+          "description": "write the actual PNG to this path and return it — read the real image before visual actions",
           "name": "--screenshot",
           "takes_value": true,
           "value_type": "string"
         },
         {
+          "description": "also capture visible text as text|list|table",
           "name": "--content",
           "takes_value": true,
           "values": [
@@ -739,24 +776,29 @@
           "value_type": "string"
         },
         {
+          "description": "elements list size (default 20)",
           "name": "--top",
           "takes_value": true,
           "value_type": "integer"
         },
         {
+          "description": "elements text budget bytes (default 4096)",
           "name": "--budget",
           "takes_value": true,
           "value_type": "integer"
         },
         {
+          "description": "also capture telemetry (console/network via visible_errors scanning; CLI cannot capture full console/network)",
           "name": "--health",
           "takes_value": false
         },
         {
+          "description": "also return the full a11y text (rarely needed)",
           "name": "--tree",
           "takes_value": false
         },
         {
+          "description": "census mode: full inventory without operable refs (clears session refs)",
           "name": "--all",
           "takes_value": false
         },
@@ -765,6 +807,7 @@
           "takes_value": false
         },
         {
+          "description": "draw browser-chrome occlusion outline evidence (mobile persona debugging)",
           "name": "--annotate",
           "takes_value": false
         },
@@ -994,6 +1037,11 @@
       "diagnostic": false
     },
     {
+      "usage": "check --id NAME [--observation ID] [--assert EXPR | --file ASSERT.json] [--using vision-url ...]",
+      "examples": [
+        "dw-browser check --id chat1 --assert 'text_contains:Welcome'"
+      ],
+      "guidance": "Judges required assertions against one canonical observation. Exit 0 only for required PASS, 1 for FAIL, 2 for BLOCKED/runtime/evidence/argument errors — a green exit means the assertion held, not that the product is accepted. Vision-backed assertions need explicit provider configuration.",
       "command": "check",
       "summary": "Judge required assertions against one canonical observation",
       "flags": [
@@ -1008,16 +1056,19 @@
           "value_type": "string"
         },
         {
+          "description": "required assertion expression",
           "name": "--assert",
           "takes_value": true,
           "value_type": "string"
         },
         {
+          "description": "assertions JSON file",
           "name": "--file",
           "takes_value": true,
           "value_type": "string"
         },
         {
+          "description": "oracle selector (e.g. vision provider)",
           "name": "--using",
           "takes_value": true,
           "value_type": "string"
@@ -1079,6 +1130,11 @@
       ]
     },
     {
+      "usage": "diff OBSERVATION_A OBSERVATION_B",
+      "examples": [
+        "dw-browser diff obs-1 obs-2"
+      ],
+      "guidance": "Compares two canonical observations (same session) element-by-element; diagnostic only, never recovers a runtime. Use to see what an action actually changed between two observes.",
       "command": "diff",
       "summary": "Compare two canonical observations",
       "flags": [
@@ -1105,6 +1161,12 @@
       "diagnostic": true
     },
     {
+      "usage": "wait --id NAME (--assert EXPR | --duration 2s) [--timeout 10s]",
+      "examples": [
+        "dw-browser wait --id chat1 --assert 'visible:@r3' --timeout 10s",
+        "dw-browser wait --id chat1 --duration 1s"
+      ],
+      "guidance": "Waits until one assertion holds or a declared duration elapses, then returns. Prefer --assert over fixed durations; --duration is for settle-style pauses only.",
       "command": "wait",
       "summary": "Wait for one assertion or a declared duration",
       "flags": [
@@ -1114,16 +1176,19 @@
           "value_type": "session-id"
         },
         {
+          "description": "assertion expression to wait for (preferred)",
           "name": "--assert",
           "takes_value": true,
           "value_type": "string"
         },
         {
+          "description": "maximum wait",
           "name": "--timeout",
           "takes_value": true,
           "value_type": "duration"
         },
         {
+          "description": "fixed settle pause (e.g. 1s)",
           "name": "--duration",
           "takes_value": true,
           "value_type": "duration"
@@ -1174,6 +1239,11 @@
       ]
     },
     {
+      "usage": "journey --file STEPS.yaml [--scenario NAME] [--id NAME] [--base-url URL] [--fail-fast]",
+      "examples": [
+        "dw-browser journey --file journey.yaml --scenario app-test-baseline --evidence runs/today"
+      ],
+      "guidance": "Runs typed deterministic steps through the shared runtime with persistent locators and assertions. Use app-test-baseline for deterministic regression: internal LLM use is forbidden and element steps are synthetic by explicit declaration. A candidate trace is not an accepted baseline — acceptance is a separate human decision. The YAML shape is shown by `protocol`.",
       "command": "journey",
       "summary": "Run typed deterministic steps through the shared runtime",
       "flags": [
@@ -1266,16 +1336,19 @@
           "value_type": "session-id"
         },
         {
+          "description": "typed YAML steps (shape shown by `protocol`)",
           "name": "--file",
           "takes_value": true,
           "value_type": "string"
         },
         {
+          "description": "base URL for relative step targets",
           "name": "--base-url",
           "takes_value": true,
           "value_type": "string"
         },
         {
+          "description": "stop at first failing step",
           "name": "--fail-fast",
           "takes_value": false
         },
@@ -1331,6 +1404,11 @@
       ]
     },
     {
+      "usage": "eval --id NAME '\u003cjs-expression\u003e'",
+      "examples": [
+        "dw-browser eval --id chat1 'location.href'"
+      ],
+      "guidance": "Gated debugging: runs JavaScript in the page and revokes observation authority (it may mutate the page). Requires write permission for the origin (webvisit needs --allow-host). Debug/synthetic evidence cannot establish Human experience — witness work uses real visible interactions (act) instead. Prefer read verbs (observe/excerpt/document) for reading.",
       "command": "eval",
       "summary": "Run gated JavaScript debugging and revoke old observation authority",
       "flags": [
@@ -1365,6 +1443,11 @@
       "diagnostic": false
     },
     {
+      "usage": "cookie-import --id NAME [--browser chrome|firefox] [--domain FILTER]",
+      "examples": [
+        "dw-browser cookie-import --id chat1 --browser chrome --domain example.com"
+      ],
+      "guidance": "Imports cookies from the local native browser profile (keychain-decrypted) into this session — for reaching login-gated content you already hold. --domain limits the import scope.",
       "command": "cookie-import",
       "summary": "Import native browser cookies with keychain decryption and a domain filter",
       "flags": [
@@ -1409,6 +1492,11 @@
       "diagnostic": false
     },
     {
+      "usage": "audit --id NAME [--suite NAME] [--check NAME] [--threshold N] [--format json]",
+      "examples": [
+        "dw-browser audit --id chat1 --check browser-chrome-occlusion"
+      ],
+      "guidance": "Deterministic rule audit over the current observation: compatibility, accessibility, layout, performance and browser-chrome rules (e.g. browser-chrome-occlusion on mobile persona). Machine-checkable only — it complements, never replaces, human-facing acceptance.",
       "command": "audit",
       "summary": "Audit compatibility, accessibility, layout, performance and browser chrome rules",
       "flags": [
@@ -1467,6 +1555,11 @@
       "diagnostic": false
     },
     {
+      "usage": "session status --id NAME",
+      "examples": [
+        "dw-browser session status --id chat1"
+      ],
+      "guidance": "Inspects the persisted runtime ownership (authority, observation validity) without recovering or touching the runtime. Diagnostic only.",
       "command": "session status",
       "summary": "Inspect persisted runtime ownership without recovery",
       "flags": [
@@ -1501,6 +1594,11 @@
       "diagnostic": true
     },
     {
+      "usage": "session list",
+      "examples": [
+        "dw-browser session list"
+      ],
+      "guidance": "Lists persisted sessions with their state. Diagnostic only — never recovers a runtime.",
       "command": "session list",
       "summary": "List persisted sessions",
       "flags": [
@@ -1527,6 +1625,11 @@
       "diagnostic": true
     },
     {
+      "usage": "session viewport --id NAME --size WxH",
+      "examples": [
+        "dw-browser session viewport --id chat1 --size 880x720"
+      ],
+      "guidance": "Resizes the existing runtime viewport and persists the environment change. Reobserve after resizing before using refs or coordinates. Bare --viewport on open is rejected for mobile sizes — use --persona mobile for real mobile fidelity.",
       "command": "session viewport",
       "summary": "Resize the existing runtime and persist its environment",
       "flags": [
@@ -1536,6 +1639,7 @@
           "value_type": "session-id"
         },
         {
+          "description": "new viewport WxH; reobserve afterwards",
           "name": "--size",
           "takes_value": true,
           "value_type": "string"
@@ -1567,6 +1671,11 @@
       "diagnostic": false
     },
     {
+      "usage": "tabs list --id NAME",
+      "examples": [
+        "dw-browser tabs list --id chat1"
+      ],
+      "guidance": "Lists the user page targets in the session browser without recovering the runtime. Diagnostic only.",
       "command": "tabs list",
       "summary": "List user page targets without recovering the runtime",
       "flags": [
@@ -1601,6 +1710,11 @@
       "diagnostic": true
     },
     {
+      "usage": "tabs select --id NAME --target TARGET",
+      "examples": [
+        "dw-browser tabs select --id chat1 --target t2"
+      ],
+      "guidance": "Activates an existing target under the runtime input lock. Reobserve after switching before using any ref — refs are per-target.",
       "command": "tabs select",
       "summary": "Activate an existing target under the runtime input lock",
       "flags": [
@@ -1610,6 +1724,7 @@
           "value_type": "session-id"
         },
         {
+          "description": "target id from tabs list",
           "name": "--target",
           "takes_value": true,
           "value_type": "string"
@@ -1641,6 +1756,11 @@
       "diagnostic": false
     },
     {
+      "usage": "tabs close --id NAME --target TARGET",
+      "examples": [
+        "dw-browser tabs close --id chat1 --target t2"
+      ],
+      "guidance": "Closes one page target and revokes page authority. Any prior observation of that target is dead.",
       "command": "tabs close",
       "summary": "Close a target and revoke page authority",
       "flags": [
@@ -1650,6 +1770,7 @@
           "value_type": "session-id"
         },
         {
+          "description": "target id from tabs list",
           "name": "--target",
           "takes_value": true,
           "value_type": "string"
@@ -1681,6 +1802,11 @@
       "diagnostic": false
     },
     {
+      "usage": "tabs new --id NAME --url URL",
+      "examples": [
+        "dw-browser tabs new --id chat1 --url http://localhost:8080/portal/workspace"
+      ],
+      "guidance": "Creates a new page target in the existing session browser and focuses it. Reobserve before interacting — the new target has no refs yet.",
       "command": "tabs new",
       "summary": "Create a target in the existing browser",
       "flags": [
@@ -1690,6 +1816,7 @@
           "value_type": "session-id"
         },
         {
+          "description": "URL for the new target; reobserve afterwards",
           "name": "--url",
           "takes_value": true,
           "value_type": "string"
@@ -1720,6 +1847,11 @@
       "diagnostic": false
     },
     {
+      "usage": "htr status --id NAME",
+      "examples": [
+        "dw-browser htr status --id chat1"
+      ],
+      "guidance": "Inspects Human/AI authority state without recovery. Diagnostic only.",
       "command": "htr status",
       "summary": "Inspect Human control and runtime state without recovery",
       "flags": [
@@ -1754,6 +1886,11 @@
       "diagnostic": true
     },
     {
+      "usage": "htr takeover --id NAME",
+      "examples": [
+        "dw-browser htr takeover --id chat1"
+      ],
+      "guidance": "Really blocks AI input: the human physically owns the page from here. Obsolete observations are revoked.",
       "command": "htr takeover",
       "summary": "Set Human/AI authority; obsolete observations are revoked",
       "flags": [
@@ -1788,6 +1925,11 @@
       "diagnostic": false
     },
     {
+      "usage": "htr yield --id NAME",
+      "examples": [
+        "dw-browser htr yield --id chat1"
+      ],
+      "guidance": "Restores AI authority after a takeover and requires fresh observation before further acts.",
       "command": "htr yield",
       "summary": "Set Human/AI authority; obsolete observations are revoked",
       "flags": [
@@ -1822,6 +1964,11 @@
       "diagnostic": false
     },
     {
+      "usage": "htr share --id NAME",
+      "examples": [
+        "dw-browser htr share --id chat1"
+      ],
+      "guidance": "Shared authority mode; obsolete observations are revoked.",
       "command": "htr share",
       "summary": "Set Human/AI authority; obsolete observations are revoked",
       "flags": [
@@ -1856,6 +2003,11 @@
       "diagnostic": false
     },
     {
+      "usage": "persona list",
+      "examples": [
+        "dw-browser persona list"
+      ],
+      "guidance": "Lists available environment personas (device fidelity bundles). Use mobile for mobile-UX acceptance; desktop for PC.",
       "command": "persona list",
       "summary": "List environment personas",
       "flags": [
@@ -1882,6 +2034,11 @@
       "diagnostic": true
     },
     {
+      "usage": "profile list",
+      "examples": [
+        "dw-browser profile list"
+      ],
+      "guidance": "Lists persistent and temporary browser profile directories known to this CLI. Diagnostic.",
       "command": "profile list",
       "summary": "List persistent and temporary profile directories",
       "flags": [
@@ -1908,6 +2065,11 @@
       "diagnostic": true
     },
     {
+      "usage": "profile import NAME",
+      "examples": [
+        "dw-browser profile import myprofile"
+      ],
+      "guidance": "Copies a profile directory into the CLI profile store for reuse by named profiles.",
       "command": "profile import",
       "summary": "Copy a profile into the CLI profile store",
       "flags": [
@@ -1939,6 +2101,11 @@
       "diagnostic": false
     },
     {
+      "usage": "profile prune --ephemeral [--min-age DURATION] [--dry-run] [--reap-orphaned]",
+      "examples": [
+        "dw-browser profile prune --ephemeral --dry-run"
+      ],
+      "guidance": "Explicitly prunes task profile directories. --dry-run first to preview; --reap-orphaned cleans orphans left by dead processes.",
       "command": "profile prune",
       "summary": "Prune task profile directories explicitly",
       "flags": [
@@ -1985,6 +2152,11 @@
       "diagnostic": false
     },
     {
+      "usage": "gc [--older-than DURATION] [--dry-run] [--all]",
+      "examples": [
+        "dw-browser gc --dry-run"
+      ],
+      "guidance": "Inspects or reclaims unowned browser resources (runtimes left behind by dead owners). --dry-run first; reclaims only unowned resources.",
       "command": "gc",
       "summary": "Inspect or reclaim unowned browser resources explicitly",
       "flags": [
@@ -2024,6 +2196,11 @@
       "diagnostic": false
     },
     {
+      "usage": "skills list",
+      "examples": [
+        "dw-browser skills list"
+      ],
+      "guidance": "Lists installed site recipes (per-site interaction recipes the CLI can use). Diagnostic.",
       "command": "skills list",
       "summary": "List installed site recipes",
       "flags": [
@@ -2050,6 +2227,11 @@
       "diagnostic": true
     },
     {
+      "usage": "skills read NAME",
+      "examples": [
+        "dw-browser skills read example"
+      ],
+      "guidance": "Reads one site recipe. Diagnostic.",
       "command": "skills read",
       "summary": "Read one site recipe",
       "flags": [
@@ -2081,6 +2263,11 @@
       "diagnostic": true
     },
     {
+      "usage": "skills write --action PATH",
+      "examples": [
+        "dw-browser skills write --action recipe.json"
+      ],
+      "guidance": "Writes a site recipe from declared input.",
       "command": "skills write",
       "summary": "Write a site recipe from declared input",
       "flags": [
@@ -2115,6 +2302,11 @@
       "diagnostic": false
     },
     {
+      "usage": "record start --id NAME",
+      "examples": [
+        "dw-browser record start --id chat1"
+      ],
+      "guidance": "Starts a structured action trace on the session (for evidence and replay analysis).",
       "command": "record start",
       "summary": "Start a structured action trace",
       "flags": [
@@ -2149,6 +2341,11 @@
       "diagnostic": false
     },
     {
+      "usage": "record stop --id NAME",
+      "examples": [
+        "dw-browser record stop --id chat1"
+      ],
+      "guidance": "Stops the trace and returns it.",
       "command": "record stop",
       "summary": "Stop and return the trace",
       "flags": [
@@ -2183,6 +2380,11 @@
       "diagnostic": false
     },
     {
+      "usage": "record export --id NAME",
+      "examples": [
+        "dw-browser record export --id chat1"
+      ],
+      "guidance": "Returns the current trace without stopping. Diagnostic.",
       "command": "record export",
       "summary": "Return the current trace",
       "flags": [
@@ -2217,6 +2419,11 @@
       "diagnostic": true
     },
     {
+      "usage": "muxhost serve",
+      "examples": [
+        "dw-browser muxhost serve"
+      ],
+      "guidance": "Runs the existing headed host infrastructure (shared headed display host for headed sessions).",
       "command": "muxhost serve",
       "summary": "Run the existing headed host infrastructure",
       "flags": [
@@ -2371,6 +2578,11 @@
       "diagnostic": false
     },
     {
+      "usage": "muxhost ensure",
+      "examples": [
+        "dw-browser muxhost ensure"
+      ],
+      "guidance": "Ensures an explicitly named headed host exists (starts if missing).",
       "command": "muxhost ensure",
       "summary": "Ensure an explicitly named headed host",
       "flags": [
@@ -2525,6 +2737,11 @@
       "diagnostic": false
     },
     {
+      "usage": "muxhost status [--muxhost-id ID | --runtime-id ID | --browser-session-id ID]",
+      "examples": [
+        "dw-browser muxhost status"
+      ],
+      "guidance": "Inspects an existing headed host. Diagnostic.",
       "command": "muxhost status",
       "summary": "Inspect an existing headed host",
       "flags": [
@@ -2575,6 +2792,11 @@
       ]
     },
     {
+      "usage": "muxhost release [--muxhost-id ID | --runtime-id ID | --browser-session-id ID]",
+      "examples": [
+        "dw-browser muxhost release --runtime-id r1"
+      ],
+      "guidance": "Releases a headed host lease.",
       "command": "muxhost release",
       "summary": "Release an existing headed host lease",
       "flags": [
@@ -2625,6 +2847,11 @@
       ]
     },
     {
+      "usage": "muxhost shutdown [--muxhost-id ID | --runtime-id ID | --browser-session-id ID]",
+      "examples": [
+        "dw-browser muxhost shutdown --muxhost-id m1"
+      ],
+      "guidance": "Shuts down the explicitly named headed host.",
       "command": "muxhost shutdown",
       "summary": "Shut down the explicitly named headed host",
       "flags": [
@@ -2675,6 +2902,11 @@
       ]
     },
     {
+      "usage": "version",
+      "examples": [
+        "dw-browser version"
+      ],
+      "guidance": "Returns protocol and executable version as JSON. Diagnostic.",
       "command": "version",
       "summary": "Return the candidate protocol version",
       "flags": [
@@ -2701,6 +2933,11 @@
       "diagnostic": true
     },
     {
+      "usage": "capabilities",
+      "examples": [
+        "dw-browser capabilities"
+      ],
+      "guidance": "Returns this executable's full command and action contract (machine-readable). Diagnostic.",
       "command": "capabilities",
       "summary": "Return this executable command and action contract",
       "flags": [
@@ -2727,6 +2964,11 @@
       "diagnostic": true
     },
     {
+      "usage": "export-contract --directory DIR",
+      "examples": [
+        "dw-browser export-contract --directory guide/runtime-v2/generated"
+      ],
+      "guidance": "Regenerates the same-version contract artifacts (capabilities.json, completions, tool-use skill) into a directory. Run after any command-surface change so the checked-in contract stays green in tests.",
       "command": "export-contract",
       "summary": "Generate same-version capabilities, completions and tool-use skill",
       "flags": [
@@ -2761,6 +3003,11 @@
       "diagnostic": false
     },
     {
+      "usage": "completion SHELL",
+      "examples": [
+        "dw-browser completion zsh"
+      ],
+      "guidance": "Generates shell completion for the current command contract. Diagnostic.",
       "command": "completion",
       "summary": "Generate shell completion from this command contract",
       "flags": [
@@ -2787,6 +3034,11 @@
       "diagnostic": true
     },
     {
+      "usage": "protocol",
+      "examples": [
+        "dw-browser protocol"
+      ],
+      "guidance": "Generates the same-version tool-use protocol (the AI-facing usage narrative with a journey example). Diagnostic.",
       "command": "protocol",
       "summary": "Generate the same-version tool-use protocol",
       "flags": [
@@ -2813,6 +3065,12 @@
       "diagnostic": true
     },
     {
+      "usage": "act click [TARGET] --id NAME [verb flags — see flags below]",
+      "examples": [
+        "dw-browser act click @r3 --id chat1",
+        "dw-browser act click css=#submit --id chat1"
+      ],
+      "guidance": "Typed interaction verb through the shared action contract. A TARGET is a returned opaque `@...` ref from the latest observe, an explicit `css=...`/`role=...` locator, or coordinates with --x/--y (plus --unit css-px --frame viewport --observation-id CAPTURE for coordinates). Observe first, act, then reobserve: refs are bound to one observation and die on navigation/tab switch/resize. Literal text is never an action string. Unknown or partially dispatched acts require observation before retry. Clicks the target center (respects occlusion: a click blocked by browser chrome fails loud).",
       "command": "act click",
       "summary": "Click a visible target; count 2 or button right selects its mouse variant",
       "flags": [
@@ -2933,6 +3191,11 @@
       ]
     },
     {
+      "usage": "act tap [TARGET] --id NAME [verb flags — see flags below]",
+      "examples": [
+        "dw-browser act tap @r1 --id chat1"
+      ],
+      "guidance": "Typed interaction verb through the shared action contract. A TARGET is a returned opaque `@...` ref from the latest observe, an explicit `css=...`/`role=...` locator, or coordinates with --x/--y (plus --unit css-px --frame viewport --observation-id CAPTURE for coordinates). Observe first, act, then reobserve: refs are bound to one observation and die on navigation/tab switch/resize. Literal text is never an action string. Unknown or partially dispatched acts require observation before retry. Mobile-persona tap; same targeting rules as click.",
       "command": "act tap",
       "summary": "Touch a visible target",
       "flags": [
@@ -3035,6 +3298,11 @@
       ]
     },
     {
+      "usage": "act hover [TARGET] --id NAME [verb flags — see flags below]",
+      "examples": [
+        "dw-browser act hover @r1 --id chat1"
+      ],
+      "guidance": "Typed interaction verb through the shared action contract. A TARGET is a returned opaque `@...` ref from the latest observe, an explicit `css=...`/`role=...` locator, or coordinates with --x/--y (plus --unit css-px --frame viewport --observation-id CAPTURE for coordinates). Observe first, act, then reobserve: refs are bound to one observation and die on navigation/tab switch/resize. Literal text is never an action string. Unknown or partially dispatched acts require observation before retry. Hovers the target; use for menus/tooltips that need pointer presence.",
       "command": "act hover",
       "summary": "Move the pointer to a visible target",
       "flags": [
@@ -3137,6 +3405,11 @@
       ]
     },
     {
+      "usage": "act fill [TARGET] --id NAME [verb flags — see flags below]",
+      "examples": [
+        "dw-browser act fill @r5 --text \"hello\" --id chat1"
+      ],
+      "guidance": "Typed interaction verb through the shared action contract. A TARGET is a returned opaque `@...` ref from the latest observe, an explicit `css=...`/`role=...` locator, or coordinates with --x/--y (plus --unit css-px --frame viewport --observation-id CAPTURE for coordinates). Observe first, act, then reobserve: refs are bound to one observation and die on navigation/tab switch/resize. Literal text is never an action string. Unknown or partially dispatched acts require observation before retry. Replaces the field content (selects all then types). Input targets come from observe refs; `fill @rN` is the working form. --sensitive requires a masked password control and suppresses text facts. Strict fill verifies physical selection before deletion.",
       "command": "act fill",
       "summary": "Replace editable text using verified physical selection and input",
       "flags": [
@@ -3200,6 +3473,11 @@
       ]
     },
     {
+      "usage": "act type [TARGET] --id NAME [verb flags — see flags below]",
+      "examples": [
+        "dw-browser act type @r1 --id chat1"
+      ],
+      "guidance": "Typed interaction verb through the shared action contract. A TARGET is a returned opaque `@...` ref from the latest observe, an explicit `css=...`/`role=...` locator, or coordinates with --x/--y (plus --unit css-px --frame viewport --observation-id CAPTURE for coordinates). Observe first, act, then reobserve: refs are bound to one observation and die on navigation/tab switch/resize. Literal text is never an action string. Unknown or partially dispatched acts require observation before retry. Types text; --focused inserts into physical focus without changing selection.",
       "command": "act type",
       "summary": "Insert text into a target or the physically focused editor",
       "flags": [
@@ -3263,6 +3541,11 @@
       ]
     },
     {
+      "usage": "act press [TARGET] --id NAME [verb flags — see flags below]",
+      "examples": [
+        "dw-browser act press Control+b --id chat1"
+      ],
+      "guidance": "Typed interaction verb through the shared action contract. A TARGET is a returned opaque `@...` ref from the latest observe, an explicit `css=...`/`role=...` locator, or coordinates with --x/--y (plus --unit css-px --frame viewport --observation-id CAPTURE for coordinates). Observe first, act, then reobserve: refs are bound to one observation and die on navigation/tab switch/resize. Literal text is never an action string. Unknown or partially dispatched acts require observation before retry. Presses a key or chord, e.g. `press Control+b`, `press Enter`; modifiers are real CDP modifier masks, not characters.",
       "command": "act press",
       "summary": "Dispatch a platform key or shortcut",
       "flags": [
@@ -3302,6 +3585,11 @@
       "diagnostic": false
     },
     {
+      "usage": "act focus [TARGET] --id NAME [verb flags — see flags below]",
+      "examples": [
+        "dw-browser act focus @r1 --id chat1"
+      ],
+      "guidance": "Typed interaction verb through the shared action contract. A TARGET is a returned opaque `@...` ref from the latest observe, an explicit `css=...`/`role=...` locator, or coordinates with --x/--y (plus --unit css-px --frame viewport --observation-id CAPTURE for coordinates). Observe first, act, then reobserve: refs are bound to one observation and die on navigation/tab switch/resize. Literal text is never an action string. Unknown or partially dispatched acts require observation before retry. Focuses the target element.",
       "command": "act focus",
       "summary": "Physically focus an editable target",
       "flags": [
@@ -3344,10 +3632,10 @@
       ],
       "usage": "act select TARGET --id SESSION (--label LABEL | --value VALUE)",
       "examples": [
-        "dw-browser act select \u003cCONTROL_REF_FOR_来源\u003e --id \u003cSESSION\u003e --label '完整内容'",
-        "dw-browser act select \u003cCONTROL_REF_FOR_来源\u003e --id \u003cSESSION\u003e --value '\u003cEXACT_DOM_VALUE_FROM_OBSERVE\u003e'"
+        "dw-browser act select @r7 --label \"完整选项文案\" --id chat1",
+        "dw-browser act select \u003cCONTROL_REF\u003e --id \u003cSESSION\u003e --value '\u003cEXACT_DOM_VALUE_FROM_OBSERVE\u003e'"
       ],
-      "guidance": "Placeholders in angle brackets must be replaced. First observe the session, read the control's option labels and DOM values, choose exactly one matching field, execute, then observe again. Do not guess values from labels; duplicate matches fail. Copy a selectable choice's select.options[].option unchanged into Action.option; for CLI map its sole label or value field directly to --label or --value, preserving exact strings including empty strings.",
+      "guidance": "Typed interaction verb through the shared action contract. A TARGET is a returned opaque `@...` ref from the latest observe, an explicit `css=...`/`role=...` locator, or coordinates with --x/--y (plus --unit css-px --frame viewport --observation-id CAPTURE for coordinates). Observe first, act, then reobserve: refs are bound to one observation and die on navigation/tab switch/resize. Literal text is never an action string. Unknown or partially dispatched acts require observation before retry. Native select by exact complete displayed option label (--label) or exact DOM option value (--value) — exactly one selector, including an explicit empty string; no prefix or first-match fallback. First observe the control, read its option labels/values, choose one field, execute, then observe again.",
       "command": "act select",
       "summary": "Select a native option using verified keyboard interaction; explicit baseline element steps provide synthetic functional evidence",
       "flags": [
@@ -3405,6 +3693,11 @@
       ]
     },
     {
+      "usage": "act set-checked [TARGET] --id NAME [verb flags — see flags below]",
+      "examples": [
+        "dw-browser act set-checked @r1 --id chat1"
+      ],
+      "guidance": "Typed interaction verb through the shared action contract. A TARGET is a returned opaque `@...` ref from the latest observe, an explicit `css=...`/`role=...` locator, or coordinates with --x/--y (plus --unit css-px --frame viewport --observation-id CAPTURE for coordinates). Observe first, act, then reobserve: refs are bound to one observation and die on navigation/tab switch/resize. Literal text is never an action string. Unknown or partially dispatched acts require observation before retry. Sets checkbox/radio state; argument is the desired state.",
       "command": "act set-checked",
       "summary": "Set a checkbox to an explicit boolean",
       "flags": [
@@ -3448,6 +3741,11 @@
       "diagnostic": false
     },
     {
+      "usage": "act scroll [TARGET] --id NAME [verb flags — see flags below]",
+      "examples": [
+        "dw-browser act scroll down 3 --id chat1"
+      ],
+      "guidance": "Typed interaction verb through the shared action contract. A TARGET is a returned opaque `@...` ref from the latest observe, an explicit `css=...`/`role=...` locator, or coordinates with --x/--y (plus --unit css-px --frame viewport --observation-id CAPTURE for coordinates). Observe first, act, then reobserve: refs are bound to one observation and die on navigation/tab switch/resize. Literal text is never an action string. Unknown or partially dispatched acts require observation before retry. Scrolls (e.g. `scroll down 3`); pure-coordinate forms exist for canvas targets.",
       "command": "act scroll",
       "summary": "Scroll the viewport or target at a declared point",
       "flags": [
@@ -3576,6 +3874,11 @@
       ]
     },
     {
+      "usage": "act scrollto [TARGET] --id NAME [verb flags — see flags below]",
+      "examples": [
+        "dw-browser act scrollto @r1 --id chat1"
+      ],
+      "guidance": "Typed interaction verb through the shared action contract. A TARGET is a returned opaque `@...` ref from the latest observe, an explicit `css=...`/`role=...` locator, or coordinates with --x/--y (plus --unit css-px --frame viewport --observation-id CAPTURE for coordinates). Observe first, act, then reobserve: refs are bound to one observation and die on navigation/tab switch/resize. Literal text is never an action string. Unknown or partially dispatched acts require observation before retry. Scrolls a locator or coordinates into view.",
       "command": "act scrollto",
       "summary": "Scroll a persistent target into view",
       "flags": [
@@ -3610,6 +3913,11 @@
       "diagnostic": false
     },
     {
+      "usage": "act drag [TARGET] --id NAME [verb flags — see flags below]",
+      "examples": [
+        "dw-browser act drag @r1 --id chat1"
+      ],
+      "guidance": "Typed interaction verb through the shared action contract. A TARGET is a returned opaque `@...` ref from the latest observe, an explicit `css=...`/`role=...` locator, or coordinates with --x/--y (plus --unit css-px --frame viewport --observation-id CAPTURE for coordinates). Observe first, act, then reobserve: refs are bound to one observation and die on navigation/tab switch/resize. Literal text is never an action string. Unknown or partially dispatched acts require observation before retry. Drags from target/coordinates to an end point (--end-x/--end-y).",
       "command": "act drag",
       "summary": "Drag between two points in one coordinate frame",
       "flags": [
@@ -3738,6 +4046,11 @@
       ]
     },
     {
+      "usage": "act swipe [TARGET] --id NAME [verb flags — see flags below]",
+      "examples": [
+        "dw-browser act swipe @r1 --id chat1"
+      ],
+      "guidance": "Typed interaction verb through the shared action contract. A TARGET is a returned opaque `@...` ref from the latest observe, an explicit `css=...`/`role=...` locator, or coordinates with --x/--y (plus --unit css-px --frame viewport --observation-id CAPTURE for coordinates). Observe first, act, then reobserve: refs are bound to one observation and die on navigation/tab switch/resize. Literal text is never an action string. Unknown or partially dispatched acts require observation before retry. Mobile-persona swipe gesture.",
       "command": "act swipe",
       "summary": "Swipe between two touch points",
       "flags": [
@@ -3866,6 +4179,11 @@
       ]
     },
     {
+      "usage": "act navigate [TARGET] --id NAME [verb flags — see flags below]",
+      "examples": [
+        "dw-browser act navigate https://example.com --id chat1"
+      ],
+      "guidance": "Typed interaction verb through the shared action contract. A TARGET is a returned opaque `@...` ref from the latest observe, an explicit `css=...`/`role=...` locator, or coordinates with --x/--y (plus --unit css-px --frame viewport --observation-id CAPTURE for coordinates). Observe first, act, then reobserve: refs are bound to one observation and die on navigation/tab switch/resize. Literal text is never an action string. Unknown or partially dispatched acts require observation before retry. Navigates the page to a URL; refs die afterwards.",
       "command": "act navigate",
       "summary": "Navigate the existing session to a URL",
       "flags": [
@@ -3905,6 +4223,11 @@
       "diagnostic": false
     },
     {
+      "usage": "act reload [TARGET] --id NAME [verb flags — see flags below]",
+      "examples": [
+        "dw-browser act reload @r1 --id chat1"
+      ],
+      "guidance": "Typed interaction verb through the shared action contract. A TARGET is a returned opaque `@...` ref from the latest observe, an explicit `css=...`/`role=...` locator, or coordinates with --x/--y (plus --unit css-px --frame viewport --observation-id CAPTURE for coordinates). Observe first, act, then reobserve: refs are bound to one observation and die on navigation/tab switch/resize. Literal text is never an action string. Unknown or partially dispatched acts require observation before retry. Reloads the current page; refs die afterwards.",
       "command": "act reload",
       "summary": "Reload the existing document",
       "flags": [
@@ -3939,6 +4262,11 @@
       "diagnostic": false
     },
     {
+      "usage": "act back [TARGET] --id NAME [verb flags — see flags below]",
+      "examples": [
+        "dw-browser act back @r1 --id chat1"
+      ],
+      "guidance": "Typed interaction verb through the shared action contract. A TARGET is a returned opaque `@...` ref from the latest observe, an explicit `css=...`/`role=...` locator, or coordinates with --x/--y (plus --unit css-px --frame viewport --observation-id CAPTURE for coordinates). Observe first, act, then reobserve: refs are bound to one observation and die on navigation/tab switch/resize. Literal text is never an action string. Unknown or partially dispatched acts require observation before retry. Browser back; refs die afterwards.",
       "command": "act back",
       "summary": "Traverse browser history backwards",
       "flags": [
@@ -3973,6 +4301,11 @@
       "diagnostic": false
     },
     {
+      "usage": "act forward [TARGET] --id NAME [verb flags — see flags below]",
+      "examples": [
+        "dw-browser act forward @r1 --id chat1"
+      ],
+      "guidance": "Typed interaction verb through the shared action contract. A TARGET is a returned opaque `@...` ref from the latest observe, an explicit `css=...`/`role=...` locator, or coordinates with --x/--y (plus --unit css-px --frame viewport --observation-id CAPTURE for coordinates). Observe first, act, then reobserve: refs are bound to one observation and die on navigation/tab switch/resize. Literal text is never an action string. Unknown or partially dispatched acts require observation before retry. Browser forward; refs die afterwards.",
       "command": "act forward",
       "summary": "Traverse browser history forwards",
       "flags": [
@@ -4007,6 +4340,11 @@
       "diagnostic": false
     },
     {
+      "usage": "act zoom [TARGET] --id NAME [verb flags — see flags below]",
+      "examples": [
+        "dw-browser act zoom @r1 --id chat1"
+      ],
+      "guidance": "Typed interaction verb through the shared action contract. A TARGET is a returned opaque `@...` ref from the latest observe, an explicit `css=...`/`role=...` locator, or coordinates with --x/--y (plus --unit css-px --frame viewport --observation-id CAPTURE for coordinates). Observe first, act, then reobserve: refs are bound to one observation and die on navigation/tab switch/resize. Literal text is never an action string. Unknown or partially dispatched acts require observation before retry. Enters/adjusts the visual zoom state (persona chrome stays fixed); `zoom reset` restores.",
       "command": "act zoom",
       "summary": "Set page scale",
       "flags": [
@@ -4046,6 +4384,11 @@
       "diagnostic": false
     },
     {
+      "usage": "act keyboard [TARGET] --id NAME [verb flags — see flags below]",
+      "examples": [
+        "dw-browser act keyboard @r1 --id chat1"
+      ],
+      "guidance": "Typed interaction verb through the shared action contract. A TARGET is a returned opaque `@...` ref from the latest observe, an explicit `css=...`/`role=...` locator, or coordinates with --x/--y (plus --unit css-px --frame viewport --observation-id CAPTURE for coordinates). Observe first, act, then reobserve: refs are bound to one observation and die on navigation/tab switch/resize. Literal text is never an action string. Unknown or partially dispatched acts require observation before retry. Opens or dismisses the simulated on-screen keyboard (mobile persona state).",
       "command": "act keyboard",
       "summary": "Show or hide the emulated mobile keyboard",
       "flags": [

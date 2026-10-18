@@ -6,6 +6,15 @@ Generated from executable declarations. Flags on attached sessions inherit creat
 
 Show the same executable command contract. Positional arguments: 0..2. Required flags: .
 
+Usage: `help [COMMAND]`
+
+
+Returns the same executable command contract: flags with value types and descriptions, required arguments, and per-command usage/guidance/examples. Read `help COMMAND` before first use of any command; it is authoritative for this exact binary version.
+
+Example: `dw-browser help observe`
+
+Example: `dw-browser help "pdf excerpt"`
+
 - `--output` VALUE (string)
 - `--lock-wait` VALUE (lock-duration)
 - `--verbose`
@@ -14,15 +23,24 @@ Show the same executable command contract. Positional arguments: 0..2. Required 
 
 Create one session; duplicate IDs are rejected. Positional arguments: 1..1. Required flags: --scenario, --id.
 
-- `--scenario` VALUE (string); values app-test-explore|app-test-baseline|webvisit
-- `--mode` VALUE (string); values headless|headed|visible
-- `--persona` VALUE (string)
+Usage: `open URL --id NAME --scenario {app-test-explore|app-test-baseline|webvisit} [--persona desktop|mobile] [--mode headless|headed|visible] [--viewport WxH] [--evidence DIR] [--allow-host HOST]`
+
+
+Creates the browser session every later --id command operates on; the creation environment (scenario/persona/viewport/evidence root) is inherited by every later process and cannot be changed in place. --scenario is required and sets the interaction contract: app-test-explore for interactive exploration, app-test-baseline for deterministic regression (internal LLM locked), webvisit for real public sites (writes gated except --allow-host). Duplicate IDs are rejected. Use session viewport to resize later. Close only sessions you created.
+
+Example: `dw-browser open http://localhost:8080/portal/chat --id chat1 --scenario app-test-explore`
+
+Example: `dw-browser open https://arxiv.org/html/2610.17309v1 --id paper --scenario webvisit`
+
+- `--scenario` VALUE (string); values app-test-explore|app-test-baseline|webvisit; interaction contract: app-test-explore (interactive exploration), app-test-baseline (deterministic regression), webvisit (real public site; writes gated except --allow-host)
+- `--mode` VALUE (string); values headless|headed|visible; headless (default), headed (windowless hidden target) or visible
+- `--persona` VALUE (string); environment fidelity bundle: desktop (default) or mobile (iPhone bundle + Safari chrome simulation; required for mobile UX acceptance)
 - `--engine` VALUE (string); values chrome|safari
 - `--safari-device` VALUE (string)
-- `--viewport` VALUE (string)
+- `--viewport` VALUE (string); initial viewport WxH (mobile sizes require --persona mobile)
 - `--profile` VALUE (string)
-- `--evidence` VALUE (string)
-- `--allow-host` VALUE (string)
+- `--evidence` VALUE (string); evidence root directory for observations/screenshots
+- `--allow-host` VALUE (string); trusted host whose writes are always allowed (webvisit)
 - `--browser-chrome` VALUE (string); values auto|on|off
 - `--user-agent` VALUE (string)
 - `--goal` VALUE (string)
@@ -36,8 +54,15 @@ Create one session; duplicate IDs are rejected. Positional arguments: 1..1. Requ
 
 Close only the named session. Positional arguments: 0..0. Required flags: --id.
 
+Usage: `close --id NAME [--force]`
+
+
+Closes exactly the named session you created and tears down its runtime. --force is the escape hatch for a wedged close; normal flow never needs it. Other sessions are untouched.
+
+Example: `dw-browser close --id chat1`
+
 - `--id` VALUE (session-id)
-- `--force`
+- `--force`; force-close a wedged session (escape hatch)
 - `--output` VALUE (string)
 - `--lock-wait` VALUE (lock-duration)
 - `--verbose`
@@ -45,6 +70,13 @@ Close only the named session. Positional arguments: 0..0. Required flags: --id.
 ## `once`
 
 Capture one canonical UI observation in an owned short-lived session. Positional arguments: 1..1. Required flags: --scenario.
+
+Usage: `once URL --scenario NAME [--screenshot PATH] [--content text|list|table] [--health] [--tree] [--all]`
+
+
+One canonical observation in an owned short-lived session: creates, captures, closes — for quick look/see checks that do not need follow-up interaction. Same flags as observe plus creation flags. When you need to act after looking, use open + observe instead.
+
+Example: `dw-browser once http://localhost:8080 --scenario app-test-explore --screenshot shot.png`
 
 - `--scenario` VALUE (string); values app-test-explore|app-test-baseline|webvisit
 - `--mode` VALUE (string); values headless|headed|visible
@@ -121,17 +153,26 @@ Example: `dw-browser document https://example.com/article --dns-resolver https:/
 
 Capture a canonical observation and actual screenshot. Positional arguments: 0..0. Required flags: --id.
 
+Usage: `observe --id NAME [--screenshot PATH] [--content text|list|table] [--health] [--tree] [--top N] [--budget B] [--all] [--annotate] [--hit-audit]`
+
+
+The perception verb: returns the thin default {elements@rN, user_state, run_id, step}; additive flags are freely combined. --screenshot writes the actual PNG and returns its path — read the real PNG before visual actions. Channel states distinguish captured/unavailable/not-requested; an unavailable channel cannot prove zero errors. @rN refs share one space with act: `act "click @r3"` resolves the refs this observe just returned. --all is a census without operable refs. Reobserve after an action, resize, tab switch, navigation or intervention before using any ref or screenshot coordinate. --annotate draws the browser-chrome occlusion evidence outline (mobile persona debugging), not content annotation — for annotated content crops use excerpt.
+
+Example: `dw-browser observe --id chat1 --screenshot shot.png`
+
+Example: `dw-browser observe --id chat1 --health`
+
 - `--id` VALUE (session-id)
-- `--screenshot` VALUE (string)
-- `--content` VALUE (string); values text|list|table
+- `--screenshot` VALUE (string); write the actual PNG to this path and return it — read the real image before visual actions
+- `--content` VALUE (string); values text|list|table; also capture visible text as text|list|table
 - `--scope` VALUE (string); values visible|all
-- `--top` VALUE (integer)
-- `--budget` VALUE (integer)
-- `--health`
-- `--tree`
-- `--all`
+- `--top` VALUE (integer); elements list size (default 20)
+- `--budget` VALUE (integer); elements text budget bytes (default 4096)
+- `--health`; also capture telemetry (console/network via visible_errors scanning; CLI cannot capture full console/network)
+- `--tree`; also return the full a11y text (rarely needed)
+- `--all`; census mode: full inventory without operable refs (clears session refs)
 - `--hit-audit`
-- `--annotate`
+- `--annotate`; draw browser-chrome occlusion outline evidence (mobile persona debugging)
 - `--output` VALUE (string)
 - `--lock-wait` VALUE (lock-duration)
 - `--verbose`
@@ -205,11 +246,18 @@ Example: `dw-browser pdf excerpt --file paper.pdf --spec '[{"name":"latency-tabl
 
 Judge required assertions against one canonical observation. Positional arguments: 0..0. Required flags: .
 
+Usage: `check --id NAME [--observation ID] [--assert EXPR | --file ASSERT.json] [--using vision-url ...]`
+
+
+Judges required assertions against one canonical observation. Exit 0 only for required PASS, 1 for FAIL, 2 for BLOCKED/runtime/evidence/argument errors — a green exit means the assertion held, not that the product is accepted. Vision-backed assertions need explicit provider configuration.
+
+Example: `dw-browser check --id chat1 --assert 'text_contains:Welcome'`
+
 - `--id` VALUE (session-id)
 - `--observation` VALUE (string)
-- `--assert` VALUE (string)
-- `--file` VALUE (string)
-- `--using` VALUE (string)
+- `--assert` VALUE (string); required assertion expression
+- `--file` VALUE (string); assertions JSON file
+- `--using` VALUE (string); oracle selector (e.g. vision provider)
 - `--vision-url` VALUE (string)
 - `--vision-provider` VALUE (string)
 - `--vision-model` VALUE (string)
@@ -224,6 +272,13 @@ Judge required assertions against one canonical observation. Positional argument
 
 Compare two canonical observations. Positional arguments: 2..2. Required flags: .
 
+Usage: `diff OBSERVATION_A OBSERVATION_B`
+
+
+Compares two canonical observations (same session) element-by-element; diagnostic only, never recovers a runtime. Use to see what an action actually changed between two observes.
+
+Example: `dw-browser diff obs-1 obs-2`
+
 - `--output` VALUE (string)
 - `--lock-wait` VALUE (lock-duration)
 - `--verbose`
@@ -232,10 +287,19 @@ Compare two canonical observations. Positional arguments: 2..2. Required flags: 
 
 Wait for one assertion or a declared duration. Positional arguments: 0..0. Required flags: --id.
 
+Usage: `wait --id NAME (--assert EXPR | --duration 2s) [--timeout 10s]`
+
+
+Waits until one assertion holds or a declared duration elapses, then returns. Prefer --assert over fixed durations; --duration is for settle-style pauses only.
+
+Example: `dw-browser wait --id chat1 --assert 'visible:@r3' --timeout 10s`
+
+Example: `dw-browser wait --id chat1 --duration 1s`
+
 - `--id` VALUE (session-id)
-- `--assert` VALUE (string)
-- `--timeout` VALUE (duration)
-- `--duration` VALUE (duration)
+- `--assert` VALUE (string); assertion expression to wait for (preferred)
+- `--timeout` VALUE (duration); maximum wait
+- `--duration` VALUE (duration); fixed settle pause (e.g. 1s)
 - `--output` VALUE (string)
 - `--lock-wait` VALUE (lock-duration)
 - `--verbose`
@@ -246,6 +310,13 @@ Wait for one assertion or a declared duration. Positional arguments: 0..0. Requi
 ## `journey`
 
 Run typed deterministic steps through the shared runtime. Positional arguments: 0..0. Required flags: --file.
+
+Usage: `journey --file STEPS.yaml [--scenario NAME] [--id NAME] [--base-url URL] [--fail-fast]`
+
+
+Runs typed deterministic steps through the shared runtime with persistent locators and assertions. Use app-test-baseline for deterministic regression: internal LLM use is forbidden and element steps are synthetic by explicit declaration. A candidate trace is not an accepted baseline — acceptance is a separate human decision. The YAML shape is shown by `protocol`.
+
+Example: `dw-browser journey --file journey.yaml --scenario app-test-baseline --evidence runs/today`
 
 - `--scenario` VALUE (string); values app-test-explore|app-test-baseline|webvisit
 - `--mode` VALUE (string); values headless|headed|visible
@@ -261,9 +332,9 @@ Run typed deterministic steps through the shared runtime. Positional arguments: 
 - `--goal` VALUE (string)
 - `--stealth`
 - `--id` VALUE (session-id)
-- `--file` VALUE (string)
-- `--base-url` VALUE (string)
-- `--fail-fast`
+- `--file` VALUE (string); typed YAML steps (shape shown by `protocol`)
+- `--base-url` VALUE (string); base URL for relative step targets
+- `--fail-fast`; stop at first failing step
 - `--output` VALUE (string)
 - `--lock-wait` VALUE (lock-duration)
 - `--verbose`
@@ -274,6 +345,13 @@ Run typed deterministic steps through the shared runtime. Positional arguments: 
 
 Run gated JavaScript debugging and revoke old observation authority. Positional arguments: 1..1. Required flags: --id.
 
+Usage: `eval --id NAME '<js-expression>'`
+
+
+Gated debugging: runs JavaScript in the page and revokes observation authority (it may mutate the page). Requires write permission for the origin (webvisit needs --allow-host). Debug/synthetic evidence cannot establish Human experience — witness work uses real visible interactions (act) instead. Prefer read verbs (observe/excerpt/document) for reading.
+
+Example: `dw-browser eval --id chat1 'location.href'`
+
 - `--id` VALUE (session-id)
 - `--output` VALUE (string)
 - `--lock-wait` VALUE (lock-duration)
@@ -282,6 +360,13 @@ Run gated JavaScript debugging and revoke old observation authority. Positional 
 ## `cookie-import`
 
 Import native browser cookies with keychain decryption and a domain filter. Positional arguments: 0..0. Required flags: --id.
+
+Usage: `cookie-import --id NAME [--browser chrome|firefox] [--domain FILTER]`
+
+
+Imports cookies from the local native browser profile (keychain-decrypted) into this session — for reaching login-gated content you already hold. --domain limits the import scope.
+
+Example: `dw-browser cookie-import --id chat1 --browser chrome --domain example.com`
 
 - `--id` VALUE (session-id)
 - `--browser` VALUE (string)
@@ -293,6 +378,13 @@ Import native browser cookies with keychain decryption and a domain filter. Posi
 ## `audit`
 
 Audit compatibility, accessibility, layout, performance and browser chrome rules. Positional arguments: 0..0. Required flags: --id.
+
+Usage: `audit --id NAME [--suite NAME] [--check NAME] [--threshold N] [--format json]`
+
+
+Deterministic rule audit over the current observation: compatibility, accessibility, layout, performance and browser-chrome rules (e.g. browser-chrome-occlusion on mobile persona). Machine-checkable only — it complements, never replaces, human-facing acceptance.
+
+Example: `dw-browser audit --id chat1 --check browser-chrome-occlusion`
 
 - `--id` VALUE (session-id)
 - `--suite` VALUE (string)
@@ -307,6 +399,13 @@ Audit compatibility, accessibility, layout, performance and browser chrome rules
 
 Inspect persisted runtime ownership without recovery. Positional arguments: 0..0. Required flags: --id.
 
+Usage: `session status --id NAME`
+
+
+Inspects the persisted runtime ownership (authority, observation validity) without recovering or touching the runtime. Diagnostic only.
+
+Example: `dw-browser session status --id chat1`
+
 - `--id` VALUE (session-id)
 - `--output` VALUE (string)
 - `--lock-wait` VALUE (lock-duration)
@@ -316,6 +415,13 @@ Inspect persisted runtime ownership without recovery. Positional arguments: 0..0
 
 List persisted sessions. Positional arguments: 0..0. Required flags: .
 
+Usage: `session list`
+
+
+Lists persisted sessions with their state. Diagnostic only — never recovers a runtime.
+
+Example: `dw-browser session list`
+
 - `--output` VALUE (string)
 - `--lock-wait` VALUE (lock-duration)
 - `--verbose`
@@ -324,8 +430,15 @@ List persisted sessions. Positional arguments: 0..0. Required flags: .
 
 Resize the existing runtime and persist its environment. Positional arguments: 0..0. Required flags: --id, --size.
 
+Usage: `session viewport --id NAME --size WxH`
+
+
+Resizes the existing runtime viewport and persists the environment change. Reobserve after resizing before using refs or coordinates. Bare --viewport on open is rejected for mobile sizes — use --persona mobile for real mobile fidelity.
+
+Example: `dw-browser session viewport --id chat1 --size 880x720`
+
 - `--id` VALUE (session-id)
-- `--size` VALUE (string)
+- `--size` VALUE (string); new viewport WxH; reobserve afterwards
 - `--output` VALUE (string)
 - `--lock-wait` VALUE (lock-duration)
 - `--verbose`
@@ -333,6 +446,13 @@ Resize the existing runtime and persist its environment. Positional arguments: 0
 ## `tabs list`
 
 List user page targets without recovering the runtime. Positional arguments: 0..0. Required flags: --id.
+
+Usage: `tabs list --id NAME`
+
+
+Lists the user page targets in the session browser without recovering the runtime. Diagnostic only.
+
+Example: `dw-browser tabs list --id chat1`
 
 - `--id` VALUE (session-id)
 - `--output` VALUE (string)
@@ -343,8 +463,15 @@ List user page targets without recovering the runtime. Positional arguments: 0..
 
 Activate an existing target under the runtime input lock. Positional arguments: 0..0. Required flags: --id, --target.
 
+Usage: `tabs select --id NAME --target TARGET`
+
+
+Activates an existing target under the runtime input lock. Reobserve after switching before using any ref — refs are per-target.
+
+Example: `dw-browser tabs select --id chat1 --target t2`
+
 - `--id` VALUE (session-id)
-- `--target` VALUE (string)
+- `--target` VALUE (string); target id from tabs list
 - `--output` VALUE (string)
 - `--lock-wait` VALUE (lock-duration)
 - `--verbose`
@@ -353,8 +480,15 @@ Activate an existing target under the runtime input lock. Positional arguments: 
 
 Close a target and revoke page authority. Positional arguments: 0..0. Required flags: --id, --target.
 
+Usage: `tabs close --id NAME --target TARGET`
+
+
+Closes one page target and revokes page authority. Any prior observation of that target is dead.
+
+Example: `dw-browser tabs close --id chat1 --target t2`
+
 - `--id` VALUE (session-id)
-- `--target` VALUE (string)
+- `--target` VALUE (string); target id from tabs list
 - `--output` VALUE (string)
 - `--lock-wait` VALUE (lock-duration)
 - `--verbose`
@@ -363,8 +497,15 @@ Close a target and revoke page authority. Positional arguments: 0..0. Required f
 
 Create a target in the existing browser. Positional arguments: 0..0. Required flags: --id.
 
+Usage: `tabs new --id NAME --url URL`
+
+
+Creates a new page target in the existing session browser and focuses it. Reobserve before interacting — the new target has no refs yet.
+
+Example: `dw-browser tabs new --id chat1 --url http://localhost:8080/portal/workspace`
+
 - `--id` VALUE (session-id)
-- `--url` VALUE (string)
+- `--url` VALUE (string); URL for the new target; reobserve afterwards
 - `--output` VALUE (string)
 - `--lock-wait` VALUE (lock-duration)
 - `--verbose`
@@ -372,6 +513,13 @@ Create a target in the existing browser. Positional arguments: 0..0. Required fl
 ## `htr status`
 
 Inspect Human control and runtime state without recovery. Positional arguments: 0..0. Required flags: --id.
+
+Usage: `htr status --id NAME`
+
+
+Inspects Human/AI authority state without recovery. Diagnostic only.
+
+Example: `dw-browser htr status --id chat1`
 
 - `--id` VALUE (session-id)
 - `--output` VALUE (string)
@@ -382,6 +530,13 @@ Inspect Human control and runtime state without recovery. Positional arguments: 
 
 Set Human/AI authority; obsolete observations are revoked. Positional arguments: 0..0. Required flags: --id.
 
+Usage: `htr takeover --id NAME`
+
+
+Really blocks AI input: the human physically owns the page from here. Obsolete observations are revoked.
+
+Example: `dw-browser htr takeover --id chat1`
+
 - `--id` VALUE (session-id)
 - `--output` VALUE (string)
 - `--lock-wait` VALUE (lock-duration)
@@ -390,6 +545,13 @@ Set Human/AI authority; obsolete observations are revoked. Positional arguments:
 ## `htr yield`
 
 Set Human/AI authority; obsolete observations are revoked. Positional arguments: 0..0. Required flags: --id.
+
+Usage: `htr yield --id NAME`
+
+
+Restores AI authority after a takeover and requires fresh observation before further acts.
+
+Example: `dw-browser htr yield --id chat1`
 
 - `--id` VALUE (session-id)
 - `--output` VALUE (string)
@@ -400,6 +562,13 @@ Set Human/AI authority; obsolete observations are revoked. Positional arguments:
 
 Set Human/AI authority; obsolete observations are revoked. Positional arguments: 0..0. Required flags: --id.
 
+Usage: `htr share --id NAME`
+
+
+Shared authority mode; obsolete observations are revoked.
+
+Example: `dw-browser htr share --id chat1`
+
 - `--id` VALUE (session-id)
 - `--output` VALUE (string)
 - `--lock-wait` VALUE (lock-duration)
@@ -409,6 +578,13 @@ Set Human/AI authority; obsolete observations are revoked. Positional arguments:
 
 List environment personas. Positional arguments: 0..0. Required flags: .
 
+Usage: `persona list`
+
+
+Lists available environment personas (device fidelity bundles). Use mobile for mobile-UX acceptance; desktop for PC.
+
+Example: `dw-browser persona list`
+
 - `--output` VALUE (string)
 - `--lock-wait` VALUE (lock-duration)
 - `--verbose`
@@ -416,6 +592,13 @@ List environment personas. Positional arguments: 0..0. Required flags: .
 ## `profile list`
 
 List persistent and temporary profile directories. Positional arguments: 0..0. Required flags: .
+
+Usage: `profile list`
+
+
+Lists persistent and temporary browser profile directories known to this CLI. Diagnostic.
+
+Example: `dw-browser profile list`
 
 - `--output` VALUE (string)
 - `--lock-wait` VALUE (lock-duration)
@@ -425,6 +608,13 @@ List persistent and temporary profile directories. Positional arguments: 0..0. R
 
 Copy a profile into the CLI profile store. Positional arguments: 1..1. Required flags: .
 
+Usage: `profile import NAME`
+
+
+Copies a profile directory into the CLI profile store for reuse by named profiles.
+
+Example: `dw-browser profile import myprofile`
+
 - `--name` VALUE (string)
 - `--output` VALUE (string)
 - `--lock-wait` VALUE (lock-duration)
@@ -433,6 +623,13 @@ Copy a profile into the CLI profile store. Positional arguments: 1..1. Required 
 ## `profile prune`
 
 Prune task profile directories explicitly. Positional arguments: 0..0. Required flags: --ephemeral.
+
+Usage: `profile prune --ephemeral [--min-age DURATION] [--dry-run] [--reap-orphaned]`
+
+
+Explicitly prunes task profile directories. --dry-run first to preview; --reap-orphaned cleans orphans left by dead processes.
+
+Example: `dw-browser profile prune --ephemeral --dry-run`
 
 - `--min-age` VALUE (duration)
 - `--ephemeral`
@@ -446,6 +643,13 @@ Prune task profile directories explicitly. Positional arguments: 0..0. Required 
 
 Inspect or reclaim unowned browser resources explicitly. Positional arguments: 0..0. Required flags: .
 
+Usage: `gc [--older-than DURATION] [--dry-run] [--all]`
+
+
+Inspects or reclaims unowned browser resources (runtimes left behind by dead owners). --dry-run first; reclaims only unowned resources.
+
+Example: `dw-browser gc --dry-run`
+
 - `--older-than` VALUE (duration)
 - `--dry-run`
 - `--all`
@@ -457,6 +661,13 @@ Inspect or reclaim unowned browser resources explicitly. Positional arguments: 0
 
 List installed site recipes. Positional arguments: 0..0. Required flags: .
 
+Usage: `skills list`
+
+
+Lists installed site recipes (per-site interaction recipes the CLI can use). Diagnostic.
+
+Example: `dw-browser skills list`
+
 - `--output` VALUE (string)
 - `--lock-wait` VALUE (lock-duration)
 - `--verbose`
@@ -464,6 +675,13 @@ List installed site recipes. Positional arguments: 0..0. Required flags: .
 ## `skills read`
 
 Read one site recipe. Positional arguments: 1..1. Required flags: .
+
+Usage: `skills read NAME`
+
+
+Reads one site recipe. Diagnostic.
+
+Example: `dw-browser skills read example`
 
 - `--action` VALUE (string)
 - `--output` VALUE (string)
@@ -474,6 +692,13 @@ Read one site recipe. Positional arguments: 1..1. Required flags: .
 
 Write a site recipe from declared input. Positional arguments: 1..1. Required flags: --action.
 
+Usage: `skills write --action PATH`
+
+
+Writes a site recipe from declared input.
+
+Example: `dw-browser skills write --action recipe.json`
+
 - `--action` VALUE (string)
 - `--output` VALUE (string)
 - `--lock-wait` VALUE (lock-duration)
@@ -482,6 +707,13 @@ Write a site recipe from declared input. Positional arguments: 1..1. Required fl
 ## `record start`
 
 Start a structured action trace. Positional arguments: 0..0. Required flags: --id.
+
+Usage: `record start --id NAME`
+
+
+Starts a structured action trace on the session (for evidence and replay analysis).
+
+Example: `dw-browser record start --id chat1`
 
 - `--id` VALUE (session-id)
 - `--output` VALUE (string)
@@ -492,6 +724,13 @@ Start a structured action trace. Positional arguments: 0..0. Required flags: --i
 
 Stop and return the trace. Positional arguments: 0..0. Required flags: --id.
 
+Usage: `record stop --id NAME`
+
+
+Stops the trace and returns it.
+
+Example: `dw-browser record stop --id chat1`
+
 - `--id` VALUE (session-id)
 - `--output` VALUE (string)
 - `--lock-wait` VALUE (lock-duration)
@@ -501,6 +740,13 @@ Stop and return the trace. Positional arguments: 0..0. Required flags: --id.
 
 Return the current trace. Positional arguments: 0..0. Required flags: --id.
 
+Usage: `record export --id NAME`
+
+
+Returns the current trace without stopping. Diagnostic.
+
+Example: `dw-browser record export --id chat1`
+
 - `--id` VALUE (session-id)
 - `--output` VALUE (string)
 - `--lock-wait` VALUE (lock-duration)
@@ -509,6 +755,13 @@ Return the current trace. Positional arguments: 0..0. Required flags: --id.
 ## `muxhost serve`
 
 Run the existing headed host infrastructure. Positional arguments: 0..0. Required flags: .
+
+Usage: `muxhost serve`
+
+
+Runs the existing headed host infrastructure (shared headed display host for headed sessions).
+
+Example: `dw-browser muxhost serve`
 
 - `--muxhost-id` VALUE (string)
 - `--runtime-id` VALUE (string)
@@ -541,6 +794,13 @@ Run the existing headed host infrastructure. Positional arguments: 0..0. Require
 
 Ensure an explicitly named headed host. Positional arguments: 0..0. Required flags: .
 
+Usage: `muxhost ensure`
+
+
+Ensures an explicitly named headed host exists (starts if missing).
+
+Example: `dw-browser muxhost ensure`
+
 - `--muxhost-id` VALUE (string)
 - `--runtime-id` VALUE (string)
 - `--browser-session-id` VALUE (string)
@@ -572,6 +832,13 @@ Ensure an explicitly named headed host. Positional arguments: 0..0. Required fla
 
 Inspect an existing headed host. Positional arguments: 0..0. Required flags: .
 
+Usage: `muxhost status [--muxhost-id ID | --runtime-id ID | --browser-session-id ID]`
+
+
+Inspects an existing headed host. Diagnostic.
+
+Example: `dw-browser muxhost status`
+
 - `--muxhost-id` VALUE (string)
 - `--runtime-id` VALUE (string)
 - `--browser-session-id` VALUE (string)
@@ -583,6 +850,13 @@ Inspect an existing headed host. Positional arguments: 0..0. Required flags: .
 ## `muxhost release`
 
 Release an existing headed host lease. Positional arguments: 0..0. Required flags: .
+
+Usage: `muxhost release [--muxhost-id ID | --runtime-id ID | --browser-session-id ID]`
+
+
+Releases a headed host lease.
+
+Example: `dw-browser muxhost release --runtime-id r1`
 
 - `--muxhost-id` VALUE (string)
 - `--runtime-id` VALUE (string)
@@ -596,6 +870,13 @@ Release an existing headed host lease. Positional arguments: 0..0. Required flag
 
 Shut down the explicitly named headed host. Positional arguments: 0..0. Required flags: .
 
+Usage: `muxhost shutdown [--muxhost-id ID | --runtime-id ID | --browser-session-id ID]`
+
+
+Shuts down the explicitly named headed host.
+
+Example: `dw-browser muxhost shutdown --muxhost-id m1`
+
 - `--muxhost-id` VALUE (string)
 - `--runtime-id` VALUE (string)
 - `--browser-session-id` VALUE (string)
@@ -608,6 +889,13 @@ Shut down the explicitly named headed host. Positional arguments: 0..0. Required
 
 Return the candidate protocol version. Positional arguments: 0..0. Required flags: .
 
+Usage: `version`
+
+
+Returns protocol and executable version as JSON. Diagnostic.
+
+Example: `dw-browser version`
+
 - `--output` VALUE (string)
 - `--lock-wait` VALUE (lock-duration)
 - `--verbose`
@@ -616,6 +904,13 @@ Return the candidate protocol version. Positional arguments: 0..0. Required flag
 
 Return this executable command and action contract. Positional arguments: 0..0. Required flags: .
 
+Usage: `capabilities`
+
+
+Returns this executable's full command and action contract (machine-readable). Diagnostic.
+
+Example: `dw-browser capabilities`
+
 - `--output` VALUE (string)
 - `--lock-wait` VALUE (lock-duration)
 - `--verbose`
@@ -623,6 +918,13 @@ Return this executable command and action contract. Positional arguments: 0..0. 
 ## `export-contract`
 
 Generate same-version capabilities, completions and tool-use skill. Positional arguments: 0..0. Required flags: --directory.
+
+Usage: `export-contract --directory DIR`
+
+
+Regenerates the same-version contract artifacts (capabilities.json, completions, tool-use skill) into a directory. Run after any command-surface change so the checked-in contract stays green in tests.
+
+Example: `dw-browser export-contract --directory guide/runtime-v2/generated`
 
 - `--directory` VALUE (string)
 - `--output` VALUE (string)
@@ -633,6 +935,13 @@ Generate same-version capabilities, completions and tool-use skill. Positional a
 
 Generate shell completion from this command contract. Positional arguments: 1..1. Required flags: .
 
+Usage: `completion SHELL`
+
+
+Generates shell completion for the current command contract. Diagnostic.
+
+Example: `dw-browser completion zsh`
+
 - `--output` VALUE (string)
 - `--lock-wait` VALUE (lock-duration)
 - `--verbose`
@@ -641,6 +950,13 @@ Generate shell completion from this command contract. Positional arguments: 1..1
 
 Generate the same-version tool-use protocol. Positional arguments: 0..0. Required flags: .
 
+Usage: `protocol`
+
+
+Generates the same-version tool-use protocol (the AI-facing usage narrative with a journey example). Diagnostic.
+
+Example: `dw-browser protocol`
+
 - `--output` VALUE (string)
 - `--lock-wait` VALUE (lock-duration)
 - `--verbose`
@@ -648,6 +964,15 @@ Generate the same-version tool-use protocol. Positional arguments: 0..0. Require
 ## `act click`
 
 Click a visible target; count 2 or button right selects its mouse variant. Positional arguments: 0..1. Required flags: --id.
+
+Usage: `act click [TARGET] --id NAME [verb flags — see flags below]`
+
+
+Typed interaction verb through the shared action contract. A TARGET is a returned opaque `@...` ref from the latest observe, an explicit `css=...`/`role=...` locator, or coordinates with --x/--y (plus --unit css-px --frame viewport --observation-id CAPTURE for coordinates). Observe first, act, then reobserve: refs are bound to one observation and die on navigation/tab switch/resize. Literal text is never an action string. Unknown or partially dispatched acts require observation before retry. Clicks the target center (respects occlusion: a click blocked by browser chrome fails loud).
+
+Example: `dw-browser act click @r3 --id chat1`
+
+Example: `dw-browser act click css=#submit --id chat1`
 
 - `--id` VALUE (session-id)
 - `--x` VALUE (number)
@@ -670,6 +995,13 @@ Click a visible target; count 2 or button right selects its mouse variant. Posit
 
 Touch a visible target. Positional arguments: 0..1. Required flags: --id.
 
+Usage: `act tap [TARGET] --id NAME [verb flags — see flags below]`
+
+
+Typed interaction verb through the shared action contract. A TARGET is a returned opaque `@...` ref from the latest observe, an explicit `css=...`/`role=...` locator, or coordinates with --x/--y (plus --unit css-px --frame viewport --observation-id CAPTURE for coordinates). Observe first, act, then reobserve: refs are bound to one observation and die on navigation/tab switch/resize. Literal text is never an action string. Unknown or partially dispatched acts require observation before retry. Mobile-persona tap; same targeting rules as click.
+
+Example: `dw-browser act tap @r1 --id chat1`
+
 - `--id` VALUE (session-id)
 - `--x` VALUE (number)
 - `--y` VALUE (number)
@@ -688,6 +1020,13 @@ Touch a visible target. Positional arguments: 0..1. Required flags: --id.
 ## `act hover`
 
 Move the pointer to a visible target. Positional arguments: 0..1. Required flags: --id.
+
+Usage: `act hover [TARGET] --id NAME [verb flags — see flags below]`
+
+
+Typed interaction verb through the shared action contract. A TARGET is a returned opaque `@...` ref from the latest observe, an explicit `css=...`/`role=...` locator, or coordinates with --x/--y (plus --unit css-px --frame viewport --observation-id CAPTURE for coordinates). Observe first, act, then reobserve: refs are bound to one observation and die on navigation/tab switch/resize. Literal text is never an action string. Unknown or partially dispatched acts require observation before retry. Hovers the target; use for menus/tooltips that need pointer presence.
+
+Example: `dw-browser act hover @r1 --id chat1`
 
 - `--id` VALUE (session-id)
 - `--x` VALUE (number)
@@ -708,6 +1047,13 @@ Move the pointer to a visible target. Positional arguments: 0..1. Required flags
 
 Replace editable text using verified physical selection and input. Positional arguments: 0..1. Required flags: --id.
 
+Usage: `act fill [TARGET] --id NAME [verb flags — see flags below]`
+
+
+Typed interaction verb through the shared action contract. A TARGET is a returned opaque `@...` ref from the latest observe, an explicit `css=...`/`role=...` locator, or coordinates with --x/--y (plus --unit css-px --frame viewport --observation-id CAPTURE for coordinates). Observe first, act, then reobserve: refs are bound to one observation and die on navigation/tab switch/resize. Literal text is never an action string. Unknown or partially dispatched acts require observation before retry. Replaces the field content (selects all then types). Input targets come from observe refs; `fill @rN` is the working form. --sensitive requires a masked password control and suppresses text facts. Strict fill verifies physical selection before deletion.
+
+Example: `dw-browser act fill @r5 --text "hello" --id chat1`
+
 - `--id` VALUE (session-id)
 - `--text` VALUE (string); empty string permitted
 - `--text-file` VALUE (string)
@@ -721,6 +1067,13 @@ Replace editable text using verified physical selection and input. Positional ar
 ## `act type`
 
 Insert text into a target or the physically focused editor. Positional arguments: 0..1. Required flags: --id.
+
+Usage: `act type [TARGET] --id NAME [verb flags — see flags below]`
+
+
+Typed interaction verb through the shared action contract. A TARGET is a returned opaque `@...` ref from the latest observe, an explicit `css=...`/`role=...` locator, or coordinates with --x/--y (plus --unit css-px --frame viewport --observation-id CAPTURE for coordinates). Observe first, act, then reobserve: refs are bound to one observation and die on navigation/tab switch/resize. Literal text is never an action string. Unknown or partially dispatched acts require observation before retry. Types text; --focused inserts into physical focus without changing selection.
+
+Example: `dw-browser act type @r1 --id chat1`
 
 - `--id` VALUE (session-id)
 - `--text` VALUE (string); empty string permitted
@@ -736,6 +1089,13 @@ Insert text into a target or the physically focused editor. Positional arguments
 
 Dispatch a platform key or shortcut. Positional arguments: 0..1. Required flags: --id.
 
+Usage: `act press [TARGET] --id NAME [verb flags — see flags below]`
+
+
+Typed interaction verb through the shared action contract. A TARGET is a returned opaque `@...` ref from the latest observe, an explicit `css=...`/`role=...` locator, or coordinates with --x/--y (plus --unit css-px --frame viewport --observation-id CAPTURE for coordinates). Observe first, act, then reobserve: refs are bound to one observation and die on navigation/tab switch/resize. Literal text is never an action string. Unknown or partially dispatched acts require observation before retry. Presses a key or chord, e.g. `press Control+b`, `press Enter`; modifiers are real CDP modifier masks, not characters.
+
+Example: `dw-browser act press Control+b --id chat1`
+
 - `--id` VALUE (session-id)
 - `--key` VALUE (string)
 - `--output` VALUE (string)
@@ -745,6 +1105,13 @@ Dispatch a platform key or shortcut. Positional arguments: 0..1. Required flags:
 ## `act focus`
 
 Physically focus an editable target. Positional arguments: 0..1. Required flags: --id.
+
+Usage: `act focus [TARGET] --id NAME [verb flags — see flags below]`
+
+
+Typed interaction verb through the shared action contract. A TARGET is a returned opaque `@...` ref from the latest observe, an explicit `css=...`/`role=...` locator, or coordinates with --x/--y (plus --unit css-px --frame viewport --observation-id CAPTURE for coordinates). Observe first, act, then reobserve: refs are bound to one observation and die on navigation/tab switch/resize. Literal text is never an action string. Unknown or partially dispatched acts require observation before retry. Focuses the target element.
+
+Example: `dw-browser act focus @r1 --id chat1`
 
 - `--id` VALUE (session-id)
 - `--output` VALUE (string)
@@ -759,11 +1126,11 @@ Usage: `act select TARGET --id SESSION (--label LABEL | --value VALUE)`
 
 - `TARGET`: Control ref returned by observe, or an explicit css= or role= locator for the select control.
 
-Placeholders in angle brackets must be replaced. First observe the session, read the control's option labels and DOM values, choose exactly one matching field, execute, then observe again. Do not guess values from labels; duplicate matches fail. Copy a selectable choice's select.options[].option unchanged into Action.option; for CLI map its sole label or value field directly to --label or --value, preserving exact strings including empty strings.
+Typed interaction verb through the shared action contract. A TARGET is a returned opaque `@...` ref from the latest observe, an explicit `css=...`/`role=...` locator, or coordinates with --x/--y (plus --unit css-px --frame viewport --observation-id CAPTURE for coordinates). Observe first, act, then reobserve: refs are bound to one observation and die on navigation/tab switch/resize. Literal text is never an action string. Unknown or partially dispatched acts require observation before retry. Native select by exact complete displayed option label (--label) or exact DOM option value (--value) — exactly one selector, including an explicit empty string; no prefix or first-match fallback. First observe the control, read its option labels/values, choose one field, execute, then observe again.
 
-Example: `dw-browser act select <CONTROL_REF_FOR_来源> --id <SESSION> --label '完整内容'`
+Example: `dw-browser act select @r7 --label "完整选项文案" --id chat1`
 
-Example: `dw-browser act select <CONTROL_REF_FOR_来源> --id <SESSION> --value '<EXACT_DOM_VALUE_FROM_OBSERVE>'`
+Example: `dw-browser act select <CONTROL_REF> --id <SESSION> --value '<EXACT_DOM_VALUE_FROM_OBSERVE>'`
 
 - `--id` VALUE (session-id); Session ID used by observe; this is not the control target.
 - `--label` VALUE (string); empty string permitted; Exact complete displayed option label only; no DOM-value fallback. Supply exactly one of --label or --value.
@@ -777,6 +1144,13 @@ Example: `dw-browser act select <CONTROL_REF_FOR_来源> --id <SESSION> --value 
 
 Set a checkbox to an explicit boolean. Positional arguments: 0..1. Required flags: --id.
 
+Usage: `act set-checked [TARGET] --id NAME [verb flags — see flags below]`
+
+
+Typed interaction verb through the shared action contract. A TARGET is a returned opaque `@...` ref from the latest observe, an explicit `css=...`/`role=...` locator, or coordinates with --x/--y (plus --unit css-px --frame viewport --observation-id CAPTURE for coordinates). Observe first, act, then reobserve: refs are bound to one observation and die on navigation/tab switch/resize. Literal text is never an action string. Unknown or partially dispatched acts require observation before retry. Sets checkbox/radio state; argument is the desired state.
+
+Example: `dw-browser act set-checked @r1 --id chat1`
+
 - `--id` VALUE (session-id)
 - `--checked` VALUE (string); values true|false
 - `--output` VALUE (string)
@@ -786,6 +1160,13 @@ Set a checkbox to an explicit boolean. Positional arguments: 0..1. Required flag
 ## `act scroll`
 
 Scroll the viewport or target at a declared point. Positional arguments: 0..1. Required flags: --id.
+
+Usage: `act scroll [TARGET] --id NAME [verb flags — see flags below]`
+
+
+Typed interaction verb through the shared action contract. A TARGET is a returned opaque `@...` ref from the latest observe, an explicit `css=...`/`role=...` locator, or coordinates with --x/--y (plus --unit css-px --frame viewport --observation-id CAPTURE for coordinates). Observe first, act, then reobserve: refs are bound to one observation and die on navigation/tab switch/resize. Literal text is never an action string. Unknown or partially dispatched acts require observation before retry. Scrolls (e.g. `scroll down 3`); pure-coordinate forms exist for canvas targets.
+
+Example: `dw-browser act scroll down 3 --id chat1`
 
 - `--id` VALUE (session-id)
 - `--x` VALUE (number)
@@ -810,6 +1191,13 @@ Scroll the viewport or target at a declared point. Positional arguments: 0..1. R
 
 Scroll a persistent target into view. Positional arguments: 0..1. Required flags: --id.
 
+Usage: `act scrollto [TARGET] --id NAME [verb flags — see flags below]`
+
+
+Typed interaction verb through the shared action contract. A TARGET is a returned opaque `@...` ref from the latest observe, an explicit `css=...`/`role=...` locator, or coordinates with --x/--y (plus --unit css-px --frame viewport --observation-id CAPTURE for coordinates). Observe first, act, then reobserve: refs are bound to one observation and die on navigation/tab switch/resize. Literal text is never an action string. Unknown or partially dispatched acts require observation before retry. Scrolls a locator or coordinates into view.
+
+Example: `dw-browser act scrollto @r1 --id chat1`
+
 - `--id` VALUE (session-id)
 - `--output` VALUE (string)
 - `--lock-wait` VALUE (lock-duration)
@@ -818,6 +1206,13 @@ Scroll a persistent target into view. Positional arguments: 0..1. Required flags
 ## `act drag`
 
 Drag between two points in one coordinate frame. Positional arguments: 0..1. Required flags: --id.
+
+Usage: `act drag [TARGET] --id NAME [verb flags — see flags below]`
+
+
+Typed interaction verb through the shared action contract. A TARGET is a returned opaque `@...` ref from the latest observe, an explicit `css=...`/`role=...` locator, or coordinates with --x/--y (plus --unit css-px --frame viewport --observation-id CAPTURE for coordinates). Observe first, act, then reobserve: refs are bound to one observation and die on navigation/tab switch/resize. Literal text is never an action string. Unknown or partially dispatched acts require observation before retry. Drags from target/coordinates to an end point (--end-x/--end-y).
+
+Example: `dw-browser act drag @r1 --id chat1`
 
 - `--id` VALUE (session-id)
 - `--x` VALUE (number)
@@ -842,6 +1237,13 @@ Drag between two points in one coordinate frame. Positional arguments: 0..1. Req
 
 Swipe between two touch points. Positional arguments: 0..1. Required flags: --id.
 
+Usage: `act swipe [TARGET] --id NAME [verb flags — see flags below]`
+
+
+Typed interaction verb through the shared action contract. A TARGET is a returned opaque `@...` ref from the latest observe, an explicit `css=...`/`role=...` locator, or coordinates with --x/--y (plus --unit css-px --frame viewport --observation-id CAPTURE for coordinates). Observe first, act, then reobserve: refs are bound to one observation and die on navigation/tab switch/resize. Literal text is never an action string. Unknown or partially dispatched acts require observation before retry. Mobile-persona swipe gesture.
+
+Example: `dw-browser act swipe @r1 --id chat1`
+
 - `--id` VALUE (session-id)
 - `--x` VALUE (number)
 - `--y` VALUE (number)
@@ -865,6 +1267,13 @@ Swipe between two touch points. Positional arguments: 0..1. Required flags: --id
 
 Navigate the existing session to a URL. Positional arguments: 0..1. Required flags: --id.
 
+Usage: `act navigate [TARGET] --id NAME [verb flags — see flags below]`
+
+
+Typed interaction verb through the shared action contract. A TARGET is a returned opaque `@...` ref from the latest observe, an explicit `css=...`/`role=...` locator, or coordinates with --x/--y (plus --unit css-px --frame viewport --observation-id CAPTURE for coordinates). Observe first, act, then reobserve: refs are bound to one observation and die on navigation/tab switch/resize. Literal text is never an action string. Unknown or partially dispatched acts require observation before retry. Navigates the page to a URL; refs die afterwards.
+
+Example: `dw-browser act navigate https://example.com --id chat1`
+
 - `--id` VALUE (session-id)
 - `--url` VALUE (string)
 - `--output` VALUE (string)
@@ -875,6 +1284,13 @@ Navigate the existing session to a URL. Positional arguments: 0..1. Required fla
 
 Reload the existing document. Positional arguments: 0..1. Required flags: --id.
 
+Usage: `act reload [TARGET] --id NAME [verb flags — see flags below]`
+
+
+Typed interaction verb through the shared action contract. A TARGET is a returned opaque `@...` ref from the latest observe, an explicit `css=...`/`role=...` locator, or coordinates with --x/--y (plus --unit css-px --frame viewport --observation-id CAPTURE for coordinates). Observe first, act, then reobserve: refs are bound to one observation and die on navigation/tab switch/resize. Literal text is never an action string. Unknown or partially dispatched acts require observation before retry. Reloads the current page; refs die afterwards.
+
+Example: `dw-browser act reload @r1 --id chat1`
+
 - `--id` VALUE (session-id)
 - `--output` VALUE (string)
 - `--lock-wait` VALUE (lock-duration)
@@ -883,6 +1299,13 @@ Reload the existing document. Positional arguments: 0..1. Required flags: --id.
 ## `act back`
 
 Traverse browser history backwards. Positional arguments: 0..1. Required flags: --id.
+
+Usage: `act back [TARGET] --id NAME [verb flags — see flags below]`
+
+
+Typed interaction verb through the shared action contract. A TARGET is a returned opaque `@...` ref from the latest observe, an explicit `css=...`/`role=...` locator, or coordinates with --x/--y (plus --unit css-px --frame viewport --observation-id CAPTURE for coordinates). Observe first, act, then reobserve: refs are bound to one observation and die on navigation/tab switch/resize. Literal text is never an action string. Unknown or partially dispatched acts require observation before retry. Browser back; refs die afterwards.
+
+Example: `dw-browser act back @r1 --id chat1`
 
 - `--id` VALUE (session-id)
 - `--output` VALUE (string)
@@ -893,6 +1316,13 @@ Traverse browser history backwards. Positional arguments: 0..1. Required flags: 
 
 Traverse browser history forwards. Positional arguments: 0..1. Required flags: --id.
 
+Usage: `act forward [TARGET] --id NAME [verb flags — see flags below]`
+
+
+Typed interaction verb through the shared action contract. A TARGET is a returned opaque `@...` ref from the latest observe, an explicit `css=...`/`role=...` locator, or coordinates with --x/--y (plus --unit css-px --frame viewport --observation-id CAPTURE for coordinates). Observe first, act, then reobserve: refs are bound to one observation and die on navigation/tab switch/resize. Literal text is never an action string. Unknown or partially dispatched acts require observation before retry. Browser forward; refs die afterwards.
+
+Example: `dw-browser act forward @r1 --id chat1`
+
 - `--id` VALUE (session-id)
 - `--output` VALUE (string)
 - `--lock-wait` VALUE (lock-duration)
@@ -901,6 +1331,13 @@ Traverse browser history forwards. Positional arguments: 0..1. Required flags: -
 ## `act zoom`
 
 Set page scale. Positional arguments: 0..1. Required flags: --id.
+
+Usage: `act zoom [TARGET] --id NAME [verb flags — see flags below]`
+
+
+Typed interaction verb through the shared action contract. A TARGET is a returned opaque `@...` ref from the latest observe, an explicit `css=...`/`role=...` locator, or coordinates with --x/--y (plus --unit css-px --frame viewport --observation-id CAPTURE for coordinates). Observe first, act, then reobserve: refs are bound to one observation and die on navigation/tab switch/resize. Literal text is never an action string. Unknown or partially dispatched acts require observation before retry. Enters/adjusts the visual zoom state (persona chrome stays fixed); `zoom reset` restores.
+
+Example: `dw-browser act zoom @r1 --id chat1`
 
 - `--id` VALUE (session-id)
 - `--value` VALUE (string)
@@ -911,6 +1348,13 @@ Set page scale. Positional arguments: 0..1. Required flags: --id.
 ## `act keyboard`
 
 Show or hide the emulated mobile keyboard. Positional arguments: 0..1. Required flags: --id.
+
+Usage: `act keyboard [TARGET] --id NAME [verb flags — see flags below]`
+
+
+Typed interaction verb through the shared action contract. A TARGET is a returned opaque `@...` ref from the latest observe, an explicit `css=...`/`role=...` locator, or coordinates with --x/--y (plus --unit css-px --frame viewport --observation-id CAPTURE for coordinates). Observe first, act, then reobserve: refs are bound to one observation and die on navigation/tab switch/resize. Literal text is never an action string. Unknown or partially dispatched acts require observation before retry. Opens or dismisses the simulated on-screen keyboard (mobile persona state).
+
+Example: `dw-browser act keyboard @r1 --id chat1`
 
 - `--id` VALUE (session-id)
 - `--value` VALUE (string)

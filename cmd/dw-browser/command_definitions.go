@@ -331,6 +331,7 @@ func commandDefinitions() []CommandDefinition {
 			}
 		}
 	}
+	applyGuidanceDocs(defs)
 	return defs
 }
 
