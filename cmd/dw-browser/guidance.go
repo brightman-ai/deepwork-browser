@@ -29,8 +29,8 @@ var guidanceMap = map[string]guidanceDoc{
 		Examples: []string{"dw-browser close --id chat1"},
 	},
 	"once": {
-		Usage:    "once URL --scenario NAME [--screenshot PATH] [--content text|list|table] [--health] [--tree] [--all]",
-		Guidance: "One canonical observation in an owned short-lived session: creates, captures, closes — for quick look/see checks that do not need follow-up interaction. Same flags as observe plus creation flags. When you need to act after looking, use open + observe instead.",
+		Usage:    "once URL --scenario NAME [--screenshot PATH] [--content text|list|table] [--health] [--tree] [--all] [--annotate]",
+		Guidance: "One canonical observation in an owned short-lived session: creates, captures, closes — for quick look/see checks that do not need follow-up interaction. Observation flags are the observe subset (--screenshot/--content/--health/--tree/--all/--annotate; no --top/--budget/--scope/--hit-audit) plus creation flags. When you need to act after looking, use open + observe instead.",
 		Examples: []string{"dw-browser once http://localhost:8080 --scenario app-test-explore --screenshot shot.png"},
 	},
 	"observe": {
@@ -270,6 +270,10 @@ var actExamples = map[string][]string{
 	"scroll":  {`dw-browser act scroll down 3 --id chat1`},
 }
 
+// assertionVerbsDigest 是 check/wait/journey 共用的断言动词速查（源：
+// browser/testing/assert.go 的 primitives 注册表，行为变化时同步）。
+const assertionVerbsDigest = "Assertion verbs (CLI colon form `verb:arg`, journey YAML function form `verb('arg')`): exists/visible/gone (element state by ref or css selector), count (e.g. `count:button>=1`), text_contains, url_matches, tab_count, active_tab_url_contains, console_errors_count, network_failures_count, latency_lt (e.g. `latency_lt:1500`), region_non_empty, region_not_overlapped, probe_* (HTTP/JSON side probes: probe_http_status, probe_json_count, probe_json_has, probe_text_contains, probe_value_equals_file), transcript_* (SUT-side trace oracles: transcript_has, transcript_text_contains, transcript_tool_count, transcript_error_count, transcript_done_count, transcript_format_v1), file_glob_count. Count-like verbs need a comparison suffix (==, >=, <=, <, >)."
+
 // applyGuidanceDocs 把说明层注入全部命令（commandDefinitions() 尾部调用，
 // 是 help 输出 guidance/examples/usage 的唯一注入点）。
 func applyGuidanceDocs(defs []CommandDefinition) {
@@ -293,13 +297,27 @@ func applyGuidanceDocs(defs []CommandDefinition) {
 			}
 			d.Guidance = g
 			if d.Usage == "" {
-				d.Usage = "act " + verb + " [TARGET] --id NAME [verb flags — see flags below]"
+				if verb == "press" {
+					d.Usage = "act press KEYS --id NAME  (KEYS is the key or chord, e.g. Control+b, Enter)"
+				} else {
+					d.Usage = "act " + verb + " [TARGET] --id NAME [verb flags — see flags below]"
+				}
 			}
 			if ex, ok := actExamples[verb]; ok {
 				d.Examples = ex
 			} else {
 				d.Examples = []string{"dw-browser act " + verb + " @r1 --id chat1"}
 			}
+		}
+	}
+	// 断言语法速查注入三个消费方 + 深层语义指针统一尾注。
+	for i := range defs {
+		switch defs[i].Path {
+		case "wait", "check", "journey":
+			defs[i].Guidance += " " + assertionVerbsDigest
+		}
+		if !strings.HasSuffix(defs[i].Guidance, " Deeper semantics, byte budgets and the journey YAML shape: `dw-browser protocol`.") {
+			defs[i].Guidance += " Deeper semantics, byte budgets and the journey YAML shape: `dw-browser protocol`."
 		}
 	}
 	applyCoreFlagDescriptions(defs)
@@ -325,6 +343,7 @@ func applyCoreFlagDescriptions(defs []CommandDefinition) {
 			"--budget":     "elements text budget bytes (default 4096)",
 			"--all":        "census mode: full inventory without operable refs (clears session refs)",
 			"--annotate":   "draw browser-chrome occlusion outline evidence (mobile persona debugging)",
+			"--scope":      "--hit-audit scope: visible (default) or all (widens to elements observe dropped)",
 		},
 		"wait": {
 			"--assert":   "assertion expression to wait for (preferred)",
@@ -337,15 +356,35 @@ func applyCoreFlagDescriptions(defs []CommandDefinition) {
 			"--fail-fast": "stop at first failing step",
 		},
 		"check": {
-			"--assert": "required assertion expression",
-			"--file":   "assertions JSON file",
-			"--using":  "oracle selector (e.g. vision provider)",
+			"--assert":         "required assertion expression (verbs in guidance)",
+			"--file":            "assertions JSON file: an array of {\"assert\": \"verb:arg\"} entries (same verbs as --assert)",
+			"--using":           "oracle selector for visual assertions (e.g. a configured vision provider)",
+			"--observation":     "judge against this observation id instead of the latest",
+			"--vision-url":      "vision oracle endpoint URL",
+			"--vision-provider": "vision oracle provider name",
+			"--vision-model":    "vision oracle model name",
+			"--vision-api-key":  "vision oracle API key",
 		},
 		"close": {"--force": "force-close a wedged session (escape hatch)"},
 		"session viewport": {"--size": "new viewport WxH; reobserve afterwards"},
 		"tabs select":      {"--target": "target id from tabs list"},
 		"tabs close":       {"--target": "target id from tabs list"},
 		"tabs new":         {"--url": "URL for the new target; reobserve afterwards"},
+		"gc": {
+			"--older-than": "only reclaim resources older than this duration",
+			"--all":        "reclaim every unowned resource regardless of age",
+			"--dry-run":    "report what would be reclaimed without doing it",
+		},
+	}
+	// act 族的公共坐标/文本 flag 描述。
+	actFlagDescs := map[string]string{
+		"--x":              "click/hover X coordinate (pair with --y; requires --unit css-px --frame viewport --observation-id)",
+		"--y":              "click/hover Y coordinate",
+		"--unit":           "coordinate unit: css-px (viewport) or percent (target-relative, with --frame target)",
+		"--frame":          "coordinate frame: viewport or target",
+		"--observation-id": "the observation id whose capture anchors the coordinates (from the latest observe output)",
+		"--text":           "literal text to type/fill (exactly one of --text/--text-file)",
+		"--text-file":      "UTF-8 file whose full contents (trailing newlines preserved) are the text",
 	}
 	for i := range defs {
 		descs, ok := perCommand[defs[i].Path]
@@ -355,6 +394,19 @@ func applyCoreFlagDescriptions(defs []CommandDefinition) {
 		for fi := range defs[i].Flags {
 			if d, ok := descs[defs[i].Flags[fi].Name]; ok {
 				defs[i].Flags[fi].Description = d
+			}
+		}
+		if strings.HasPrefix(defs[i].Path, "act ") {
+			for fi := range defs[i].Flags {
+				if d, ok := actFlagDescs[defs[i].Flags[fi].Name]; ok && defs[i].Flags[fi].Description == "" {
+					defs[i].Flags[fi].Description = d
+				}
+			}
+		}
+		// 通用基础设施 flag：全命令一处描述（--output 在 fetch 里另有专门语义）。
+		for fi := range defs[i].Flags {
+			if defs[i].Flags[fi].Name == "--output" && defs[i].Path != "fetch" {
+				defs[i].Flags[fi].Description = "also write this command's stdout JSON to this file"
 			}
 		}
 	}

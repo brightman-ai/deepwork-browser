@@ -224,7 +224,7 @@
         "dw-browser help observe",
         "dw-browser help \"pdf excerpt\""
       ],
-      "guidance": "Returns the same executable command contract: flags with value types and descriptions, required arguments, and per-command usage/guidance/examples. Read `help COMMAND` before first use of any command; it is authoritative for this exact binary version.",
+      "guidance": "Returns the same executable command contract: flags with value types and descriptions, required arguments, and per-command usage/guidance/examples. Read `help COMMAND` before first use of any command; it is authoritative for this exact binary version. Deeper semantics, byte budgets and the journey YAML shape: `dw-browser protocol`.",
       "command": "help",
       "summary": "Show the same executable command contract",
       "flags": [
@@ -256,7 +256,7 @@
         "dw-browser open http://localhost:8080/portal/chat --id chat1 --scenario app-test-explore",
         "dw-browser open https://arxiv.org/html/2610.17309v1 --id paper --scenario webvisit"
       ],
-      "guidance": "Creates the browser session every later --id command operates on; the creation environment (scenario/persona/viewport/evidence root) is inherited by every later process and cannot be changed in place. --scenario is required and sets the interaction contract: app-test-explore for interactive exploration, app-test-baseline for deterministic regression (internal LLM locked), webvisit for real public sites (writes gated except --allow-host). Duplicate IDs are rejected. Use session viewport to resize later. Close only sessions you created.",
+      "guidance": "Creates the browser session every later --id command operates on; the creation environment (scenario/persona/viewport/evidence root) is inherited by every later process and cannot be changed in place. --scenario is required and sets the interaction contract: app-test-explore for interactive exploration, app-test-baseline for deterministic regression (internal LLM locked), webvisit for real public sites (writes gated except --allow-host). Duplicate IDs are rejected. Use session viewport to resize later. Close only sessions you created. Deeper semantics, byte budgets and the journey YAML shape: `dw-browser protocol`.",
       "command": "open",
       "summary": "Create one session; duplicate IDs are rejected",
       "flags": [
@@ -355,6 +355,7 @@
           "value_type": "session-id"
         },
         {
+          "description": "also write this command's stdout JSON to this file",
           "name": "--output",
           "takes_value": true,
           "value_type": "string",
@@ -385,7 +386,7 @@
       "examples": [
         "dw-browser close --id chat1"
       ],
-      "guidance": "Closes exactly the named session you created and tears down its runtime. --force is the escape hatch for a wedged close; normal flow never needs it. Other sessions are untouched.",
+      "guidance": "Closes exactly the named session you created and tears down its runtime. --force is the escape hatch for a wedged close; normal flow never needs it. Other sessions are untouched. Deeper semantics, byte budgets and the journey YAML shape: `dw-browser protocol`.",
       "command": "close",
       "summary": "Close only the named session",
       "flags": [
@@ -400,6 +401,7 @@
           "takes_value": false
         },
         {
+          "description": "also write this command's stdout JSON to this file",
           "name": "--output",
           "takes_value": true,
           "value_type": "string",
@@ -425,11 +427,11 @@
       "diagnostic": false
     },
     {
-      "usage": "once URL --scenario NAME [--screenshot PATH] [--content text|list|table] [--health] [--tree] [--all]",
+      "usage": "once URL --scenario NAME [--screenshot PATH] [--content text|list|table] [--health] [--tree] [--all] [--annotate]",
       "examples": [
         "dw-browser once http://localhost:8080 --scenario app-test-explore --screenshot shot.png"
       ],
-      "guidance": "One canonical observation in an owned short-lived session: creates, captures, closes — for quick look/see checks that do not need follow-up interaction. Same flags as observe plus creation flags. When you need to act after looking, use open + observe instead.",
+      "guidance": "One canonical observation in an owned short-lived session: creates, captures, closes — for quick look/see checks that do not need follow-up interaction. Observation flags are the observe subset (--screenshot/--content/--health/--tree/--all/--annotate; no --top/--budget/--scope/--hit-audit) plus creation flags. When you need to act after looking, use open + observe instead. Deeper semantics, byte budgets and the journey YAML shape: `dw-browser protocol`.",
       "command": "once",
       "summary": "Capture one canonical UI observation in an owned short-lived session",
       "flags": [
@@ -585,7 +587,7 @@
         "dw-browser fetch https://example.com/article --save ./article.html --network-route direct",
         "dw-browser fetch https://example.com/article --save ./article.html --dns-resolver https://1.1.1.1/dns-query"
       ],
-      "guidance": "Use fetch for unrendered HTML, images or files; document for browser-rendered DOM; open/observe for UI. --save writes the complete body; stdout and --output contain dw.resource.v1 metadata and body_file only. Existing save files are replaced only after successful acquisition and network cleanup. Save and metadata paths must differ. Default system route; direct is explicit, with no automatic route or tool fallback. Delivery commits in order: body rename, optional metadata file, then stdout. Each committed output remains if a later delivery fails. Encoding or metadata-write failures exit 2 and, when stdout works, report diagnostics preserving byte counts without body_file. A stdout failure returns exit 2 and stderr; an already committed metadata file may still contain successful body_file metadata. Inspect available committed metadata or settle budgets conservatively. Consumers verify MIME/signature and meaning: an HTTP 200 challenge page is not an image or accepted article. DNS resolver choice is per call: system by default, or an explicit public numeric-IP HTTPS /dns-query endpoint. Only use that endpoint when the caller explicitly chooses a public DNS strategy; never switch after a timeout. No resolver fallback, environment override or cross-call cache. Resolver DNS traffic shares the acquisition network-byte budget. A third-party resolver learns queried hostnames and the client/proxy source IP, not the original URL path or response content; existing proxy trust remains. TLS must validate its IP SAN.",
+      "guidance": "Use fetch for unrendered HTML, images or files; document for browser-rendered DOM; open/observe for UI. --save writes the complete body; stdout and --output contain dw.resource.v1 metadata and body_file only. Existing save files are replaced only after successful acquisition and network cleanup. Save and metadata paths must differ. Default system route; direct is explicit, with no automatic route or tool fallback. Delivery commits in order: body rename, optional metadata file, then stdout. Each committed output remains if a later delivery fails. Encoding or metadata-write failures exit 2 and, when stdout works, report diagnostics preserving byte counts without body_file. A stdout failure returns exit 2 and stderr; an already committed metadata file may still contain successful body_file metadata. Inspect available committed metadata or settle budgets conservatively. Consumers verify MIME/signature and meaning: an HTTP 200 challenge page is not an image or accepted article. DNS resolver choice is per call: system by default, or an explicit public numeric-IP HTTPS /dns-query endpoint. Only use that endpoint when the caller explicitly chooses a public DNS strategy; never switch after a timeout. No resolver fallback, environment override or cross-call cache. Resolver DNS traffic shares the acquisition network-byte budget. A third-party resolver learns queried hostnames and the client/proxy source IP, not the original URL path or response content; existing proxy trust remains. TLS must validate its IP SAN. Deeper semantics, byte budgets and the journey YAML shape: `dw-browser protocol`.",
       "command": "fetch",
       "summary": "Save a complete public HTTP response body without JavaScript or a browser",
       "flags": [
@@ -666,7 +668,7 @@
       "examples": [
         "dw-browser document https://example.com/article --dns-resolver https://1.1.1.1/dns-query"
       ],
-      "guidance": "Default headless, system route. Headed uses a windowless hidden target, not a visible browser and not UI acceptance evidence. No mode fallback or automatic challenge retry. System route honors supported trusted proxy configuration only after validating numeric public destinations; direct deliberately ignores proxy configuration. A captured login or verification page is not article acceptance. Read rendering, policy, cleanup and failure diagnostics. DNS resolver choice is per call: system by default, or an explicit public numeric-IP HTTPS /dns-query endpoint. Only use that endpoint when the caller explicitly chooses a public DNS strategy; never switch after a timeout. No resolver fallback, environment override or cross-call cache. Resolver DNS traffic shares the acquisition network-byte budget. A third-party resolver learns queried hostnames and the client/proxy source IP, not the original URL path or response content; existing proxy trust remains. TLS must validate its IP SAN.",
+      "guidance": "Default headless, system route. Headed uses a windowless hidden target, not a visible browser and not UI acceptance evidence. No mode fallback or automatic challenge retry. System route honors supported trusted proxy configuration only after validating numeric public destinations; direct deliberately ignores proxy configuration. A captured login or verification page is not article acceptance. Read rendering, policy, cleanup and failure diagnostics. DNS resolver choice is per call: system by default, or an explicit public numeric-IP HTTPS /dns-query endpoint. Only use that endpoint when the caller explicitly chooses a public DNS strategy; never switch after a timeout. No resolver fallback, environment override or cross-call cache. Resolver DNS traffic shares the acquisition network-byte budget. A third-party resolver learns queried hostnames and the client/proxy source IP, not the original URL path or response content; existing proxy trust remains. TLS must validate its IP SAN. Deeper semantics, byte budgets and the journey YAML shape: `dw-browser protocol`.",
       "command": "document",
       "summary": "Read public URL DOM in a disposable browser target; no screenshot or session",
       "flags": [
@@ -740,7 +742,7 @@
         "dw-browser observe --id chat1 --screenshot shot.png",
         "dw-browser observe --id chat1 --health"
       ],
-      "guidance": "The perception verb: returns the thin default {elements@rN, user_state, run_id, step}; additive flags are freely combined. --screenshot writes the actual PNG and returns its path — read the real PNG before visual actions. Channel states distinguish captured/unavailable/not-requested; an unavailable channel cannot prove zero errors. @rN refs share one space with act: `act \"click @r3\"` resolves the refs this observe just returned. --all is a census without operable refs. Reobserve after an action, resize, tab switch, navigation or intervention before using any ref or screenshot coordinate. --annotate draws the browser-chrome occlusion evidence outline (mobile persona debugging), not content annotation — for annotated content crops use excerpt.",
+      "guidance": "The perception verb: returns the thin default {elements@rN, user_state, run_id, step}; additive flags are freely combined. --screenshot writes the actual PNG and returns its path — read the real PNG before visual actions. Channel states distinguish captured/unavailable/not-requested; an unavailable channel cannot prove zero errors. @rN refs share one space with act: `act \"click @r3\"` resolves the refs this observe just returned. --all is a census without operable refs. Reobserve after an action, resize, tab switch, navigation or intervention before using any ref or screenshot coordinate. --annotate draws the browser-chrome occlusion evidence outline (mobile persona debugging), not content annotation — for annotated content crops use excerpt. Deeper semantics, byte budgets and the journey YAML shape: `dw-browser protocol`.",
       "command": "observe",
       "summary": "Capture a canonical observation and actual screenshot",
       "flags": [
@@ -767,6 +769,7 @@
           "value_type": "string"
         },
         {
+          "description": "--hit-audit scope: visible (default) or all (widens to elements observe dropped)",
           "name": "--scope",
           "takes_value": true,
           "values": [
@@ -812,6 +815,7 @@
           "takes_value": false
         },
         {
+          "description": "also write this command's stdout JSON to this file",
           "name": "--output",
           "takes_value": true,
           "value_type": "string",
@@ -848,7 +852,7 @@
         "dw-browser excerpt --id paper --spec '[{\"name\":\"readout\",\"targets\":[\"id:S6.SS2.SSS0.Px1\"],\"highlight\":[\"Instant readouts have approximately 2–8% higher latency\"]}]'",
         "dw-browser excerpt --id paper --spec @spec.json --out ./shots"
       ],
-      "guidance": "Screenshot verb (read-only observation class): crops page regions as PNG images with a red box around the target union and translucent highlights over chosen phrases — built for quoting web originals (papers, docs) into markdown. It never mutates the page, needs no write grant or allow-host, and does not invalidate observation refs (a 20-image batch needs no re-observe). One full-page capture serves the whole spec. Unresolved targets and unmatched phrases are explicit per-entry business results in missing (exit stays 0); entries whose targets all miss produce no file. warnings reports fixed/sticky elements overlapping the box and images still loading. Elements taller than the viewport are captured whole. Style defaults: red 3px box, #ffe94d highlight, 14px crop margin; override per entry with box_style/highlight_color/crop_margin.",
+      "guidance": "Screenshot verb (read-only observation class): crops page regions as PNG images with a red box around the target union and translucent highlights over chosen phrases — built for quoting web originals (papers, docs) into markdown. It never mutates the page, needs no write grant or allow-host, and does not invalidate observation refs (a 20-image batch needs no re-observe). One full-page capture serves the whole spec. Unresolved targets and unmatched phrases are explicit per-entry business results in missing (exit stays 0); entries whose targets all miss produce no file. warnings reports fixed/sticky elements overlapping the box and images still loading. Elements taller than the viewport are captured whole. Style defaults: red 3px box, #ffe94d highlight, 14px crop margin; override per entry with box_style/highlight_color/crop_margin. Deeper semantics, byte budgets and the journey YAML shape: `dw-browser protocol`.",
       "command": "excerpt",
       "summary": "Crop read-only annotated PNG screenshot excerpts from the open page",
       "flags": [
@@ -913,7 +917,7 @@
         "dw-browser pdf preview --file paper.pdf --pages 1-3 --out ./pages",
         "dw-browser pdf preview --file https://arxiv.org/pdf/2610.17309 --pages 1"
       ],
-      "guidance": "Page-image verb (no browser session): renders chosen pages of a local or downloaded PDF (office documents convert first, kind reported in source.kind) as PNG files for reading/preview. Needs poppler-utils; office input additionally needs libreoffice (both fail loud with install hints when missing). Pages are 1-based; --pages takes comma-separated ranges like 2,5-7 clamped to the page count. Default dpi 150 (36–600). This is static rendering, not UI observation: it cannot prove interactive behavior.",
+      "guidance": "Page-image verb (no browser session): renders chosen pages of a local or downloaded PDF (office documents convert first, kind reported in source.kind) as PNG files for reading/preview. Needs poppler-utils; office input additionally needs libreoffice (both fail loud with install hints when missing). Pages are 1-based; --pages takes comma-separated ranges like 2,5-7 clamped to the page count. Default dpi 150 (36–600). This is static rendering, not UI observation: it cannot prove interactive behavior. Deeper semantics, byte budgets and the journey YAML shape: `dw-browser protocol`.",
       "command": "pdf preview",
       "summary": "Render PDF or office-document pages as PNG images",
       "flags": [
@@ -983,7 +987,7 @@
       "examples": [
         "dw-browser pdf excerpt --file paper.pdf --spec '[{\"name\":\"latency-table\",\"page\":7,\"phrases\":[\"Single-pass decision readouts\"],\"boxes\":[[60,95,540,320]]}]'"
       ],
-      "guidance": "Screenshot verb (static PDF counterpart of excerpt): crops annotated PNG excerpts from PDF pages — red box around the target union, translucent highlighter over matched phrases — for quoting paper originals into markdown when the HTML version is missing or loses figures. Same style defaults as excerpt (red 3px, #ffe94d, 14px margin). Word-level matching means a phrase must appear verbatim (after normalization); unmatched phrases are explicit per-entry results in missing (exit stays 0), entries with no match and no boxes produce no file. page_out_of_range is reported in warnings. Needs poppler-utils; office input additionally needs libreoffice. Rendering runs at a fixed 200 dpi for text sharpness. Not a UI observation.",
+      "guidance": "Screenshot verb (static PDF counterpart of excerpt): crops annotated PNG excerpts from PDF pages — red box around the target union, translucent highlighter over matched phrases — for quoting paper originals into markdown when the HTML version is missing or loses figures. Same style defaults as excerpt (red 3px, #ffe94d, 14px margin). Word-level matching means a phrase must appear verbatim (after normalization); unmatched phrases are explicit per-entry results in missing (exit stays 0), entries with no match and no boxes produce no file. page_out_of_range is reported in warnings. Needs poppler-utils; office input additionally needs libreoffice. Rendering runs at a fixed 200 dpi for text sharpness. Not a UI observation. Deeper semantics, byte budgets and the journey YAML shape: `dw-browser protocol`.",
       "command": "pdf excerpt",
       "summary": "Crop annotated PNG screenshot excerpts from PDF pages by phrase or box",
       "flags": [
@@ -1041,7 +1045,7 @@
       "examples": [
         "dw-browser check --id chat1 --assert 'text_contains:Welcome'"
       ],
-      "guidance": "Judges required assertions against one canonical observation. Exit 0 only for required PASS, 1 for FAIL, 2 for BLOCKED/runtime/evidence/argument errors — a green exit means the assertion held, not that the product is accepted. Vision-backed assertions need explicit provider configuration.",
+      "guidance": "Judges required assertions against one canonical observation. Exit 0 only for required PASS, 1 for FAIL, 2 for BLOCKED/runtime/evidence/argument errors — a green exit means the assertion held, not that the product is accepted. Vision-backed assertions need explicit provider configuration. Assertion verbs (CLI colon form `verb:arg`, journey YAML function form `verb('arg')`): exists/visible/gone (element state by ref or css selector), count (e.g. `count:button\u003e=1`), text_contains, url_matches, tab_count, active_tab_url_contains, console_errors_count, network_failures_count, latency_lt (e.g. `latency_lt:1500`), region_non_empty, region_not_overlapped, probe_* (HTTP/JSON side probes: probe_http_status, probe_json_count, probe_json_has, probe_text_contains, probe_value_equals_file), transcript_* (SUT-side trace oracles: transcript_has, transcript_text_contains, transcript_tool_count, transcript_error_count, transcript_done_count, transcript_format_v1), file_glob_count. Count-like verbs need a comparison suffix (==, \u003e=, \u003c=, \u003c, \u003e). Deeper semantics, byte budgets and the journey YAML shape: `dw-browser protocol`.",
       "command": "check",
       "summary": "Judge required assertions against one canonical observation",
       "flags": [
@@ -1051,49 +1055,55 @@
           "value_type": "session-id"
         },
         {
+          "description": "judge against this observation id instead of the latest",
           "name": "--observation",
           "takes_value": true,
           "value_type": "string"
         },
         {
-          "description": "required assertion expression",
+          "description": "required assertion expression (verbs in guidance)",
           "name": "--assert",
           "takes_value": true,
           "value_type": "string"
         },
         {
-          "description": "assertions JSON file",
+          "description": "assertions JSON file: an array of {\"assert\": \"verb:arg\"} entries (same verbs as --assert)",
           "name": "--file",
           "takes_value": true,
           "value_type": "string"
         },
         {
-          "description": "oracle selector (e.g. vision provider)",
+          "description": "oracle selector for visual assertions (e.g. a configured vision provider)",
           "name": "--using",
           "takes_value": true,
           "value_type": "string"
         },
         {
+          "description": "vision oracle endpoint URL",
           "name": "--vision-url",
           "takes_value": true,
           "value_type": "string"
         },
         {
+          "description": "vision oracle provider name",
           "name": "--vision-provider",
           "takes_value": true,
           "value_type": "string"
         },
         {
+          "description": "vision oracle model name",
           "name": "--vision-model",
           "takes_value": true,
           "value_type": "string"
         },
         {
+          "description": "vision oracle API key",
           "name": "--vision-api-key",
           "takes_value": true,
           "value_type": "string"
         },
         {
+          "description": "also write this command's stdout JSON to this file",
           "name": "--output",
           "takes_value": true,
           "value_type": "string",
@@ -1134,7 +1144,7 @@
       "examples": [
         "dw-browser diff obs-1 obs-2"
       ],
-      "guidance": "Compares two canonical observations (same session) element-by-element; diagnostic only, never recovers a runtime. Use to see what an action actually changed between two observes.",
+      "guidance": "Compares two canonical observations (same session) element-by-element; diagnostic only, never recovers a runtime. Use to see what an action actually changed between two observes. Deeper semantics, byte budgets and the journey YAML shape: `dw-browser protocol`.",
       "command": "diff",
       "summary": "Compare two canonical observations",
       "flags": [
@@ -1166,7 +1176,7 @@
         "dw-browser wait --id chat1 --assert 'visible:@r3' --timeout 10s",
         "dw-browser wait --id chat1 --duration 1s"
       ],
-      "guidance": "Waits until one assertion holds or a declared duration elapses, then returns. Prefer --assert over fixed durations; --duration is for settle-style pauses only.",
+      "guidance": "Waits until one assertion holds or a declared duration elapses, then returns. Prefer --assert over fixed durations; --duration is for settle-style pauses only. Assertion verbs (CLI colon form `verb:arg`, journey YAML function form `verb('arg')`): exists/visible/gone (element state by ref or css selector), count (e.g. `count:button\u003e=1`), text_contains, url_matches, tab_count, active_tab_url_contains, console_errors_count, network_failures_count, latency_lt (e.g. `latency_lt:1500`), region_non_empty, region_not_overlapped, probe_* (HTTP/JSON side probes: probe_http_status, probe_json_count, probe_json_has, probe_text_contains, probe_value_equals_file), transcript_* (SUT-side trace oracles: transcript_has, transcript_text_contains, transcript_tool_count, transcript_error_count, transcript_done_count, transcript_format_v1), file_glob_count. Count-like verbs need a comparison suffix (==, \u003e=, \u003c=, \u003c, \u003e). Deeper semantics, byte budgets and the journey YAML shape: `dw-browser protocol`.",
       "command": "wait",
       "summary": "Wait for one assertion or a declared duration",
       "flags": [
@@ -1194,6 +1204,7 @@
           "value_type": "duration"
         },
         {
+          "description": "also write this command's stdout JSON to this file",
           "name": "--output",
           "takes_value": true,
           "value_type": "string",
@@ -1243,7 +1254,7 @@
       "examples": [
         "dw-browser journey --file journey.yaml --scenario app-test-baseline --evidence runs/today"
       ],
-      "guidance": "Runs typed deterministic steps through the shared runtime with persistent locators and assertions. Use app-test-baseline for deterministic regression: internal LLM use is forbidden and element steps are synthetic by explicit declaration. A candidate trace is not an accepted baseline — acceptance is a separate human decision. The YAML shape is shown by `protocol`.",
+      "guidance": "Runs typed deterministic steps through the shared runtime with persistent locators and assertions. Use app-test-baseline for deterministic regression: internal LLM use is forbidden and element steps are synthetic by explicit declaration. A candidate trace is not an accepted baseline — acceptance is a separate human decision. The YAML shape is shown by `protocol`. Assertion verbs (CLI colon form `verb:arg`, journey YAML function form `verb('arg')`): exists/visible/gone (element state by ref or css selector), count (e.g. `count:button\u003e=1`), text_contains, url_matches, tab_count, active_tab_url_contains, console_errors_count, network_failures_count, latency_lt (e.g. `latency_lt:1500`), region_non_empty, region_not_overlapped, probe_* (HTTP/JSON side probes: probe_http_status, probe_json_count, probe_json_has, probe_text_contains, probe_value_equals_file), transcript_* (SUT-side trace oracles: transcript_has, transcript_text_contains, transcript_tool_count, transcript_error_count, transcript_done_count, transcript_format_v1), file_glob_count. Count-like verbs need a comparison suffix (==, \u003e=, \u003c=, \u003c, \u003e). Deeper semantics, byte budgets and the journey YAML shape: `dw-browser protocol`.",
       "command": "journey",
       "summary": "Run typed deterministic steps through the shared runtime",
       "flags": [
@@ -1353,6 +1364,7 @@
           "takes_value": false
         },
         {
+          "description": "also write this command's stdout JSON to this file",
           "name": "--output",
           "takes_value": true,
           "value_type": "string",
@@ -1408,7 +1420,7 @@
       "examples": [
         "dw-browser eval --id chat1 'location.href'"
       ],
-      "guidance": "Gated debugging: runs JavaScript in the page and revokes observation authority (it may mutate the page). Requires write permission for the origin (webvisit needs --allow-host). Debug/synthetic evidence cannot establish Human experience — witness work uses real visible interactions (act) instead. Prefer read verbs (observe/excerpt/document) for reading.",
+      "guidance": "Gated debugging: runs JavaScript in the page and revokes observation authority (it may mutate the page). Requires write permission for the origin (webvisit needs --allow-host). Debug/synthetic evidence cannot establish Human experience — witness work uses real visible interactions (act) instead. Prefer read verbs (observe/excerpt/document) for reading. Deeper semantics, byte budgets and the journey YAML shape: `dw-browser protocol`.",
       "command": "eval",
       "summary": "Run gated JavaScript debugging and revoke old observation authority",
       "flags": [
@@ -1447,7 +1459,7 @@
       "examples": [
         "dw-browser cookie-import --id chat1 --browser chrome --domain example.com"
       ],
-      "guidance": "Imports cookies from the local native browser profile (keychain-decrypted) into this session — for reaching login-gated content you already hold. --domain limits the import scope.",
+      "guidance": "Imports cookies from the local native browser profile (keychain-decrypted) into this session — for reaching login-gated content you already hold. --domain limits the import scope. Deeper semantics, byte budgets and the journey YAML shape: `dw-browser protocol`.",
       "command": "cookie-import",
       "summary": "Import native browser cookies with keychain decryption and a domain filter",
       "flags": [
@@ -1496,7 +1508,7 @@
       "examples": [
         "dw-browser audit --id chat1 --check browser-chrome-occlusion"
       ],
-      "guidance": "Deterministic rule audit over the current observation: compatibility, accessibility, layout, performance and browser-chrome rules (e.g. browser-chrome-occlusion on mobile persona). Machine-checkable only — it complements, never replaces, human-facing acceptance.",
+      "guidance": "Deterministic rule audit over the current observation: compatibility, accessibility, layout, performance and browser-chrome rules (e.g. browser-chrome-occlusion on mobile persona). Machine-checkable only — it complements, never replaces, human-facing acceptance. Deeper semantics, byte budgets and the journey YAML shape: `dw-browser protocol`.",
       "command": "audit",
       "summary": "Audit compatibility, accessibility, layout, performance and browser chrome rules",
       "flags": [
@@ -1559,7 +1571,7 @@
       "examples": [
         "dw-browser session status --id chat1"
       ],
-      "guidance": "Inspects the persisted runtime ownership (authority, observation validity) without recovering or touching the runtime. Diagnostic only.",
+      "guidance": "Inspects the persisted runtime ownership (authority, observation validity) without recovering or touching the runtime. Diagnostic only. Deeper semantics, byte budgets and the journey YAML shape: `dw-browser protocol`.",
       "command": "session status",
       "summary": "Inspect persisted runtime ownership without recovery",
       "flags": [
@@ -1598,7 +1610,7 @@
       "examples": [
         "dw-browser session list"
       ],
-      "guidance": "Lists persisted sessions with their state. Diagnostic only — never recovers a runtime.",
+      "guidance": "Lists persisted sessions with their state. Diagnostic only — never recovers a runtime. Deeper semantics, byte budgets and the journey YAML shape: `dw-browser protocol`.",
       "command": "session list",
       "summary": "List persisted sessions",
       "flags": [
@@ -1629,7 +1641,7 @@
       "examples": [
         "dw-browser session viewport --id chat1 --size 880x720"
       ],
-      "guidance": "Resizes the existing runtime viewport and persists the environment change. Reobserve after resizing before using refs or coordinates. Bare --viewport on open is rejected for mobile sizes — use --persona mobile for real mobile fidelity.",
+      "guidance": "Resizes the existing runtime viewport and persists the environment change. Reobserve after resizing before using refs or coordinates. Bare --viewport on open is rejected for mobile sizes — use --persona mobile for real mobile fidelity. Deeper semantics, byte budgets and the journey YAML shape: `dw-browser protocol`.",
       "command": "session viewport",
       "summary": "Resize the existing runtime and persist its environment",
       "flags": [
@@ -1645,6 +1657,7 @@
           "value_type": "string"
         },
         {
+          "description": "also write this command's stdout JSON to this file",
           "name": "--output",
           "takes_value": true,
           "value_type": "string",
@@ -1675,7 +1688,7 @@
       "examples": [
         "dw-browser tabs list --id chat1"
       ],
-      "guidance": "Lists the user page targets in the session browser without recovering the runtime. Diagnostic only.",
+      "guidance": "Lists the user page targets in the session browser without recovering the runtime. Diagnostic only. Deeper semantics, byte budgets and the journey YAML shape: `dw-browser protocol`.",
       "command": "tabs list",
       "summary": "List user page targets without recovering the runtime",
       "flags": [
@@ -1714,7 +1727,7 @@
       "examples": [
         "dw-browser tabs select --id chat1 --target t2"
       ],
-      "guidance": "Activates an existing target under the runtime input lock. Reobserve after switching before using any ref — refs are per-target.",
+      "guidance": "Activates an existing target under the runtime input lock. Reobserve after switching before using any ref — refs are per-target. Deeper semantics, byte budgets and the journey YAML shape: `dw-browser protocol`.",
       "command": "tabs select",
       "summary": "Activate an existing target under the runtime input lock",
       "flags": [
@@ -1730,6 +1743,7 @@
           "value_type": "string"
         },
         {
+          "description": "also write this command's stdout JSON to this file",
           "name": "--output",
           "takes_value": true,
           "value_type": "string",
@@ -1760,7 +1774,7 @@
       "examples": [
         "dw-browser tabs close --id chat1 --target t2"
       ],
-      "guidance": "Closes one page target and revokes page authority. Any prior observation of that target is dead.",
+      "guidance": "Closes one page target and revokes page authority. Any prior observation of that target is dead. Deeper semantics, byte budgets and the journey YAML shape: `dw-browser protocol`.",
       "command": "tabs close",
       "summary": "Close a target and revoke page authority",
       "flags": [
@@ -1776,6 +1790,7 @@
           "value_type": "string"
         },
         {
+          "description": "also write this command's stdout JSON to this file",
           "name": "--output",
           "takes_value": true,
           "value_type": "string",
@@ -1806,7 +1821,7 @@
       "examples": [
         "dw-browser tabs new --id chat1 --url http://localhost:8080/portal/workspace"
       ],
-      "guidance": "Creates a new page target in the existing session browser and focuses it. Reobserve before interacting — the new target has no refs yet.",
+      "guidance": "Creates a new page target in the existing session browser and focuses it. Reobserve before interacting — the new target has no refs yet. Deeper semantics, byte budgets and the journey YAML shape: `dw-browser protocol`.",
       "command": "tabs new",
       "summary": "Create a target in the existing browser",
       "flags": [
@@ -1822,6 +1837,7 @@
           "value_type": "string"
         },
         {
+          "description": "also write this command's stdout JSON to this file",
           "name": "--output",
           "takes_value": true,
           "value_type": "string",
@@ -1851,7 +1867,7 @@
       "examples": [
         "dw-browser htr status --id chat1"
       ],
-      "guidance": "Inspects Human/AI authority state without recovery. Diagnostic only.",
+      "guidance": "Inspects Human/AI authority state without recovery. Diagnostic only. Deeper semantics, byte budgets and the journey YAML shape: `dw-browser protocol`.",
       "command": "htr status",
       "summary": "Inspect Human control and runtime state without recovery",
       "flags": [
@@ -1890,7 +1906,7 @@
       "examples": [
         "dw-browser htr takeover --id chat1"
       ],
-      "guidance": "Really blocks AI input: the human physically owns the page from here. Obsolete observations are revoked.",
+      "guidance": "Really blocks AI input: the human physically owns the page from here. Obsolete observations are revoked. Deeper semantics, byte budgets and the journey YAML shape: `dw-browser protocol`.",
       "command": "htr takeover",
       "summary": "Set Human/AI authority; obsolete observations are revoked",
       "flags": [
@@ -1929,7 +1945,7 @@
       "examples": [
         "dw-browser htr yield --id chat1"
       ],
-      "guidance": "Restores AI authority after a takeover and requires fresh observation before further acts.",
+      "guidance": "Restores AI authority after a takeover and requires fresh observation before further acts. Deeper semantics, byte budgets and the journey YAML shape: `dw-browser protocol`.",
       "command": "htr yield",
       "summary": "Set Human/AI authority; obsolete observations are revoked",
       "flags": [
@@ -1968,7 +1984,7 @@
       "examples": [
         "dw-browser htr share --id chat1"
       ],
-      "guidance": "Shared authority mode; obsolete observations are revoked.",
+      "guidance": "Shared authority mode; obsolete observations are revoked. Deeper semantics, byte budgets and the journey YAML shape: `dw-browser protocol`.",
       "command": "htr share",
       "summary": "Set Human/AI authority; obsolete observations are revoked",
       "flags": [
@@ -2007,7 +2023,7 @@
       "examples": [
         "dw-browser persona list"
       ],
-      "guidance": "Lists available environment personas (device fidelity bundles). Use mobile for mobile-UX acceptance; desktop for PC.",
+      "guidance": "Lists available environment personas (device fidelity bundles). Use mobile for mobile-UX acceptance; desktop for PC. Deeper semantics, byte budgets and the journey YAML shape: `dw-browser protocol`.",
       "command": "persona list",
       "summary": "List environment personas",
       "flags": [
@@ -2038,7 +2054,7 @@
       "examples": [
         "dw-browser profile list"
       ],
-      "guidance": "Lists persistent and temporary browser profile directories known to this CLI. Diagnostic.",
+      "guidance": "Lists persistent and temporary browser profile directories known to this CLI. Diagnostic. Deeper semantics, byte budgets and the journey YAML shape: `dw-browser protocol`.",
       "command": "profile list",
       "summary": "List persistent and temporary profile directories",
       "flags": [
@@ -2069,7 +2085,7 @@
       "examples": [
         "dw-browser profile import myprofile"
       ],
-      "guidance": "Copies a profile directory into the CLI profile store for reuse by named profiles.",
+      "guidance": "Copies a profile directory into the CLI profile store for reuse by named profiles. Deeper semantics, byte budgets and the journey YAML shape: `dw-browser protocol`.",
       "command": "profile import",
       "summary": "Copy a profile into the CLI profile store",
       "flags": [
@@ -2105,7 +2121,7 @@
       "examples": [
         "dw-browser profile prune --ephemeral --dry-run"
       ],
-      "guidance": "Explicitly prunes task profile directories. --dry-run first to preview; --reap-orphaned cleans orphans left by dead processes.",
+      "guidance": "Explicitly prunes task profile directories. --dry-run first to preview; --reap-orphaned cleans orphans left by dead processes. Deeper semantics, byte budgets and the journey YAML shape: `dw-browser protocol`.",
       "command": "profile prune",
       "summary": "Prune task profile directories explicitly",
       "flags": [
@@ -2156,24 +2172,28 @@
       "examples": [
         "dw-browser gc --dry-run"
       ],
-      "guidance": "Inspects or reclaims unowned browser resources (runtimes left behind by dead owners). --dry-run first; reclaims only unowned resources.",
+      "guidance": "Inspects or reclaims unowned browser resources (runtimes left behind by dead owners). --dry-run first; reclaims only unowned resources. Deeper semantics, byte budgets and the journey YAML shape: `dw-browser protocol`.",
       "command": "gc",
       "summary": "Inspect or reclaim unowned browser resources explicitly",
       "flags": [
         {
+          "description": "only reclaim resources older than this duration",
           "name": "--older-than",
           "takes_value": true,
           "value_type": "duration"
         },
         {
+          "description": "report what would be reclaimed without doing it",
           "name": "--dry-run",
           "takes_value": false
         },
         {
+          "description": "reclaim every unowned resource regardless of age",
           "name": "--all",
           "takes_value": false
         },
         {
+          "description": "also write this command's stdout JSON to this file",
           "name": "--output",
           "takes_value": true,
           "value_type": "string",
@@ -2200,7 +2220,7 @@
       "examples": [
         "dw-browser skills list"
       ],
-      "guidance": "Lists installed site recipes (per-site interaction recipes the CLI can use). Diagnostic.",
+      "guidance": "Lists installed site recipes (per-site interaction recipes the CLI can use). Diagnostic. Deeper semantics, byte budgets and the journey YAML shape: `dw-browser protocol`.",
       "command": "skills list",
       "summary": "List installed site recipes",
       "flags": [
@@ -2231,7 +2251,7 @@
       "examples": [
         "dw-browser skills read example"
       ],
-      "guidance": "Reads one site recipe. Diagnostic.",
+      "guidance": "Reads one site recipe. Diagnostic. Deeper semantics, byte budgets and the journey YAML shape: `dw-browser protocol`.",
       "command": "skills read",
       "summary": "Read one site recipe",
       "flags": [
@@ -2267,7 +2287,7 @@
       "examples": [
         "dw-browser skills write --action recipe.json"
       ],
-      "guidance": "Writes a site recipe from declared input.",
+      "guidance": "Writes a site recipe from declared input. Deeper semantics, byte budgets and the journey YAML shape: `dw-browser protocol`.",
       "command": "skills write",
       "summary": "Write a site recipe from declared input",
       "flags": [
@@ -2306,7 +2326,7 @@
       "examples": [
         "dw-browser record start --id chat1"
       ],
-      "guidance": "Starts a structured action trace on the session (for evidence and replay analysis).",
+      "guidance": "Starts a structured action trace on the session (for evidence and replay analysis). Deeper semantics, byte budgets and the journey YAML shape: `dw-browser protocol`.",
       "command": "record start",
       "summary": "Start a structured action trace",
       "flags": [
@@ -2345,7 +2365,7 @@
       "examples": [
         "dw-browser record stop --id chat1"
       ],
-      "guidance": "Stops the trace and returns it.",
+      "guidance": "Stops the trace and returns it. Deeper semantics, byte budgets and the journey YAML shape: `dw-browser protocol`.",
       "command": "record stop",
       "summary": "Stop and return the trace",
       "flags": [
@@ -2384,7 +2404,7 @@
       "examples": [
         "dw-browser record export --id chat1"
       ],
-      "guidance": "Returns the current trace without stopping. Diagnostic.",
+      "guidance": "Returns the current trace without stopping. Diagnostic. Deeper semantics, byte budgets and the journey YAML shape: `dw-browser protocol`.",
       "command": "record export",
       "summary": "Return the current trace",
       "flags": [
@@ -2423,7 +2443,7 @@
       "examples": [
         "dw-browser muxhost serve"
       ],
-      "guidance": "Runs the existing headed host infrastructure (shared headed display host for headed sessions).",
+      "guidance": "Runs the existing headed host infrastructure (shared headed display host for headed sessions). Deeper semantics, byte budgets and the journey YAML shape: `dw-browser protocol`.",
       "command": "muxhost serve",
       "summary": "Run the existing headed host infrastructure",
       "flags": [
@@ -2582,7 +2602,7 @@
       "examples": [
         "dw-browser muxhost ensure"
       ],
-      "guidance": "Ensures an explicitly named headed host exists (starts if missing).",
+      "guidance": "Ensures an explicitly named headed host exists (starts if missing). Deeper semantics, byte budgets and the journey YAML shape: `dw-browser protocol`.",
       "command": "muxhost ensure",
       "summary": "Ensure an explicitly named headed host",
       "flags": [
@@ -2741,7 +2761,7 @@
       "examples": [
         "dw-browser muxhost status"
       ],
-      "guidance": "Inspects an existing headed host. Diagnostic.",
+      "guidance": "Inspects an existing headed host. Diagnostic. Deeper semantics, byte budgets and the journey YAML shape: `dw-browser protocol`.",
       "command": "muxhost status",
       "summary": "Inspect an existing headed host",
       "flags": [
@@ -2796,7 +2816,7 @@
       "examples": [
         "dw-browser muxhost release --runtime-id r1"
       ],
-      "guidance": "Releases a headed host lease.",
+      "guidance": "Releases a headed host lease. Deeper semantics, byte budgets and the journey YAML shape: `dw-browser protocol`.",
       "command": "muxhost release",
       "summary": "Release an existing headed host lease",
       "flags": [
@@ -2851,7 +2871,7 @@
       "examples": [
         "dw-browser muxhost shutdown --muxhost-id m1"
       ],
-      "guidance": "Shuts down the explicitly named headed host.",
+      "guidance": "Shuts down the explicitly named headed host. Deeper semantics, byte budgets and the journey YAML shape: `dw-browser protocol`.",
       "command": "muxhost shutdown",
       "summary": "Shut down the explicitly named headed host",
       "flags": [
@@ -2906,7 +2926,7 @@
       "examples": [
         "dw-browser version"
       ],
-      "guidance": "Returns protocol and executable version as JSON. Diagnostic.",
+      "guidance": "Returns protocol and executable version as JSON. Diagnostic. Deeper semantics, byte budgets and the journey YAML shape: `dw-browser protocol`.",
       "command": "version",
       "summary": "Return the candidate protocol version",
       "flags": [
@@ -2937,7 +2957,7 @@
       "examples": [
         "dw-browser capabilities"
       ],
-      "guidance": "Returns this executable's full command and action contract (machine-readable). Diagnostic.",
+      "guidance": "Returns this executable's full command and action contract (machine-readable). Diagnostic. Deeper semantics, byte budgets and the journey YAML shape: `dw-browser protocol`.",
       "command": "capabilities",
       "summary": "Return this executable command and action contract",
       "flags": [
@@ -2968,7 +2988,7 @@
       "examples": [
         "dw-browser export-contract --directory guide/runtime-v2/generated"
       ],
-      "guidance": "Regenerates the same-version contract artifacts (capabilities.json, completions, tool-use skill) into a directory. Run after any command-surface change so the checked-in contract stays green in tests.",
+      "guidance": "Regenerates the same-version contract artifacts (capabilities.json, completions, tool-use skill) into a directory. Run after any command-surface change so the checked-in contract stays green in tests. Deeper semantics, byte budgets and the journey YAML shape: `dw-browser protocol`.",
       "command": "export-contract",
       "summary": "Generate same-version capabilities, completions and tool-use skill",
       "flags": [
@@ -3007,7 +3027,7 @@
       "examples": [
         "dw-browser completion zsh"
       ],
-      "guidance": "Generates shell completion for the current command contract. Diagnostic.",
+      "guidance": "Generates shell completion for the current command contract. Diagnostic. Deeper semantics, byte budgets and the journey YAML shape: `dw-browser protocol`.",
       "command": "completion",
       "summary": "Generate shell completion from this command contract",
       "flags": [
@@ -3038,7 +3058,7 @@
       "examples": [
         "dw-browser protocol"
       ],
-      "guidance": "Generates the same-version tool-use protocol (the AI-facing usage narrative with a journey example). Diagnostic.",
+      "guidance": "Generates the same-version tool-use protocol (the AI-facing usage narrative with a journey example). Diagnostic. Deeper semantics, byte budgets and the journey YAML shape: `dw-browser protocol`.",
       "command": "protocol",
       "summary": "Generate the same-version tool-use protocol",
       "flags": [
@@ -3070,7 +3090,7 @@
         "dw-browser act click @r3 --id chat1",
         "dw-browser act click css=#submit --id chat1"
       ],
-      "guidance": "Typed interaction verb through the shared action contract. A TARGET is a returned opaque `@...` ref from the latest observe, an explicit `css=...`/`role=...` locator, or coordinates with --x/--y (plus --unit css-px --frame viewport --observation-id CAPTURE for coordinates). Observe first, act, then reobserve: refs are bound to one observation and die on navigation/tab switch/resize. Literal text is never an action string. Unknown or partially dispatched acts require observation before retry. Clicks the target center (respects occlusion: a click blocked by browser chrome fails loud).",
+      "guidance": "Typed interaction verb through the shared action contract. A TARGET is a returned opaque `@...` ref from the latest observe, an explicit `css=...`/`role=...` locator, or coordinates with --x/--y (plus --unit css-px --frame viewport --observation-id CAPTURE for coordinates). Observe first, act, then reobserve: refs are bound to one observation and die on navigation/tab switch/resize. Literal text is never an action string. Unknown or partially dispatched acts require observation before retry. Clicks the target center (respects occlusion: a click blocked by browser chrome fails loud). Deeper semantics, byte budgets and the journey YAML shape: `dw-browser protocol`.",
       "command": "act click",
       "summary": "Click a visible target; count 2 or button right selects its mouse variant",
       "flags": [
@@ -3195,7 +3215,7 @@
       "examples": [
         "dw-browser act tap @r1 --id chat1"
       ],
-      "guidance": "Typed interaction verb through the shared action contract. A TARGET is a returned opaque `@...` ref from the latest observe, an explicit `css=...`/`role=...` locator, or coordinates with --x/--y (plus --unit css-px --frame viewport --observation-id CAPTURE for coordinates). Observe first, act, then reobserve: refs are bound to one observation and die on navigation/tab switch/resize. Literal text is never an action string. Unknown or partially dispatched acts require observation before retry. Mobile-persona tap; same targeting rules as click.",
+      "guidance": "Typed interaction verb through the shared action contract. A TARGET is a returned opaque `@...` ref from the latest observe, an explicit `css=...`/`role=...` locator, or coordinates with --x/--y (plus --unit css-px --frame viewport --observation-id CAPTURE for coordinates). Observe first, act, then reobserve: refs are bound to one observation and die on navigation/tab switch/resize. Literal text is never an action string. Unknown or partially dispatched acts require observation before retry. Mobile-persona tap; same targeting rules as click. Deeper semantics, byte budgets and the journey YAML shape: `dw-browser protocol`.",
       "command": "act tap",
       "summary": "Touch a visible target",
       "flags": [
@@ -3302,7 +3322,7 @@
       "examples": [
         "dw-browser act hover @r1 --id chat1"
       ],
-      "guidance": "Typed interaction verb through the shared action contract. A TARGET is a returned opaque `@...` ref from the latest observe, an explicit `css=...`/`role=...` locator, or coordinates with --x/--y (plus --unit css-px --frame viewport --observation-id CAPTURE for coordinates). Observe first, act, then reobserve: refs are bound to one observation and die on navigation/tab switch/resize. Literal text is never an action string. Unknown or partially dispatched acts require observation before retry. Hovers the target; use for menus/tooltips that need pointer presence.",
+      "guidance": "Typed interaction verb through the shared action contract. A TARGET is a returned opaque `@...` ref from the latest observe, an explicit `css=...`/`role=...` locator, or coordinates with --x/--y (plus --unit css-px --frame viewport --observation-id CAPTURE for coordinates). Observe first, act, then reobserve: refs are bound to one observation and die on navigation/tab switch/resize. Literal text is never an action string. Unknown or partially dispatched acts require observation before retry. Hovers the target; use for menus/tooltips that need pointer presence. Deeper semantics, byte budgets and the journey YAML shape: `dw-browser protocol`.",
       "command": "act hover",
       "summary": "Move the pointer to a visible target",
       "flags": [
@@ -3409,7 +3429,7 @@
       "examples": [
         "dw-browser act fill @r5 --text \"hello\" --id chat1"
       ],
-      "guidance": "Typed interaction verb through the shared action contract. A TARGET is a returned opaque `@...` ref from the latest observe, an explicit `css=...`/`role=...` locator, or coordinates with --x/--y (plus --unit css-px --frame viewport --observation-id CAPTURE for coordinates). Observe first, act, then reobserve: refs are bound to one observation and die on navigation/tab switch/resize. Literal text is never an action string. Unknown or partially dispatched acts require observation before retry. Replaces the field content (selects all then types). Input targets come from observe refs; `fill @rN` is the working form. --sensitive requires a masked password control and suppresses text facts. Strict fill verifies physical selection before deletion.",
+      "guidance": "Typed interaction verb through the shared action contract. A TARGET is a returned opaque `@...` ref from the latest observe, an explicit `css=...`/`role=...` locator, or coordinates with --x/--y (plus --unit css-px --frame viewport --observation-id CAPTURE for coordinates). Observe first, act, then reobserve: refs are bound to one observation and die on navigation/tab switch/resize. Literal text is never an action string. Unknown or partially dispatched acts require observation before retry. Replaces the field content (selects all then types). Input targets come from observe refs; `fill @rN` is the working form. --sensitive requires a masked password control and suppresses text facts. Strict fill verifies physical selection before deletion. Deeper semantics, byte budgets and the journey YAML shape: `dw-browser protocol`.",
       "command": "act fill",
       "summary": "Replace editable text using verified physical selection and input",
       "flags": [
@@ -3477,7 +3497,7 @@
       "examples": [
         "dw-browser act type @r1 --id chat1"
       ],
-      "guidance": "Typed interaction verb through the shared action contract. A TARGET is a returned opaque `@...` ref from the latest observe, an explicit `css=...`/`role=...` locator, or coordinates with --x/--y (plus --unit css-px --frame viewport --observation-id CAPTURE for coordinates). Observe first, act, then reobserve: refs are bound to one observation and die on navigation/tab switch/resize. Literal text is never an action string. Unknown or partially dispatched acts require observation before retry. Types text; --focused inserts into physical focus without changing selection.",
+      "guidance": "Typed interaction verb through the shared action contract. A TARGET is a returned opaque `@...` ref from the latest observe, an explicit `css=...`/`role=...` locator, or coordinates with --x/--y (plus --unit css-px --frame viewport --observation-id CAPTURE for coordinates). Observe first, act, then reobserve: refs are bound to one observation and die on navigation/tab switch/resize. Literal text is never an action string. Unknown or partially dispatched acts require observation before retry. Types text; --focused inserts into physical focus without changing selection. Deeper semantics, byte budgets and the journey YAML shape: `dw-browser protocol`.",
       "command": "act type",
       "summary": "Insert text into a target or the physically focused editor",
       "flags": [
@@ -3541,11 +3561,11 @@
       ]
     },
     {
-      "usage": "act press [TARGET] --id NAME [verb flags — see flags below]",
+      "usage": "act press KEYS --id NAME  (KEYS is the key or chord, e.g. Control+b, Enter)",
       "examples": [
         "dw-browser act press Control+b --id chat1"
       ],
-      "guidance": "Typed interaction verb through the shared action contract. A TARGET is a returned opaque `@...` ref from the latest observe, an explicit `css=...`/`role=...` locator, or coordinates with --x/--y (plus --unit css-px --frame viewport --observation-id CAPTURE for coordinates). Observe first, act, then reobserve: refs are bound to one observation and die on navigation/tab switch/resize. Literal text is never an action string. Unknown or partially dispatched acts require observation before retry. Presses a key or chord, e.g. `press Control+b`, `press Enter`; modifiers are real CDP modifier masks, not characters.",
+      "guidance": "Typed interaction verb through the shared action contract. A TARGET is a returned opaque `@...` ref from the latest observe, an explicit `css=...`/`role=...` locator, or coordinates with --x/--y (plus --unit css-px --frame viewport --observation-id CAPTURE for coordinates). Observe first, act, then reobserve: refs are bound to one observation and die on navigation/tab switch/resize. Literal text is never an action string. Unknown or partially dispatched acts require observation before retry. Presses a key or chord, e.g. `press Control+b`, `press Enter`; modifiers are real CDP modifier masks, not characters. Deeper semantics, byte budgets and the journey YAML shape: `dw-browser protocol`.",
       "command": "act press",
       "summary": "Dispatch a platform key or shortcut",
       "flags": [
@@ -3589,7 +3609,7 @@
       "examples": [
         "dw-browser act focus @r1 --id chat1"
       ],
-      "guidance": "Typed interaction verb through the shared action contract. A TARGET is a returned opaque `@...` ref from the latest observe, an explicit `css=...`/`role=...` locator, or coordinates with --x/--y (plus --unit css-px --frame viewport --observation-id CAPTURE for coordinates). Observe first, act, then reobserve: refs are bound to one observation and die on navigation/tab switch/resize. Literal text is never an action string. Unknown or partially dispatched acts require observation before retry. Focuses the target element.",
+      "guidance": "Typed interaction verb through the shared action contract. A TARGET is a returned opaque `@...` ref from the latest observe, an explicit `css=...`/`role=...` locator, or coordinates with --x/--y (plus --unit css-px --frame viewport --observation-id CAPTURE for coordinates). Observe first, act, then reobserve: refs are bound to one observation and die on navigation/tab switch/resize. Literal text is never an action string. Unknown or partially dispatched acts require observation before retry. Focuses the target element. Deeper semantics, byte budgets and the journey YAML shape: `dw-browser protocol`.",
       "command": "act focus",
       "summary": "Physically focus an editable target",
       "flags": [
@@ -3635,7 +3655,7 @@
         "dw-browser act select @r7 --label \"完整选项文案\" --id chat1",
         "dw-browser act select \u003cCONTROL_REF\u003e --id \u003cSESSION\u003e --value '\u003cEXACT_DOM_VALUE_FROM_OBSERVE\u003e'"
       ],
-      "guidance": "Typed interaction verb through the shared action contract. A TARGET is a returned opaque `@...` ref from the latest observe, an explicit `css=...`/`role=...` locator, or coordinates with --x/--y (plus --unit css-px --frame viewport --observation-id CAPTURE for coordinates). Observe first, act, then reobserve: refs are bound to one observation and die on navigation/tab switch/resize. Literal text is never an action string. Unknown or partially dispatched acts require observation before retry. Native select by exact complete displayed option label (--label) or exact DOM option value (--value) — exactly one selector, including an explicit empty string; no prefix or first-match fallback. First observe the control, read its option labels/values, choose one field, execute, then observe again.",
+      "guidance": "Typed interaction verb through the shared action contract. A TARGET is a returned opaque `@...` ref from the latest observe, an explicit `css=...`/`role=...` locator, or coordinates with --x/--y (plus --unit css-px --frame viewport --observation-id CAPTURE for coordinates). Observe first, act, then reobserve: refs are bound to one observation and die on navigation/tab switch/resize. Literal text is never an action string. Unknown or partially dispatched acts require observation before retry. Native select by exact complete displayed option label (--label) or exact DOM option value (--value) — exactly one selector, including an explicit empty string; no prefix or first-match fallback. First observe the control, read its option labels/values, choose one field, execute, then observe again. Deeper semantics, byte budgets and the journey YAML shape: `dw-browser protocol`.",
       "command": "act select",
       "summary": "Select a native option using verified keyboard interaction; explicit baseline element steps provide synthetic functional evidence",
       "flags": [
@@ -3697,7 +3717,7 @@
       "examples": [
         "dw-browser act set-checked @r1 --id chat1"
       ],
-      "guidance": "Typed interaction verb through the shared action contract. A TARGET is a returned opaque `@...` ref from the latest observe, an explicit `css=...`/`role=...` locator, or coordinates with --x/--y (plus --unit css-px --frame viewport --observation-id CAPTURE for coordinates). Observe first, act, then reobserve: refs are bound to one observation and die on navigation/tab switch/resize. Literal text is never an action string. Unknown or partially dispatched acts require observation before retry. Sets checkbox/radio state; argument is the desired state.",
+      "guidance": "Typed interaction verb through the shared action contract. A TARGET is a returned opaque `@...` ref from the latest observe, an explicit `css=...`/`role=...` locator, or coordinates with --x/--y (plus --unit css-px --frame viewport --observation-id CAPTURE for coordinates). Observe first, act, then reobserve: refs are bound to one observation and die on navigation/tab switch/resize. Literal text is never an action string. Unknown or partially dispatched acts require observation before retry. Sets checkbox/radio state; argument is the desired state. Deeper semantics, byte budgets and the journey YAML shape: `dw-browser protocol`.",
       "command": "act set-checked",
       "summary": "Set a checkbox to an explicit boolean",
       "flags": [
@@ -3745,7 +3765,7 @@
       "examples": [
         "dw-browser act scroll down 3 --id chat1"
       ],
-      "guidance": "Typed interaction verb through the shared action contract. A TARGET is a returned opaque `@...` ref from the latest observe, an explicit `css=...`/`role=...` locator, or coordinates with --x/--y (plus --unit css-px --frame viewport --observation-id CAPTURE for coordinates). Observe first, act, then reobserve: refs are bound to one observation and die on navigation/tab switch/resize. Literal text is never an action string. Unknown or partially dispatched acts require observation before retry. Scrolls (e.g. `scroll down 3`); pure-coordinate forms exist for canvas targets.",
+      "guidance": "Typed interaction verb through the shared action contract. A TARGET is a returned opaque `@...` ref from the latest observe, an explicit `css=...`/`role=...` locator, or coordinates with --x/--y (plus --unit css-px --frame viewport --observation-id CAPTURE for coordinates). Observe first, act, then reobserve: refs are bound to one observation and die on navigation/tab switch/resize. Literal text is never an action string. Unknown or partially dispatched acts require observation before retry. Scrolls (e.g. `scroll down 3`); pure-coordinate forms exist for canvas targets. Deeper semantics, byte budgets and the journey YAML shape: `dw-browser protocol`.",
       "command": "act scroll",
       "summary": "Scroll the viewport or target at a declared point",
       "flags": [
@@ -3878,7 +3898,7 @@
       "examples": [
         "dw-browser act scrollto @r1 --id chat1"
       ],
-      "guidance": "Typed interaction verb through the shared action contract. A TARGET is a returned opaque `@...` ref from the latest observe, an explicit `css=...`/`role=...` locator, or coordinates with --x/--y (plus --unit css-px --frame viewport --observation-id CAPTURE for coordinates). Observe first, act, then reobserve: refs are bound to one observation and die on navigation/tab switch/resize. Literal text is never an action string. Unknown or partially dispatched acts require observation before retry. Scrolls a locator or coordinates into view.",
+      "guidance": "Typed interaction verb through the shared action contract. A TARGET is a returned opaque `@...` ref from the latest observe, an explicit `css=...`/`role=...` locator, or coordinates with --x/--y (plus --unit css-px --frame viewport --observation-id CAPTURE for coordinates). Observe first, act, then reobserve: refs are bound to one observation and die on navigation/tab switch/resize. Literal text is never an action string. Unknown or partially dispatched acts require observation before retry. Scrolls a locator or coordinates into view. Deeper semantics, byte budgets and the journey YAML shape: `dw-browser protocol`.",
       "command": "act scrollto",
       "summary": "Scroll a persistent target into view",
       "flags": [
@@ -3917,7 +3937,7 @@
       "examples": [
         "dw-browser act drag @r1 --id chat1"
       ],
-      "guidance": "Typed interaction verb through the shared action contract. A TARGET is a returned opaque `@...` ref from the latest observe, an explicit `css=...`/`role=...` locator, or coordinates with --x/--y (plus --unit css-px --frame viewport --observation-id CAPTURE for coordinates). Observe first, act, then reobserve: refs are bound to one observation and die on navigation/tab switch/resize. Literal text is never an action string. Unknown or partially dispatched acts require observation before retry. Drags from target/coordinates to an end point (--end-x/--end-y).",
+      "guidance": "Typed interaction verb through the shared action contract. A TARGET is a returned opaque `@...` ref from the latest observe, an explicit `css=...`/`role=...` locator, or coordinates with --x/--y (plus --unit css-px --frame viewport --observation-id CAPTURE for coordinates). Observe first, act, then reobserve: refs are bound to one observation and die on navigation/tab switch/resize. Literal text is never an action string. Unknown or partially dispatched acts require observation before retry. Drags from target/coordinates to an end point (--end-x/--end-y). Deeper semantics, byte budgets and the journey YAML shape: `dw-browser protocol`.",
       "command": "act drag",
       "summary": "Drag between two points in one coordinate frame",
       "flags": [
@@ -4050,7 +4070,7 @@
       "examples": [
         "dw-browser act swipe @r1 --id chat1"
       ],
-      "guidance": "Typed interaction verb through the shared action contract. A TARGET is a returned opaque `@...` ref from the latest observe, an explicit `css=...`/`role=...` locator, or coordinates with --x/--y (plus --unit css-px --frame viewport --observation-id CAPTURE for coordinates). Observe first, act, then reobserve: refs are bound to one observation and die on navigation/tab switch/resize. Literal text is never an action string. Unknown or partially dispatched acts require observation before retry. Mobile-persona swipe gesture.",
+      "guidance": "Typed interaction verb through the shared action contract. A TARGET is a returned opaque `@...` ref from the latest observe, an explicit `css=...`/`role=...` locator, or coordinates with --x/--y (plus --unit css-px --frame viewport --observation-id CAPTURE for coordinates). Observe first, act, then reobserve: refs are bound to one observation and die on navigation/tab switch/resize. Literal text is never an action string. Unknown or partially dispatched acts require observation before retry. Mobile-persona swipe gesture. Deeper semantics, byte budgets and the journey YAML shape: `dw-browser protocol`.",
       "command": "act swipe",
       "summary": "Swipe between two touch points",
       "flags": [
@@ -4183,7 +4203,7 @@
       "examples": [
         "dw-browser act navigate https://example.com --id chat1"
       ],
-      "guidance": "Typed interaction verb through the shared action contract. A TARGET is a returned opaque `@...` ref from the latest observe, an explicit `css=...`/`role=...` locator, or coordinates with --x/--y (plus --unit css-px --frame viewport --observation-id CAPTURE for coordinates). Observe first, act, then reobserve: refs are bound to one observation and die on navigation/tab switch/resize. Literal text is never an action string. Unknown or partially dispatched acts require observation before retry. Navigates the page to a URL; refs die afterwards.",
+      "guidance": "Typed interaction verb through the shared action contract. A TARGET is a returned opaque `@...` ref from the latest observe, an explicit `css=...`/`role=...` locator, or coordinates with --x/--y (plus --unit css-px --frame viewport --observation-id CAPTURE for coordinates). Observe first, act, then reobserve: refs are bound to one observation and die on navigation/tab switch/resize. Literal text is never an action string. Unknown or partially dispatched acts require observation before retry. Navigates the page to a URL; refs die afterwards. Deeper semantics, byte budgets and the journey YAML shape: `dw-browser protocol`.",
       "command": "act navigate",
       "summary": "Navigate the existing session to a URL",
       "flags": [
@@ -4227,7 +4247,7 @@
       "examples": [
         "dw-browser act reload @r1 --id chat1"
       ],
-      "guidance": "Typed interaction verb through the shared action contract. A TARGET is a returned opaque `@...` ref from the latest observe, an explicit `css=...`/`role=...` locator, or coordinates with --x/--y (plus --unit css-px --frame viewport --observation-id CAPTURE for coordinates). Observe first, act, then reobserve: refs are bound to one observation and die on navigation/tab switch/resize. Literal text is never an action string. Unknown or partially dispatched acts require observation before retry. Reloads the current page; refs die afterwards.",
+      "guidance": "Typed interaction verb through the shared action contract. A TARGET is a returned opaque `@...` ref from the latest observe, an explicit `css=...`/`role=...` locator, or coordinates with --x/--y (plus --unit css-px --frame viewport --observation-id CAPTURE for coordinates). Observe first, act, then reobserve: refs are bound to one observation and die on navigation/tab switch/resize. Literal text is never an action string. Unknown or partially dispatched acts require observation before retry. Reloads the current page; refs die afterwards. Deeper semantics, byte budgets and the journey YAML shape: `dw-browser protocol`.",
       "command": "act reload",
       "summary": "Reload the existing document",
       "flags": [
@@ -4266,7 +4286,7 @@
       "examples": [
         "dw-browser act back @r1 --id chat1"
       ],
-      "guidance": "Typed interaction verb through the shared action contract. A TARGET is a returned opaque `@...` ref from the latest observe, an explicit `css=...`/`role=...` locator, or coordinates with --x/--y (plus --unit css-px --frame viewport --observation-id CAPTURE for coordinates). Observe first, act, then reobserve: refs are bound to one observation and die on navigation/tab switch/resize. Literal text is never an action string. Unknown or partially dispatched acts require observation before retry. Browser back; refs die afterwards.",
+      "guidance": "Typed interaction verb through the shared action contract. A TARGET is a returned opaque `@...` ref from the latest observe, an explicit `css=...`/`role=...` locator, or coordinates with --x/--y (plus --unit css-px --frame viewport --observation-id CAPTURE for coordinates). Observe first, act, then reobserve: refs are bound to one observation and die on navigation/tab switch/resize. Literal text is never an action string. Unknown or partially dispatched acts require observation before retry. Browser back; refs die afterwards. Deeper semantics, byte budgets and the journey YAML shape: `dw-browser protocol`.",
       "command": "act back",
       "summary": "Traverse browser history backwards",
       "flags": [
@@ -4305,7 +4325,7 @@
       "examples": [
         "dw-browser act forward @r1 --id chat1"
       ],
-      "guidance": "Typed interaction verb through the shared action contract. A TARGET is a returned opaque `@...` ref from the latest observe, an explicit `css=...`/`role=...` locator, or coordinates with --x/--y (plus --unit css-px --frame viewport --observation-id CAPTURE for coordinates). Observe first, act, then reobserve: refs are bound to one observation and die on navigation/tab switch/resize. Literal text is never an action string. Unknown or partially dispatched acts require observation before retry. Browser forward; refs die afterwards.",
+      "guidance": "Typed interaction verb through the shared action contract. A TARGET is a returned opaque `@...` ref from the latest observe, an explicit `css=...`/`role=...` locator, or coordinates with --x/--y (plus --unit css-px --frame viewport --observation-id CAPTURE for coordinates). Observe first, act, then reobserve: refs are bound to one observation and die on navigation/tab switch/resize. Literal text is never an action string. Unknown or partially dispatched acts require observation before retry. Browser forward; refs die afterwards. Deeper semantics, byte budgets and the journey YAML shape: `dw-browser protocol`.",
       "command": "act forward",
       "summary": "Traverse browser history forwards",
       "flags": [
@@ -4344,7 +4364,7 @@
       "examples": [
         "dw-browser act zoom @r1 --id chat1"
       ],
-      "guidance": "Typed interaction verb through the shared action contract. A TARGET is a returned opaque `@...` ref from the latest observe, an explicit `css=...`/`role=...` locator, or coordinates with --x/--y (plus --unit css-px --frame viewport --observation-id CAPTURE for coordinates). Observe first, act, then reobserve: refs are bound to one observation and die on navigation/tab switch/resize. Literal text is never an action string. Unknown or partially dispatched acts require observation before retry. Enters/adjusts the visual zoom state (persona chrome stays fixed); `zoom reset` restores.",
+      "guidance": "Typed interaction verb through the shared action contract. A TARGET is a returned opaque `@...` ref from the latest observe, an explicit `css=...`/`role=...` locator, or coordinates with --x/--y (plus --unit css-px --frame viewport --observation-id CAPTURE for coordinates). Observe first, act, then reobserve: refs are bound to one observation and die on navigation/tab switch/resize. Literal text is never an action string. Unknown or partially dispatched acts require observation before retry. Enters/adjusts the visual zoom state (persona chrome stays fixed); `zoom reset` restores. Deeper semantics, byte budgets and the journey YAML shape: `dw-browser protocol`.",
       "command": "act zoom",
       "summary": "Set page scale",
       "flags": [
@@ -4388,7 +4408,7 @@
       "examples": [
         "dw-browser act keyboard @r1 --id chat1"
       ],
-      "guidance": "Typed interaction verb through the shared action contract. A TARGET is a returned opaque `@...` ref from the latest observe, an explicit `css=...`/`role=...` locator, or coordinates with --x/--y (plus --unit css-px --frame viewport --observation-id CAPTURE for coordinates). Observe first, act, then reobserve: refs are bound to one observation and die on navigation/tab switch/resize. Literal text is never an action string. Unknown or partially dispatched acts require observation before retry. Opens or dismisses the simulated on-screen keyboard (mobile persona state).",
+      "guidance": "Typed interaction verb through the shared action contract. A TARGET is a returned opaque `@...` ref from the latest observe, an explicit `css=...`/`role=...` locator, or coordinates with --x/--y (plus --unit css-px --frame viewport --observation-id CAPTURE for coordinates). Observe first, act, then reobserve: refs are bound to one observation and die on navigation/tab switch/resize. Literal text is never an action string. Unknown or partially dispatched acts require observation before retry. Opens or dismisses the simulated on-screen keyboard (mobile persona state). Deeper semantics, byte budgets and the journey YAML shape: `dw-browser protocol`.",
       "command": "act keyboard",
       "summary": "Show or hide the emulated mobile keyboard",
       "flags": [
