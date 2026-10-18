@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -25,10 +26,10 @@ func TestLoadExcerptSpec(t *testing.T) {
 	}
 
 	for _, bad := range []string{
-		`{}`,              // not an array
-		`[]`,              // empty array
-		`[{"targets":["a"]}]`,     // no name
-		`[{"name":"a"}]`, // no targets
+		`{}`,                  // not an array
+		`[]`,                  // empty array
+		`[{"targets":["a"]}]`, // no name
+		`[{"name":"a"}]`,      // no targets
 	} {
 		if _, err := loadExcerptSpec(bad); err == nil {
 			t.Fatalf("spec %q should fail", bad)
@@ -38,15 +39,22 @@ func TestLoadExcerptSpec(t *testing.T) {
 
 func TestSanitizeExcerptName(t *testing.T) {
 	cases := map[string]string{
-		"a/b:c":     "a_b_c",
+		"a/b:c":   "a_b_c",
 		"图-02-标题": "图-02-标题",
-		"":          "excerpt-1",
-		".":         "excerpt-1",
-		"..":        "excerpt-1",
+		"":        "excerpt-1",
+		".":       "excerpt-1",
+		"..":      "excerpt-1",
 	}
 	for in, want := range cases {
 		if got := sanitizeExcerptName(in, 0); got != want {
 			t.Fatalf("sanitize(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+func TestLoadExcerptSpecArrayErrorHasNoGoTypeName(t *testing.T) {
+	_, err := loadExcerptSpec(`{"name":"a"}`)
+	if err == nil || strings.Contains(err.Error(), "ExcerptSpec") {
+		t.Fatalf("non-array error should not leak Go type names: %v", err)
 	}
 }

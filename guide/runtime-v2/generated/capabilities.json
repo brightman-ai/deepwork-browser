@@ -794,8 +794,20 @@
       "diagnostic": false
     },
     {
+      "arguments": [
+        {
+          "name": "--spec",
+          "description": "JSON array; each entry becomes one cropped PNG screenshot: {name, targets:[...], highlight:[phrases], box_style:{color:\"#rrggbb\", width:int(css px)}, highlight_color:\"#rrggbb\", crop_margin:int(css px)}. targets resolve elements on the open page: \"id:ELEMID\" by DOM id (dots allowed, no CSS escaping needed), \"title:ELEMID\" for the .ltx_title inside that id (arXiv headings), or a bare value as a CSS selector. highlight phrases are matched inside the target text with whitespace tolerance, skipping MathML annotations and spanning inline links/emphasis; each match is painted with a translucent highlighter and every matched line keeps readable text."
+        }
+      ],
+      "usage": "excerpt --id SESSION --spec '\u003cjson array | @file | -\u003e' [--out DIR] [--settle 500ms]",
+      "examples": [
+        "dw-browser excerpt --id paper --spec '[{\"name\":\"readout\",\"targets\":[\"id:S6.SS2.SSS0.Px1\"],\"highlight\":[\"Instant readouts have approximately 2–8% higher latency\"]}]'",
+        "dw-browser excerpt --id paper --spec @spec.json --out ./shots"
+      ],
+      "guidance": "Screenshot verb (read-only observation class): crops page regions as PNG images with a red box around the target union and translucent highlights over chosen phrases — built for quoting web originals (papers, docs) into markdown. It never mutates the page, needs no write grant or allow-host, and does not invalidate observation refs (a 20-image batch needs no re-observe). One full-page capture serves the whole spec. Unresolved targets and unmatched phrases are explicit per-entry business results in missing (exit stays 0); entries whose targets all miss produce no file. warnings reports fixed/sticky elements overlapping the box and images still loading. Elements taller than the viewport are captured whole. Style defaults: red 3px box, #ffe94d highlight, 14px crop margin; override per entry with box_style/highlight_color/crop_margin.",
       "command": "excerpt",
-      "summary": "Crop read-only annotated PNG excerpts from the open page",
+      "summary": "Crop read-only annotated PNG screenshot excerpts from the open page",
       "flags": [
         {
           "name": "--id",
@@ -803,16 +815,19 @@
           "value_type": "session-id"
         },
         {
+          "description": "JSON array of screenshot entries: [{name, targets:[\"id:X\"|\"title:X\"|css], highlight:[phrases], box_style?, highlight_color?, crop_margin?}]; or @file / - for stdin",
           "name": "--spec",
           "takes_value": true,
           "value_type": "string"
         },
         {
+          "description": "output directory for the PNGs (default: evidence/excerpts/\u003csession\u003e)",
           "name": "--out",
           "takes_value": true,
           "value_type": "string"
         },
         {
+          "description": "wait before collecting (fonts/images settle after load), e.g. 500ms",
           "name": "--settle",
           "takes_value": true,
           "value_type": "duration"
@@ -837,6 +852,141 @@
       ],
       "required": [
         "--id",
+        "--spec"
+      ],
+      "min_args": 0,
+      "max_args": 0,
+      "diagnostic": false
+    },
+    {
+      "arguments": [
+        {
+          "name": "--file",
+          "description": "Local PDF path, or http(s) URL downloaded through the fetch network boundary; office documents (docx/pptx/xlsx/odt…) are converted to PDF via libreoffice automatically."
+        }
+      ],
+      "usage": "pdf preview --file \u003cpath|url\u003e [--pages 1-3] [--dpi 150] [--out DIR] [--network-route system|direct]",
+      "examples": [
+        "dw-browser pdf preview --file paper.pdf --pages 1-3 --out ./pages",
+        "dw-browser pdf preview --file https://arxiv.org/pdf/2610.17309 --pages 1"
+      ],
+      "guidance": "Page-image verb (no browser session): renders chosen pages of a local or downloaded PDF (office documents convert first, kind reported in source.kind) as PNG files for reading/preview. Needs poppler-utils; office input additionally needs libreoffice (both fail loud with install hints when missing). Pages are 1-based; --pages takes comma-separated ranges like 2,5-7 clamped to the page count. Default dpi 150 (36–600). This is static rendering, not UI observation: it cannot prove interactive behavior.",
+      "command": "pdf preview",
+      "summary": "Render PDF or office-document pages as PNG images",
+      "flags": [
+        {
+          "description": "local PDF/office file path or http(s) URL",
+          "name": "--file",
+          "takes_value": true,
+          "value_type": "string"
+        },
+        {
+          "description": "1-based pages: \"3\" or \"1-3\" or \"2,5-7\" (default 1)",
+          "name": "--pages",
+          "takes_value": true,
+          "value_type": "string"
+        },
+        {
+          "description": "render resolution 36–600 (default 150)",
+          "name": "--dpi",
+          "takes_value": true,
+          "value_type": "integer"
+        },
+        {
+          "description": "output directory (default evidence/pdf-preview)",
+          "name": "--out",
+          "takes_value": true,
+          "value_type": "string"
+        },
+        {
+          "description": "URL download route: system (default, honors validated proxy config) or direct (ignores proxies, explicit choice)",
+          "name": "--network-route",
+          "takes_value": true,
+          "value_type": "string"
+        },
+        {
+          "name": "--output",
+          "takes_value": true,
+          "value_type": "string",
+          "infrastructure": "output"
+        },
+        {
+          "name": "--lock-wait",
+          "takes_value": true,
+          "value_type": "lock-duration",
+          "infrastructure": "locking"
+        },
+        {
+          "name": "--verbose",
+          "takes_value": false,
+          "infrastructure": "logging"
+        }
+      ],
+      "required": [
+        "--file"
+      ],
+      "min_args": 0,
+      "max_args": 0,
+      "diagnostic": false
+    },
+    {
+      "arguments": [
+        {
+          "name": "--spec",
+          "description": "JSON array; each entry becomes one cropped PNG screenshot from a PDF page: {name, page, phrases:[...], boxes:[[x0,y0,x1,y1],...] in PDF points (72dpi space, origin top-left), box_style:{color:\"#rrggbb\", width:int(render px)}, highlight_color:\"#rrggbb\", crop_margin:int(render px at 200 dpi)}. phrases are matched as a contiguous word sequence (NFKC-normalized, typographic dashes/quotes folded to ASCII, punctuation-affix tolerant) via poppler word bounding boxes — multi-line matches highlight each matched word. The red box is drawn around the union of boxes and matched words; crop adds a margin around it."
+        }
+      ],
+      "usage": "pdf excerpt --file \u003cpath|url\u003e --spec '\u003cjson array | @file | -\u003e' [--out DIR] [--network-route system|direct]",
+      "examples": [
+        "dw-browser pdf excerpt --file paper.pdf --spec '[{\"name\":\"latency-table\",\"page\":7,\"phrases\":[\"Single-pass decision readouts\"],\"boxes\":[[60,95,540,320]]}]'"
+      ],
+      "guidance": "Screenshot verb (static PDF counterpart of excerpt): crops annotated PNG excerpts from PDF pages — red box around the target union, translucent highlighter over matched phrases — for quoting paper originals into markdown when the HTML version is missing or loses figures. Same style defaults as excerpt (red 3px, #ffe94d, 14px margin). Word-level matching means a phrase must appear verbatim (after normalization); unmatched phrases are explicit per-entry results in missing (exit stays 0), entries with no match and no boxes produce no file. page_out_of_range is reported in warnings. Needs poppler-utils; office input additionally needs libreoffice. Rendering runs at a fixed 200 dpi for text sharpness. Not a UI observation.",
+      "command": "pdf excerpt",
+      "summary": "Crop annotated PNG screenshot excerpts from PDF pages by phrase or box",
+      "flags": [
+        {
+          "description": "local PDF/office file path or http(s) URL",
+          "name": "--file",
+          "takes_value": true,
+          "value_type": "string"
+        },
+        {
+          "description": "JSON array of entries: [{name, page, phrases?, boxes?, box_style?, highlight_color?, crop_margin?}]; or @file / - for stdin",
+          "name": "--spec",
+          "takes_value": true,
+          "value_type": "string"
+        },
+        {
+          "description": "output directory (default evidence/pdf-excerpts)",
+          "name": "--out",
+          "takes_value": true,
+          "value_type": "string"
+        },
+        {
+          "name": "--network-route",
+          "takes_value": true,
+          "value_type": "string"
+        },
+        {
+          "name": "--output",
+          "takes_value": true,
+          "value_type": "string",
+          "infrastructure": "output"
+        },
+        {
+          "name": "--lock-wait",
+          "takes_value": true,
+          "value_type": "lock-duration",
+          "infrastructure": "locking"
+        },
+        {
+          "name": "--verbose",
+          "takes_value": false,
+          "infrastructure": "logging"
+        }
+      ],
+      "required": [
+        "--file",
         "--spec"
       ],
       "min_args": 0,
@@ -3936,5 +4086,5 @@
     }
   ],
   "schema_version": "dw.capabilities.v2",
-  "version": "0.18.0-v2"
+  "version": "0.19.0-v2"
 }

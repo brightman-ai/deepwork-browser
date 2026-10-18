@@ -147,16 +147,16 @@ func runExcerptResult(args []string) (commandOutput CommandResult, resultErr err
 		spec := specs[i]
 		style := browser.DefaultExcerptStyle()
 		style.DPR = collected.DPR
-		if spec.Box != nil {
-			if spec.Box.Color != "" {
-				c, err := browser.ParseHexColor(spec.Box.Color)
+		if spec.BoxStyle != nil {
+			if spec.BoxStyle.Color != "" {
+				c, err := browser.ParseHexColor(spec.BoxStyle.Color)
 				if err != nil {
 					return commandOutput, commandError("validation", exitRunErr, err)
 				}
 				style.BoxColor = c
 			}
-			if spec.Box.Width > 0 {
-				style.BoxWidth = spec.Box.Width
+			if spec.BoxStyle.Width > 0 {
+				style.BoxWidth = spec.BoxStyle.Width
 			}
 		}
 		if spec.HighlightColor != "" {
@@ -250,9 +250,13 @@ func loadExcerptSpec(src string) ([]browser.ExcerptSpec, error) {
 	default:
 		raw = []byte(src)
 	}
+	var rawList []json.RawMessage
+	if err := json.Unmarshal(raw, &rawList); err != nil {
+		return nil, fmt.Errorf("%s", "dw-browser excerpt: spec must be a JSON array of {name,targets,highlight,...} entries")
+	}
 	var specs []browser.ExcerptSpec
 	if err := json.Unmarshal(raw, &specs); err != nil {
-		return nil, fmt.Errorf("dw-browser excerpt: spec must be a JSON array of {name,targets,highlight,...}: %w", err)
+		return nil, fmt.Errorf("dw-browser excerpt: spec entry is malformed: %w", err)
 	}
 	if len(specs) == 0 {
 		return nil, fmt.Errorf("%s", "dw-browser excerpt: spec array is empty")

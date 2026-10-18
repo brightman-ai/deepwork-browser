@@ -41,12 +41,12 @@ type ExcerptBoxStyle struct {
 // highlight 短语在 targets 解析出的元素并集文本内匹配：空白归一（\s+）、
 // 跳过 MathML annotation/annotation-xml/math 及 script/style、可跨内联节点。
 type ExcerptSpec struct {
-	Name           string          `json:"name"`
-	Targets        []string        `json:"targets"`
-	Highlight      []string        `json:"highlight,omitempty"`
-	Box            *ExcerptBoxStyle `json:"box,omitempty"`
-	HighlightColor string          `json:"highlight_color,omitempty"` // "#rrggbb"
-	CropMargin     *int            `json:"crop_margin,omitempty"`     // CSS px
+	Name           string           `json:"name"`
+	Targets        []string         `json:"targets"`
+	Highlight      []string         `json:"highlight,omitempty"`
+	BoxStyle       *ExcerptBoxStyle `json:"box_style,omitempty"`
+	HighlightColor string           `json:"highlight_color,omitempty"` // "#rrggbb"
+	CropMargin     *int             `json:"crop_margin,omitempty"`     // CSS px
 }
 
 // ExcerptRect 是页面坐标（CSS px）矩形。
