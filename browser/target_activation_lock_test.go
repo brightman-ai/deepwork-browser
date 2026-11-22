@@ -14,7 +14,7 @@ func TestTargetActivationWaitsForRuntimeInputWindow(t *testing.T) {
 	tracker := NewTargetTracker(context.Background())
 	tracker.SetBrowserInputKey(fmt.Sprintf("test-activation-%d-%d", os.Getpid(), time.Now().UnixNano()), 0)
 	tracker.inputLockWait = 0
-	held, err := tracker.acquireInputLock()
+	held, err := tracker.acquireInputLock("test.hold")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -34,7 +34,7 @@ func TestTargetActivationWaitsForRuntimeInputWindow(t *testing.T) {
 func TestTargetEventCollectionDoesNotWaitForInputLock(t *testing.T) {
 	tracker := NewTargetTracker(context.Background())
 	tracker.SetBrowserInputKey(fmt.Sprintf("test-event-collection-%d-%d", os.Getpid(), time.Now().UnixNano()), 0)
-	held, err := tracker.acquireInputLock()
+	held, err := tracker.acquireInputLock("test.hold")
 	if err != nil {
 		t.Fatal(err)
 	}

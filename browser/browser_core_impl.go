@@ -56,6 +56,7 @@ type browserOptions struct {
 	hasUA         bool
 	hasMode       bool
 	persona       *Persona // 可选:携带 Shell/Network/Env facet,运行时经 applyPersonaEmulation realize
+	persistent    bool     // 持久 profile:Close 时先正常退出再封存(见 WithPersistentProfile)
 }
 
 // BrowserOption 是可选参数函数类型。
@@ -103,6 +104,13 @@ func WithMode(mode BrowserMode) BrowserOption {
 		o.mode = mode
 		o.hasMode = true
 	}
+}
+
+// WithPersistentProfile 声明 profileID 对应的 profile 要在 Close 之后保留（登录态、Cookie）：
+// Close 先让 Chrome 正常退出（提交 Cookie），再把 profile 封存成 profile.vault；封存失败由 Close 返回。
+// 不加此选项的 profile 按临时处理：Close 直接强杀、不封存（调用方负责删除目录）。
+func WithPersistentProfile() BrowserOption {
+	return func(o *browserOptions) { o.persistent = true }
 }
 
 // WithStealth 启用反检测模式（只在 headless 下生效）。
@@ -365,6 +373,8 @@ type browserCoreImpl struct {
 	virtualDisplay     *VirtualDisplayManager
 	workspace          Workspace
 	ownerIdentityKey   IdentityKey
+	persistentProfile  bool // WithPersistentProfile:Close 时正常退出并封存
+	lastClose          *CoreCloseReceipt
 	chromeSim          *BrowserChromeSpec // 非 nil = browser chrome 仿真启用（open 定死；SSOT 经 preset）
 	vfNavArmed         bool               // 本进程已挂 frameNavigated → 视口事实重放监听（防重复挂）
 
@@ -444,7 +454,7 @@ func (impl *browserCoreImpl) liveTopURL(ctx context.Context) string {
 // 该 one-shot 入口必须与 BrowserPool 使用同一套三模式启动语义。所有 mode 都
 // 先用 BuildDetachedChromeArgs fork 本机 Chrome，再通过 RemoteAllocator attach，
 // 避免 CLI/测试入口绕过 CGVirtualDisplay/Workspace。
-func NewBrowserCore(ctx context.Context, profileID string, optFns ...BrowserOption) (BrowserCore, error) {
+func NewBrowserCore(ctx context.Context, profileID string, optFns ...BrowserOption) (_ BrowserCore, retErr error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -472,15 +482,38 @@ func NewBrowserCore(ctx context.Context, profileID string, optFns ...BrowserOpti
 		width, height = bopts.viewportW, bopts.viewportH
 	}
 
-	homeDir, _ := os.UserHomeDir()
-	baseDir := filepath.Join(homeDir, ".deepwork", "browser-cli")
-	profilePath := filepath.Join(baseDir, profileID)
+	profilePath := filepath.Join(browserCLIDefaultBase(), profileID)
 	ownerKey := IdentityKey("browser-core-" + NormalizeProfileID(profileID))
-	if err := RunStartupRecovery(profilePath, ownerKey); err != nil {
-		return nil, fmt.Errorf("browser: startup recovery: %w", err)
-	}
-	if err := os.MkdirAll(profilePath, 0755); err != nil {
-		return nil, fmt.Errorf("browser: create profile dir: %w", err)
+	var profileLaunch *ProfileLaunch
+	if bopts.documentProxy == "" {
+		// CLI profile：加密身份由清单决定；封存着就先解封。document 走自己的加固启动路径，不经这里。
+		var err error
+		profileLaunch, err = PrepareProfileForLaunch(profilePath, string(runtimeMode), bopts.persistent, func() error {
+			if err := RunStartupRecovery(profilePath, ownerKey); err != nil {
+				return fmt.Errorf("browser: startup recovery: %w", err)
+			}
+			return nil
+		})
+		if err != nil {
+			return nil, err
+		}
+		if bopts.persistent {
+			defer func() {
+				if retErr != nil { // 已经解封成明文：启动失败也要封回去
+					rc := SealPersistentProfile(profilePath)
+					log.Printf("[BROWSER] reseal after failed start profile=%s vault=%s err=%q", profileID, rc.Vault, rc.Error)
+				}
+			}()
+		}
+		// 启动租约：Chrome 就绪或启动失败后放。后注册、先执行——上面的重新封存要取同一把锁。
+		defer profileLaunch.Release()
+	} else {
+		if err := RunStartupRecovery(profilePath, ownerKey); err != nil {
+			return nil, fmt.Errorf("browser: startup recovery: %w", err)
+		}
+		if err := os.MkdirAll(profilePath, 0755); err != nil {
+			return nil, fmt.Errorf("browser: create profile dir: %w", err)
+		}
 	}
 	if err := PrepareProfileForControlledLaunch(profilePath); err != nil {
 		log.Printf("[BROWSER] profile launch hygiene failed profile=%s err=%v", profileID, err)
@@ -513,10 +546,12 @@ func NewBrowserCore(ctx context.Context, profileID string, optFns ...BrowserOpti
 		stealth:       bopts.stealth,
 		documentProxy: bopts.documentProxy,
 		documentOwner: bopts.documentOwner,
+		profileCrypto: profileCryptoOf(profileLaunch),
 	})
 	if err != nil {
 		return nil, err
 	}
+	profileLaunch.Release() // Chrome 已就绪：启动租约到此为止
 
 	allocCtx, allocCancel := chromedp.NewRemoteAllocator(ctx, launch.wsURL)
 	var browserCtx context.Context
@@ -623,6 +658,7 @@ func NewBrowserCore(ctx context.Context, profileID string, optFns ...BrowserOpti
 		virtualDisplay:    launch.virtualDisplay,
 		workspace:         launch.workspace,
 		ownerIdentityKey:  ownerKey,
+		persistentProfile: bopts.persistent && bopts.documentProxy == "",
 	}
 	if defaultPreset != nil {
 		impl.liveViewportDPR = defaultPreset.DeviceScaleFactor
@@ -645,6 +681,28 @@ func NewBrowserCore(ctx context.Context, profileID string, optFns ...BrowserOpti
 	}
 
 	return impl, nil
+}
+
+// newAttachedHeadedActivation 是 attached headed 会话的窗口内激活钩子:校验 display
+// 围栏(foreground guard)并激活 target,但绝不 Page.bringToFront(那会让 Chrome 窗口
+// 逃出 mux-host 的虚拟显示器)。
+//
+// 它由 enterInputDispatchWindowForRequest 在输入窗口内调用,w 是刚取得的持有凭证。
+// 这里只把凭证交给 tracker 的窗口内版本 —— 不取锁(同进程第二次 open 同一个 key 会
+// 自己等自己),guard 也只在 ActivateNoFrontIn 里调一次。
+func newAttachedHeadedActivation(tracker *TargetTracker) func(context.Context, *BrowserInputLock) (bool, error) {
+	return func(_ context.Context, w *BrowserInputLock) (bool, error) {
+		tracker.mu.RLock()
+		hasGuard := tracker.foregroundGuard != nil
+		tracker.mu.RUnlock()
+		if !hasGuard {
+			return false, fmt.Errorf("attached headed session has no foreground containment guard")
+		}
+		if err := tracker.ActivateNoFrontIn(w, tracker.ActiveTargetID(), "attached_input"); err != nil {
+			return false, err
+		}
+		return false, nil
+	}
 }
 
 // All owned, attached and pooled cores bind input serialization and capture
@@ -673,6 +731,14 @@ type controlledBrowserCoreLaunchOptions struct {
 	hasUserAgent  bool
 	touch         bool
 	stealth       bool
+	profileCrypto *ProfileManifest // 非 nil:加密相关启动参数只来自清单
+}
+
+func profileCryptoOf(l *ProfileLaunch) *ProfileManifest {
+	if l == nil {
+		return nil
+	}
+	return l.Manifest
 }
 
 type controlledBrowserCoreLaunchResult struct {
@@ -766,7 +832,7 @@ func launchControlledBrowserCoreChrome(ctx context.Context, opts controlledBrows
 		if opts.hasUserAgent {
 			userAgent = opts.userAgent
 		}
-		launchArgs = BuildDetachedChromeArgs(DetachedChromeLaunchOptions{DebugPort: cdpPort, ProfileDir: opts.profilePath, Width: width, Height: height, PresetID: opts.presetID, UserAgent: userAgent, Touch: opts.touch, Mode: mode, Stealth: opts.stealth})
+		launchArgs = BuildDetachedChromeArgs(DetachedChromeLaunchOptions{DebugPort: cdpPort, ProfileDir: opts.profilePath, Width: width, Height: height, PresetID: opts.presetID, UserAgent: userAgent, Touch: opts.touch, Mode: mode, Stealth: opts.stealth, ProfileCrypto: opts.profileCrypto})
 		for _, arg := range extraArgs {
 			launchArgs = appendChromeArgBeforeURL(launchArgs, arg)
 		}
@@ -1562,7 +1628,7 @@ func (impl *browserCoreImpl) DisableTakeover(ctx context.Context) error {
 
 // DispatchInput 在接管模式下转发输入事件。
 func (impl *browserCoreImpl) DispatchInput(ctx context.Context, event *InputEvent) error {
-	lock, err := AcquireBrowserInputLock(impl.runtimeInputKey, DefaultBrowserInputLockWait)
+	lock, err := AcquireBrowserInputLock(impl.runtimeInputKey, "takeover.dispatch", DefaultBrowserInputLockWait)
 	if err != nil {
 		return err
 	}
@@ -1599,8 +1665,18 @@ func (impl *browserCoreImpl) Close(ctx context.Context) error {
 		impl.allocCancel()
 		impl.allocCancel = nil
 	}
+	closeReceipt := &CoreCloseReceipt{}
+	impl.lastClose = closeReceipt
 	if impl.chromeHandle != nil {
-		_ = impl.chromeHandle.Kill()
+		// 持久 profile：先让 Chrome 正常退出（提交 Cookie），再强杀兜底；其余直接强杀（没有要保留的状态）。
+		policy := ChromeShutdownPolicy{Graceful: impl.persistentProfile}
+		if !impl.persistentProfile {
+			policy.Reason = "ephemeral-profile"
+		}
+		closeReceipt.Shutdown = ShutdownChrome(ChromeShutdownTarget{
+			PID: impl.chromeHandle.PID(), WSURL: impl.chromeHandle.WSURL(),
+			Done: impl.chromeHandle.Done(), Kill: impl.chromeHandle.Kill,
+		}, policy)
 		impl.chromeHandle = nil
 	} else if impl.chromePID > 0 {
 		_ = impl.launcher.Kill(impl.chromePID)
@@ -1623,7 +1699,33 @@ func (impl *browserCoreImpl) Close(ctx context.Context) error {
 		impl.workspace = nil
 	}
 
+	// Chrome 已经消失、显示已清理：持久 profile 现在才能封存。失败不吞——明文还在，由调用方知情。
+	if impl.persistentProfile && impl.profilePath != "" {
+		var receipt ProfileCryptoReceipt
+		if closeReceipt.Shutdown.Error != "" {
+			receipt = ProfileNotSealedChromeAlive(impl.profilePath, closeReceipt.Shutdown.Error) // Chrome 没确认退出：不封存
+		} else {
+			receipt = SealPersistentProfile(impl.profilePath)
+		}
+		closeReceipt.Profile = &receipt
+		if receipt.Error != "" {
+			return fmt.Errorf("browser: profile %s was not sealed (%s): %s", impl.profileID, receipt.ErrorKind, receipt.Error)
+		}
+	}
 	return nil
+}
+
+// CoreCloseReceipt 是 owned core 一次 Close 的回执：Chrome 是怎么退出的、持久 profile 封存得怎么样。
+type CoreCloseReceipt struct {
+	Shutdown ShutdownReceipt       `json:"shutdown"`
+	Profile  *ProfileCryptoReceipt `json:"profile,omitempty"`
+}
+
+// LastCloseReceipt 返回最近一次 Close 的回执（从未 Close 过返回 nil）。
+func (impl *browserCoreImpl) LastCloseReceipt() *CoreCloseReceipt {
+	impl.mu.RLock()
+	defer impl.mu.RUnlock()
+	return impl.lastClose
 }
 
 // EvalJS 在浏览器中执行 JavaScript 表达式。
@@ -1979,18 +2081,7 @@ func newBrowserCoreFromSession(ctx context.Context, wsURL string, targetID strin
 		if foregroundGuard != nil {
 			tracker.SetForegroundGuard(func(_ target.ID, _ string) error { return foregroundGuard() })
 		}
-		actEngine.targetActivation = func(context.Context) (bool, error) {
-			if foregroundGuard == nil {
-				return false, fmt.Errorf("attached headed session has no foreground containment guard")
-			}
-			if err := foregroundGuard(); err != nil {
-				return false, err
-			}
-			if err := tracker.activateBrowserTargetNoFront(tracker.ActiveTargetID(), "attached_input"); err != nil {
-				return false, err
-			}
-			return false, nil
-		}
+		actEngine.targetActivation = newAttachedHeadedActivation(tracker)
 	}
 	tracker.SetupListeners(browserCtx)
 

@@ -215,7 +215,7 @@ func fetchDocumentWithNetwork(parent context.Context, request DocumentRequest, n
 		return nil, err
 	}
 	profileID := "document-" + hex.EncodeToString(token[:])
-	profilePath := filepath.Join(home, ".deepwork", "browser-cli", profileID)
+	profilePath := filepath.Join(browserCLIDefaultBase(), profileID)
 	networkOptions.Timeout = r.Timeout
 	networkOptions.MaxBytes = r.MaxNetworkBytes
 	networkOptions.MaxRequests = 128

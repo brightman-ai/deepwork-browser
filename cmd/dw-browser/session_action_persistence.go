@@ -49,7 +49,7 @@ func executePersistedSessionAction(info *browser.SessionInfo, request browser.Ac
 	snap, outcome, report, dispatchErr := execute()
 	// Core dispatch has released its own input window. Reacquire the same
 	// runtime lock only for recording; this never raises or activates a target.
-	terminalLock, lockErr := acquireSessionRuntimeInputLock(info)
+	terminalLock, lockErr := acquireSessionRuntimeInputLock(info, "cli.action.record-outcome")
 	if lockErr != nil {
 		return uncertainSessionActionPersistence(info, fmt.Errorf("lock terminal outcome: %w", lockErr))
 	}

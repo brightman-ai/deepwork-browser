@@ -65,6 +65,13 @@ type BrowserMuxHostRequest struct {
 	UserAgent  string
 	Touch      bool
 	IdleTTL    time.Duration
+
+	// ManagedProfile：ProfileDir 是 CLI profile，由清单（.dw-profile.json）接管加密身份——
+	// 启动前保证清单存在、封存着就先解封，启动参数只从清单得出。false = 旧行为（BrowserPool 等）。
+	ManagedProfile bool
+	// PersistentProfile：会话结束后 profile 要保留。关闭时（正常 close、回收、host 退出）先让 Chrome
+	// 正常退出再封存；false（临时 profile，会随会话删除）关闭时直接强杀、不封存。隐含 ManagedProfile。
+	PersistentProfile bool
 }
 
 // BrowserMuxHostState is the on-disk manifest and loopback API response for a
@@ -110,6 +117,22 @@ type BrowserMuxHostState struct {
 	MuxHostAlive          bool                    `json:"browser_mux_host_alive"`
 	ChromeAlive           bool                    `json:"chrome_alive"`
 	ReusedExisting        bool                    `json:"-"`
+
+	// PersistentProfile / Profile：启动时的 profile 加密身份与封存状态回执（ManagedProfile 时才有）。
+	PersistentProfile bool                  `json:"persistent_profile,omitempty"`
+	Profile           *ProfileCryptoReceipt `json:"profile,omitempty"`
+	// Closed 只出现在 /shutdown?runtime_id= 的响应里：这个 runtime 是怎么关掉的、profile 封存得怎么样。
+	Closed *MuxHostCloseReceipt `json:"closed,omitempty"`
+	// BinaryVersion 是运行这个 host 的 dw-browser 可执行文件的版本（见 browser_mux_host_version.go）。
+	// 旧版 host 没有这个字段，读出来是空串。
+	BinaryVersion string `json:"binary_version,omitempty"`
+}
+
+// MuxHostCloseReceipt 是一次同步关闭的回执：先让 Chrome 消失（Shutdown），再封存持久 profile（Profile）。
+type MuxHostCloseReceipt struct {
+	Cause    string                `json:"cause"`
+	Shutdown ShutdownReceipt       `json:"shutdown"`
+	Profile  *ProfileCryptoReceipt `json:"profile,omitempty"` // 仅持久 profile
 }
 
 type BrowserRuntimeSummary struct {
@@ -157,6 +180,7 @@ type browserMuxHostRuntime struct {
 	ownsDisplay bool
 	profileDir  string
 	identityKey IdentityKey
+	persistent  bool // 持久 profile：关闭时正常退出并封存
 }
 
 func BrowserMuxHostRootDir() string {
@@ -177,6 +201,10 @@ func cleanupFailedBrowserMuxRuntime(runtimeID string) {
 	if err != nil || state == nil || state.ChromePID <= 0 {
 		return
 	}
+	if !PIDIsDebuggableChrome(state.ChromePID) {
+		log.Printf("[BROWSER-MUX-HOST] AUDIT: failed_runtime_pid_not_ours_skipped runtime_id=%s pid=%d", runtimeID, state.ChromePID)
+		return // 清单里的 PID 不是我们启动的 Chrome（已退出、号码被复用）：不发信号
+	}
 	KillChromeProcessGroup(state.ChromePID)
 }
 
@@ -196,9 +224,13 @@ func cleanupFailedBrowserMuxProfile(profileDir string) {
 	if json.Unmarshal(body, &marker) != nil || marker.ChromePID <= 0 {
 		return
 	}
-	log.Printf("[BROWSER-MUX-HOST] AUDIT: failed_runtime_profile_reap profile=%s chrome_pid=%d", profileDir, marker.ChromePID)
-	KillChromeProcessTree(marker.ChromePID)
-	KillChromeProcessGroupID(ChromeProcessGroupID(marker.ChromePID))
+	if !pidIsChromeOfProfile(marker.ChromePID, profileDir) {
+		log.Printf("[BROWSER-MUX-HOST] AUDIT: failed_runtime_profile_pid_not_ours_skipped profile=%s chrome_pid=%d", profileDir, marker.ChromePID)
+	} else {
+		log.Printf("[BROWSER-MUX-HOST] AUDIT: failed_runtime_profile_reap profile=%s chrome_pid=%d", profileDir, marker.ChromePID)
+		KillChromeProcessTree(marker.ChromePID)
+		KillChromeProcessGroupID(ChromeProcessGroupID(marker.ChromePID))
+	}
 	_ = os.Remove(filepath.Join(profileDir, deepworkProfileOwnerFile))
 }
 
@@ -539,13 +571,36 @@ func (s *browserMuxHostServer) ensureRuntime(ctx context.Context, req BrowserMux
 	return &state, nil
 }
 
-func (s *browserMuxHostServer) startRuntime(ctx context.Context, req BrowserMuxHostRequest) (*browserMuxHostRuntime, error) {
+func (s *browserMuxHostServer) startRuntime(ctx context.Context, req BrowserMuxHostRequest) (_ *browserMuxHostRuntime, retErr error) {
 	_ = ctx
 	totalStartedAt := time.Now()
-	log.Printf("[BROWSER-MUX-HOST] runtime_start muxhost_id=%s runtime_id=%s mode=%s profile_id=%s",
-		req.MuxHostID, req.RuntimeID, req.Mode, req.ProfileID)
+	log.Printf("[BROWSER-MUX-HOST] runtime_start muxhost_id=%s runtime_id=%s mode=%s profile_id=%s managed=%t persistent=%t",
+		req.MuxHostID, req.RuntimeID, req.Mode, req.ProfileID, req.ManagedProfile || req.PersistentProfile, req.PersistentProfile)
 	recoveryStartedAt := time.Now()
-	if err := RunStartupRecovery(req.ProfileDir, browserMuxHostIdentityKey(req)); err != nil {
+	managed := req.ManagedProfile || req.PersistentProfile
+	var launch *ProfileLaunch
+	if managed {
+		// 封存着就先解封 → 启动恢复 → 建目录 → 保证清单。顺序见 PrepareProfileForLaunch。
+		var err error
+		launch, err = PrepareProfileForLaunch(req.ProfileDir, string(req.Mode), req.PersistentProfile, func() error {
+			return RunStartupRecovery(req.ProfileDir, browserMuxHostIdentityKey(req))
+		})
+		if err != nil {
+			return nil, fmt.Errorf("browser_mux_host: prepare profile: %w", err)
+		}
+		if req.PersistentProfile {
+			// 已经解封成明文：启动再失败，也不能把明文留在盘上等下一次碰巧的 close。
+			defer func() {
+				if retErr != nil {
+					rc := SealPersistentProfile(req.ProfileDir)
+					log.Printf("[BROWSER-MUX-HOST] AUDIT: reseal_after_failed_start muxhost_id=%s runtime_id=%s vault=%s err=%q",
+						req.MuxHostID, req.RuntimeID, rc.Vault, rc.Error)
+				}
+			}()
+		}
+		// 启动租约：Chrome 就绪（或启动失败）之后放。后注册，所以先于上面的重新封存执行——封存要取同一把锁。
+		defer launch.Release()
+	} else if err := RunStartupRecovery(req.ProfileDir, browserMuxHostIdentityKey(req)); err != nil {
 		return nil, fmt.Errorf("browser_mux_host: startup recovery: %w", err)
 	}
 	log.Printf("[BROWSER-MUX-HOST] runtime_start_step step=startup_recovery muxhost_id=%s runtime_id=%s elapsed_ms=%d",
@@ -582,7 +637,7 @@ func (s *browserMuxHostServer) startRuntime(ctx context.Context, req BrowserMuxH
 			req.MuxHostID, req.RuntimeID, port, time.Since(portStartedAt).Milliseconds())
 	}
 	argsStartedAt := time.Now()
-	launchArgs := BuildDetachedChromeArgs(DetachedChromeLaunchOptions{
+	launchOpts := DetachedChromeLaunchOptions{
 		DebugPort:  port,
 		ProfileDir: req.ProfileDir,
 		Width:      req.Width,
@@ -591,7 +646,11 @@ func (s *browserMuxHostServer) startRuntime(ctx context.Context, req BrowserMuxH
 		UserAgent:  req.UserAgent,
 		Touch:      req.Touch,
 		Mode:       req.Mode,
-	})
+	}
+	if launch != nil {
+		launchOpts.ProfileCrypto = launch.Manifest // 加密身份只看清单，与模式无关
+	}
+	launchArgs := BuildDetachedChromeArgs(launchOpts)
 	if req.Mode == ModeHeaded && runtime.GOOS == "darwin" {
 		launchArgs = appendChromeArgBeforeURL(launchArgs, fmt.Sprintf("--window-position=%d,%d", posX, posY))
 	}
@@ -629,6 +688,7 @@ func (s *browserMuxHostServer) startRuntime(ctx context.Context, req BrowserMuxH
 		}
 		return nil, fmt.Errorf("browser_mux_host: write early owner marker: %w", err)
 	}
+	launch.Release() // Chrome 已就绪（CDP 可连）：启动租约到此为止
 	log.Printf("[BROWSER-MUX-HOST] runtime_start_step step=launch_chrome muxhost_id=%s runtime_id=%s chrome_pid=%d debug_port=%d elapsed_ms=%d",
 		req.MuxHostID, req.RuntimeID, handle.PID(), port, time.Since(chromeStartedAt).Milliseconds())
 	displayVerified := displayBackend == "none" || displayBackend == "xvfb" || displayBackend == "native"
@@ -703,6 +763,12 @@ func (s *browserMuxHostServer) startRuntime(ctx context.Context, req BrowserMuxH
 		IdleTTLMillis:         int64(req.IdleTTL / time.Millisecond),
 		MuxHostAlive:          true,
 		ChromeAlive:           true,
+		PersistentProfile:     req.PersistentProfile,
+		BinaryVersion:         BinaryVersion,
+	}
+	if launch != nil {
+		receipt := launch.Receipt
+		state.Profile = &receipt
 	}
 	rt := &browserMuxHostRuntime{
 		state:       state,
@@ -712,6 +778,7 @@ func (s *browserMuxHostServer) startRuntime(ctx context.Context, req BrowserMuxH
 		ownsDisplay: ownsDisplay,
 		profileDir:  req.ProfileDir,
 		identityKey: browserMuxHostIdentityKey(req),
+		persistent:  req.PersistentProfile,
 	}
 
 	if err := WriteProfileOwnerMarkerWithMetadata(req.ProfileDir, rt.identityKey, handle.PID(), port, ProfileOwnerMetadata{
@@ -758,8 +825,16 @@ func ReleaseBrowserMuxHost(ctx context.Context, state *BrowserMuxHostState) (*Br
 	return browserMuxHostRequest(ctx, state, http.MethodPost, "/release", browserMuxHostTouchRequest{})
 }
 
+// ShutdownBrowserMuxHost 关闭 state 指向的 runtime（state.RuntimeID 为空则关闭整个 host）。
+// runtime 的关闭是同步的：返回时 Chrome 已经消失、持久 profile 已经封存（或封存失败并写在回执里），
+// 回执在返回的 state.Closed。持久 profile 走"正常退出 → 封存"，临时 profile 直接强杀。
 func ShutdownBrowserMuxHost(ctx context.Context, state *BrowserMuxHostState) (*BrowserMuxHostState, error) {
 	return browserMuxHostRequest(ctx, state, http.MethodPost, "/shutdown", nil)
+}
+
+// ShutdownBrowserMuxHostForce 同上，但直接强杀 Chrome（不尝试正常退出）；持久 profile 照样尽力封存。
+func ShutdownBrowserMuxHostForce(ctx context.Context, state *BrowserMuxHostState) (*BrowserMuxHostState, error) {
+	return browserMuxHostRequest(ctx, state, http.MethodPost, "/shutdown?force=1", nil)
 }
 
 func NewBrowserMuxHostChromeHandle(state *BrowserMuxHostState) ChromeHandle {
@@ -790,7 +865,7 @@ func (h *browserMuxHostChromeHandle) Wait() error {
 func (h *browserMuxHostChromeHandle) Kill() error {
 	ctx, cancel := context.WithTimeout(context.Background(), BrowserMuxHostControlRequestTimeout)
 	defer cancel()
-	_, err := ShutdownBrowserMuxHost(ctx, &h.state)
+	_, err := ShutdownBrowserMuxHostForce(ctx, &h.state) // Kill 的语义就是强杀
 	h.waitForDead(BrowserMuxHostControlRequestTimeout)
 	h.doneOnce.Do(func() { close(h.doneCh) })
 	return err
@@ -914,12 +989,31 @@ func tryAttachBrowserMuxHost(ctx context.Context, req BrowserMuxHostRequest) (*B
 	health, err := BrowserMuxHostHealth(ctx, state)
 	if err != nil {
 		log.Printf("[BROWSER-MUX-HOST] AUDIT: stale_muxhost_unresponsive muxhost_id=%s pid=%d err=%v", req.MuxHostID, state.MuxHostPID, err)
+		// manifest 里的 PID 可能已被系统分给不相干的程序：只对命令行确实是我们自己启动的进程发信号，
+		// 对不上就一个信号都不发，并把原因明明白白报出来（而不是悄悄跳过）。
+		if idErr := requireBrowserMuxHostPID(state.MuxHostPID, req.MuxHostID); idErr != nil {
+			log.Printf("[BROWSER-MUX-HOST] AUDIT: stale_muxhost_pid_not_ours_refused muxhost_id=%s pid=%d", req.MuxHostID, state.MuxHostPID)
+			return nil, false, fmt.Errorf("%w (the BrowserMuxHost manifest %s is stale and its control endpoint is unreachable: %v)",
+				idErr, BrowserMuxHostManifestPath(req.MuxHostID), err)
+		}
 		killAndWait(state.MuxHostPID, ProfileOwnerMuxHostKillGrace)
 		for _, rt := range state.Runtimes {
 			if rt.ChromePID > 0 && isPIDAlive(rt.ChromePID) {
-				killAndWait(rt.ChromePID, ProfileOwnerMuxHostKillGrace)
+				if pidIsChromeWithDebugPort(rt.ChromePID) {
+					killAndWait(rt.ChromePID, ProfileOwnerMuxHostKillGrace)
+				} else {
+					log.Printf("[BROWSER-MUX-HOST] AUDIT: stale_runtime_pid_not_ours_skipped muxhost_id=%s pid=%d", req.MuxHostID, rt.ChromePID)
+				}
 			}
 		}
+		return nil, false, nil
+	}
+	// 一条规则：host 版本 ≠ 本 CLI 版本就不复用（空闲则请它退出、由调用方用当前二进制重新拉起；有会话则拒绝）。
+	reusable, err := checkMuxHostVersion(ctx, state, health)
+	if err != nil {
+		return nil, false, err
+	}
+	if !reusable {
 		return nil, false, nil
 	}
 	runtimeState, err := ensureBrowserRuntimeOnMuxHost(ctx, health, req)
@@ -1222,6 +1316,12 @@ func browserMuxHostServeArgs(req BrowserMuxHostRequest) []string {
 	if req.IdentityKey != "" {
 		args = append(args, "--identity-key", string(req.IdentityKey))
 	}
+	if req.ManagedProfile || req.PersistentProfile {
+		args = append(args, "--managed-profile")
+	}
+	if req.PersistentProfile {
+		args = append(args, "--persistent-profile")
+	}
 	return args
 }
 
@@ -1522,16 +1622,16 @@ func (s *browserMuxHostServer) httpHandler() http.Handler {
 		}
 		runtimeID := runtimeIDFromRequest(r)
 		if runtimeID != "" {
-			rt, err := s.runtime(runtimeID)
+			// 同步：Chrome 消失、持久 profile 封存完之后才响应。过去是先回响应、再异步关闭，
+			// close 返回时 Chrome 往往还没退出，调用方也就无从知道状态有没有落盘。
+			force := r.URL.Query().Get("force") == "1"
+			state, closed, err := s.closeRuntimeWith(runtimeID, "api_shutdown", force)
 			if err != nil {
 				http.Error(w, err.Error(), http.StatusNotFound)
 				return
 			}
-			state := rt.stateCopy()
+			state.Closed = closed
 			writeJSON(w, state)
-			go func() {
-				_, _ = s.closeRuntime(runtimeID, "api_shutdown")
-			}()
 			return
 		}
 		state := s.snapshot(true)
@@ -1596,6 +1696,7 @@ func (s *browserMuxHostServer) snapshotLocked(includeToken bool) BrowserMuxHostS
 		IdleTTLMillis:  int64(s.idleTTL / time.Millisecond),
 		MuxHostAlive:   true,
 		DisplayBackend: "muxhost",
+		BinaryVersion:  BinaryVersion,
 	}
 	if includeToken {
 		state.Token = s.token
@@ -1748,23 +1849,30 @@ func (s *browserMuxHostServer) shouldIdleExit() bool {
 }
 
 func (s *browserMuxHostServer) closeRuntime(runtimeID string, cause string) (*BrowserMuxHostState, error) {
+	state, _, err := s.closeRuntimeWith(runtimeID, cause, false)
+	return state, err
+}
+
+// closeRuntimeWith 把 runtime 从表里摘掉，然后同步关闭它：让 Chrome 消失（持久 profile 先尝试正常退出，
+// 临时 profile 与 force 直接强杀），再封存持久 profile。返回关闭前的状态与回执。
+func (s *browserMuxHostServer) closeRuntimeWith(runtimeID string, cause string, force bool) (*BrowserMuxHostState, *MuxHostCloseReceipt, error) {
 	runtimeID = sanitizeBrowserRuntimeID(runtimeID)
 	s.mu.Lock()
 	rt := s.runtimes[runtimeID]
 	if rt == nil {
 		s.mu.Unlock()
-		return nil, fmt.Errorf("browser runtime not found: %s", runtimeID)
+		return nil, nil, fmt.Errorf("browser runtime not found: %s", runtimeID)
 	}
 	delete(s.runtimes, runtimeID)
 	s.lastTouchedAt = time.Now().UTC().Format(time.RFC3339Nano)
 	_ = s.writeHostManifestLocked()
 	s.mu.Unlock()
 
-	state := rt.snapshot()
-	log.Printf("[BROWSER-MUX-HOST] AUDIT: runtime_cleanup_requested muxhost_id=%s runtime_id=%s cause=%s chrome_pid=%d",
-		s.hostID, runtimeID, cause, state.ChromePID)
-	rt.cleanup()
-	return &state, nil
+	state := rt.stateCopy()
+	log.Printf("[BROWSER-MUX-HOST] AUDIT: runtime_cleanup_requested muxhost_id=%s runtime_id=%s cause=%s chrome_pid=%d force=%t persistent=%t",
+		s.hostID, runtimeID, cause, state.ChromePID, force, rt.persistent)
+	closed := rt.shutdown(cause, force)
+	return &state, &closed, nil
 }
 
 func (s *browserMuxHostServer) cleanupAll() {
@@ -1899,11 +2007,35 @@ func (rt *browserMuxHostRuntime) shouldIdleExit() bool {
 	return time.Since(last) >= ttl
 }
 
+// cleanup 按默认策略关闭 runtime（调用方不关心回执：host 退出、复用校验失败重建等）。
 func (rt *browserMuxHostRuntime) cleanup() {
+	rt.shutdown("cleanup", false)
+}
+
+// shutdown 是 runtime 关闭的唯一实现：
+//
+//	Chrome：持久 profile 且非 force → Browser.close → SIGTERM → SIGKILL；否则直接 SIGKILL
+//	随后：   owner 标记、虚拟显示、runtime 清单
+//	最后：   持久 profile 在 Chrome 消失之后封存（force 也封存，尽力而为）
+//
+// 封存放在显示清理之后，是为了不让一个慢的封存占着虚拟显示；放在 Chrome 消失之后，是封存的硬前提。
+func (rt *browserMuxHostRuntime) shutdown(cause string, force bool) MuxHostCloseReceipt {
 	state := rt.stateCopy()
 	log.Printf("[BROWSER-MUX-HOST] AUDIT: runtime_cleanup_start muxhost_id=%s runtime_id=%s pid=%d chrome_pid=%d", state.MuxHostID, state.RuntimeID, os.Getpid(), state.ChromePID)
+	closed := MuxHostCloseReceipt{Cause: cause}
+	policy := ChromeShutdownPolicy{Graceful: rt.persistent && !force}
+	switch {
+	case force:
+		policy.Reason = "forced"
+	case !rt.persistent:
+		policy.Reason = "ephemeral-profile"
+	}
 	if rt.handle != nil {
-		_ = rt.handle.Kill()
+		closed.Shutdown = ShutdownChrome(ChromeShutdownTarget{
+			PID: rt.handle.PID(), WSURL: rt.handle.WSURL(), Done: rt.handle.Done(), Kill: rt.handle.Kill,
+		}, policy)
+	} else {
+		closed.Shutdown = ShutdownReceipt{Mode: ShutdownGone}
 	}
 	if rt.profileDir != "" {
 		RemoveProfileOwnerMarker(rt.profileDir, rt.identityKey)
@@ -1911,8 +2043,21 @@ func (rt *browserMuxHostRuntime) cleanup() {
 	if rt.ownsDisplay {
 		cleanupBrowserMuxHostDisplay(rt.virtualDisp, rt.displayMgr)
 	}
+	if rt.persistent && rt.profileDir != "" {
+		var receipt ProfileCryptoReceipt
+		if closed.Shutdown.Error != "" {
+			receipt = ProfileNotSealedChromeAlive(rt.profileDir, closed.Shutdown.Error) // Chrome 没确认退出：不封存
+		} else {
+			receipt = SealPersistentProfile(rt.profileDir)
+		}
+		closed.Profile = &receipt
+		log.Printf("[BROWSER-MUX-HOST] AUDIT: runtime_profile_seal muxhost_id=%s runtime_id=%s vault=%s error_kind=%s",
+			state.MuxHostID, state.RuntimeID, receipt.Vault, receipt.ErrorKind)
+	}
 	removeBrowserRuntimeManifest(state.RuntimeID)
-	log.Printf("[BROWSER-MUX-HOST] AUDIT: runtime_cleanup_done muxhost_id=%s runtime_id=%s", state.MuxHostID, state.RuntimeID)
+	log.Printf("[BROWSER-MUX-HOST] AUDIT: runtime_cleanup_done muxhost_id=%s runtime_id=%s shutdown=%s shutdown_ms=%d",
+		state.MuxHostID, state.RuntimeID, closed.Shutdown.Mode, closed.Shutdown.Ms)
+	return closed
 }
 
 func browserMuxHostRequest(ctx context.Context, state *BrowserMuxHostState, method string, path string, payload interface{}) (*BrowserMuxHostState, error) {
@@ -1949,6 +2094,9 @@ func browserMuxHostRequest(ctx context.Context, state *BrowserMuxHostState, meth
 	timeout := BrowserMuxHostControlRequestTimeout
 	if path == "/runtime/ensure" {
 		timeout = BrowserMuxHostReadyTimeout
+	} else if strings.HasPrefix(path, "/shutdown") {
+		// runtime 的关闭是同步的：正常退出 + 封存比普通控制请求慢得多。
+		timeout = BrowserMuxHostShutdownRequestTimeout
 	}
 	resp, err := (&http.Client{Timeout: timeout}).Do(req)
 	if err != nil {

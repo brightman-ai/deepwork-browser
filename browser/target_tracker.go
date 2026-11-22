@@ -847,12 +847,25 @@ func (tt *TargetTracker) registerKnownTarget(targetID target.ID, url string) (*t
 // sitting on CGVirtualDisplay to escape to the main Space.
 // Use for programmatic-nav liveview switches where we want the screencast to
 // follow the AI navigation without disrupting the user's desktop.
+//
+// 窗口外入口:自己取输入窗口,再委托给窗口内版本 ActivateNoFrontIn。
 func (tt *TargetTracker) activateBrowserTargetNoFront(targetID target.ID, reason string) error {
-	lock, err := tt.acquireInputLock()
+	lock, err := tt.acquireInputLock("tracker.activate")
 	if err != nil {
 		return err
 	}
 	defer lock.Release()
+	return tt.ActivateNoFrontIn(lock, targetID, reason)
+}
+
+// ActivateNoFrontIn 是 activateBrowserTargetNoFront 的窗口内版本:调用方已持有输入
+// 窗口(如 action 派发窗口里的 headed 附着激活),凭证 w 显式传入。
+// 本函数先 Covers 校验,绝不再取锁 —— 同进程第二次取同一个 key 会自己等自己。
+// foreground guard 只在这里调一次。
+func (tt *TargetTracker) ActivateNoFrontIn(w *BrowserInputLock, targetID target.ID, reason string) error {
+	if err := w.Covers(tt.BrowserInputKey()); err != nil {
+		return err
+	}
 	tt.mu.RLock()
 	guard := tt.foregroundGuard
 	tt.mu.RUnlock()
@@ -892,12 +905,21 @@ func (tt *TargetTracker) activateBrowserTargetNoFrontLocked(targetID target.ID, 
 	return nil
 }
 
+// activateBrowserTarget 窗口外入口:自己取输入窗口,再委托给窗口内版本 ActivateIn。
 func (tt *TargetTracker) activateBrowserTarget(targetID target.ID, reason string) error {
-	lock, err := tt.acquireInputLock()
+	lock, err := tt.acquireInputLock("tracker.activate")
 	if err != nil {
 		return err
 	}
 	defer lock.Release()
+	return tt.ActivateIn(lock, targetID, reason)
+}
+
+// ActivateIn 是 activateBrowserTarget 的窗口内版本(凭证规则同 ActivateNoFrontIn)。
+func (tt *TargetTracker) ActivateIn(w *BrowserInputLock, targetID target.ID, reason string) error {
+	if err := w.Covers(tt.BrowserInputKey()); err != nil {
+		return err
+	}
 
 	if targetID == "" {
 		return nil
@@ -1681,7 +1703,7 @@ func (tt *TargetTracker) CloseTarget(targetID string) error {
 	// 事件或本地 tracker 收敛为完成条件，不再反向调用 Target.getTargets 轮询。
 	closeResult := make(chan error, 1)
 	go func() {
-		lock, err := tt.acquireInputLock()
+		lock, err := tt.acquireInputLock("tracker.close-target")
 		if err != nil {
 			closeResult <- err
 			return
@@ -1740,7 +1762,7 @@ func (tt *TargetTracker) CreateTab(url string) (string, error) {
 	logger.Info(targetLogContext(), "create tab requested", "url", url)
 
 	// Target.createTarget 是 Browser Target Graph 操作，返回即得到 Chrome SSoT targetID。
-	lock, err := tt.acquireInputLock()
+	lock, err := tt.acquireInputLock("tracker.create-tab")
 	if err != nil {
 		return "", err
 	}
@@ -1818,11 +1840,13 @@ func (tt *TargetTracker) bindBrowserInputKey(key string) {
 	tt.inputLockWait = DefaultBrowserInputLockWait
 }
 
-func (tt *TargetTracker) acquireInputLock() (*BrowserInputLock, error) {
+// acquireInputLock 是窗口外入口的取锁点;op 只用于诊断。
+// 窗口内的代码必须走 ActivateIn / ActivateNoFrontIn 这类接收凭证的版本。
+func (tt *TargetTracker) acquireInputLock(op string) (*BrowserInputLock, error) {
 	tt.mu.RLock()
 	key, wait := tt.inputKey, tt.inputLockWait
 	tt.mu.RUnlock()
-	return AcquireBrowserInputLock(key, wait)
+	return AcquireBrowserInputLock(key, op, wait)
 }
 
 // BrowserInputKey returns the canonical runtime key also used by Human input.

@@ -13,11 +13,11 @@ func TestAttachedHeadedActivationGuardFailsClosed(t *testing.T) {
 	called := 0
 	guardErr := errors.New("display containment lost")
 	e := newActionEngine(newSnapshotEngine())
-	e.targetActivation = func(context.Context) (bool, error) {
+	e.targetActivation = func(context.Context, *BrowserInputLock) (bool, error) {
 		called++
 		return false, guardErr
 	}
-	brought, err := e.targetActivation(context.Background())
+	brought, err := e.targetActivation(context.Background(), nil)
 	if !errors.Is(err, guardErr) || brought {
 		t.Fatalf("guard result = brought=%t err=%v", brought, err)
 	}
@@ -28,8 +28,8 @@ func TestAttachedHeadedActivationGuardFailsClosed(t *testing.T) {
 
 func TestAttachedHeadedActivationGuardDoesNotReportBringToFront(t *testing.T) {
 	e := newActionEngine(newSnapshotEngine())
-	e.targetActivation = func(context.Context) (bool, error) { return false, nil }
-	brought, err := e.targetActivation(context.Background())
+	e.targetActivation = func(context.Context, *BrowserInputLock) (bool, error) { return false, nil }
+	brought, err := e.targetActivation(context.Background(), nil)
 	if err != nil || brought {
 		t.Fatalf("attached no-front activation = brought=%t err=%v", brought, err)
 	}

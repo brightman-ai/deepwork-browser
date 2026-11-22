@@ -17,6 +17,7 @@ import (
 var sharedVDM *VirtualDisplayManager
 
 func TestMain(m *testing.M) {
+	cleanupProfiles := useHermeticProfileEnv()
 	sharedVDM = &VirtualDisplayManager{}
 	// Only display-specific tests call requireDisplay/Ensure. Unit and headless
 	// runs must not create a display or reconfigure WindowServer in TestMain.
@@ -24,6 +25,7 @@ func TestMain(m *testing.M) {
 	code := m.Run()
 
 	_ = sharedVDM.Close()
+	cleanupProfiles()
 	os.Exit(code)
 }
 

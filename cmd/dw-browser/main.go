@@ -29,7 +29,9 @@ import (
 	"github.com/chromedp/chromedp"
 )
 
-const version = "0.19.0-v2"
+const version = "0.20.0-v2"
+
+func init() { browser.BinaryVersion = version } // mux host 版本一致性：host 与 CLI 必须同版本
 
 // ActionEngine returns its own explicit error at 15s. The CLI watchdog is a
 // slightly wider process-level fence covering every BrowserCore implementation.
@@ -634,7 +636,7 @@ func runSessionListResult(args []string) (commandOutput CommandResult, resultErr
 }
 
 // runProfile handles `dw-browser profile list|import|prune`.
-// profile list   → lists profiles under ~/.deepwork/browser-cli/
+// profile list   → lists profiles under ~/.deepwork/browser-cli/ with their os_crypt / vault state
 // profile import <src> [--name <name>] → copies src dir into the profile dir
 // profile prune --ephemeral [--dry-run] [--min-age 30m] [--reap-orphaned] → removes stale temp sessions
 // --reap-orphaned also kills any still-alive Chrome left over from a task-/
@@ -651,10 +653,13 @@ func runProfileResult(args []string) (commandOutput CommandResult, resultErr err
 	}
 	switch args[0] {
 	case "list":
+		// os_crypt / vault / protection / error come from the profile's manifest; nothing is classified,
+		// unsealed or changed by listing (no key is read either).
 		type profileEntry struct {
 			Name   string  `json:"name"`
 			Path   string  `json:"path"`
 			SizeMB float64 `json:"size_mb"`
+			browser.ProfileState
 		}
 		profiles := []profileEntry{}
 		for _, profilesDir := range browser.BrowserCLIProfileRoots("") {
@@ -684,9 +689,10 @@ func runProfileResult(args []string) (commandOutput CommandResult, resultErr err
 					return nil
 				})
 				profiles = append(profiles, profileEntry{
-					Name:   e.Name(),
-					Path:   p,
-					SizeMB: float64(sizeBytes) / (1024 * 1024),
+					Name:         e.Name(),
+					Path:         p,
+					SizeMB:       float64(sizeBytes) / (1024 * 1024),
+					ProfileState: browser.DescribeProfile(p),
 				})
 			}
 		}
@@ -2156,7 +2162,7 @@ func runEvalResult(args []string) (commandOutput CommandResult, resultErr error)
 		return commandOutput, commandError("runtime", exitRunErr, connectErr)
 	}
 
-	lock, lockErr := acquireSessionRuntimeInputLock(sessionInfo)
+	lock, lockErr := acquireSessionRuntimeInputLock(sessionInfo, "cli.eval")
 	if lockErr != nil {
 		closeSessionCore(impl)
 		return commandOutput, commandError("validation", exitRunErr, lockErr)
@@ -2494,10 +2500,19 @@ func runOpenResult(args []string) (commandOutput CommandResult, resultErr error)
 	// Typed returns and panic unwinding run the deferred cleanup until the
 	// persisted session takes ownership of the launched resources.
 	cleanup := func() {}
-	defer func() { cleanup() }()
+	// settleProfile runs after cleanup on a failed open: a persistent profile that open had already unsealed
+	// must not stay plaintext on disk. Disarmed together with cleanup once the session owns everything.
+	settleProfile := func() {}
+	defer func() { cleanup(); settleProfile() }()
 	exit := func(code int) (CommandResult, error) {
 		return finishCommand(commandOutput, code)
 	}
+	// A profile that outlives the session is "persistent": close lets Chrome exit
+	// normally (so cookies are committed) and seals the directory. Everything else
+	// is deleted with the session and never needs either.
+	ephemeralProfile := flags.ephemeral || flags.isolation == browser.SessionIsolationEphemeral
+	persistentProfile := !ephemeralProfile
+
 	// removeEphemeralProfileDirIfNeeded reclaims profileDir immediately
 	// instead of leaving it for the next scheduled prune pass (up to
 	// DefaultCLIEphemeralPruneMinAge later) — we already know for certain
@@ -2506,10 +2521,25 @@ func runOpenResult(args []string) (commandOutput CommandResult, resultErr error)
 	// (via browser.KillChromeProcessGroup, not a single-PID kill — a plain
 	// proc.Kill() only kills the leader and leaves zygote/renderer/gpu-
 	// process/crashpad_handler alive, which keep writing into profileDir and
-	// silently resurrect it seconds after RemoveAll reports success).
+	// silently resurrect it seconds after the removal reports success).
+	//
+	// The removal goes through the list → validate → delete funnel, bounded to
+	// the CLI profile root; a persistent profile that open had already unsealed
+	// is sealed again, so a failed open never leaves plaintext behind.
+	var profileLaunch *browser.ProfileLaunch // set below for every mode except headed (the BrowserMuxHost prepares those)
+	profileSettled := false
 	removeEphemeralProfileDirIfNeeded := func() {
-		if flags.ephemeral || flags.isolation == browser.SessionIsolationEphemeral {
-			_ = os.RemoveAll(profileDir)
+		if profileSettled {
+			return
+		}
+		profileSettled = true
+		profileLaunch.Release() // the launch lease must be gone before anything seals the same directory
+		if ephemeralProfile {
+			if err := browser.RemoveCLIProfileDir(profileDir); err != nil {
+				fmt.Fprintf(os.Stderr, "dw-browser open: cleanup: could not remove temporary profile %s: %v\n", profileDir, err)
+			}
+		} else if rc := browser.SealPersistentProfile(profileDir); rc.Error != "" {
+			fmt.Fprintf(os.Stderr, "dw-browser open: cleanup: profile %s was not sealed (%s): %s\n", profileDir, rc.ErrorKind, rc.Error)
 		}
 	}
 
@@ -2519,13 +2549,34 @@ func runOpenResult(args []string) (commandOutput CommandResult, resultErr error)
 	//   3. 损坏 → {profileDir}.broken/{UTC ts}/ 隔离 (Chrome 自动重建空 profile)
 	// 注: 跨进程语义 (SaveSession/LoadSession) 仍归 session_manager; recovery 仅是低层共享.
 	ownerKey := browser.IdentityKey("dw-cli-" + browserSessionID)
+	// headed: the BrowserMuxHost owns recovery and profile preparation (it is the one that starts Chrome).
+	// Every other mode: unseal if sealed → recovery → manifest. Launch args below come from the manifest only.
 	if mode != browser.ModeHeaded {
-		if err := browser.RunStartupRecovery(profileDir, ownerKey); err != nil {
-			commandOutput.note("dw-browser open: startup recovery: %v\n", err)
+		var err error
+		profileLaunch, err = browser.PrepareProfileForLaunch(profileDir, string(mode), persistentProfile, func() error {
+			return browser.RunStartupRecovery(profileDir, ownerKey)
+		})
+		if err != nil {
+			commandOutput.note("dw-browser open: prepare profile: %v\n", err)
 			return exit(exitRunErr)
 		}
 	}
 
+	_, statErr := os.Lstat(profileDir)
+	profileDirExisted := statErr == nil
+	switch {
+	case mode == browser.ModeHeaded:
+		// The BrowserMuxHost prepares and seals headed profiles itself (including after its own failed start), so a failed
+		// open only has to take back a directory this very call created — never an existing profile.
+		settleProfile = func() {
+			if !profileDirExisted {
+				_ = browser.RemoveCLIProfileDir(profileDir)
+			}
+		}
+	case persistentProfile:
+		// From here a failed open must put the profile back: unsealed plaintext is not left behind.
+		settleProfile = removeEphemeralProfileDirIfNeeded
+	}
 	if err := os.MkdirAll(profileDir, 0755); err != nil {
 		commandOutput.note("dw-browser open: mkdir profile: %v\n", err)
 		return exit(exitRunErr)
@@ -2564,7 +2615,7 @@ func runOpenResult(args []string) (commandOutput CommandResult, resultErr error)
 		return exit(exitRunErr)
 	}
 
-	chromeArgs := browser.BuildDetachedChromeArgs(browser.DetachedChromeLaunchOptions{
+	chromeLaunchOpts := browser.DetachedChromeLaunchOptions{
 		DebugPort:  port,
 		ProfileDir: profileDir,
 		Width:      width,
@@ -2574,7 +2625,11 @@ func runOpenResult(args []string) (commandOutput CommandResult, resultErr error)
 		Touch:      flags.personaTouch,
 		Mode:       mode,
 		Stealth:    flags.stealth,
-	})
+	}
+	if profileLaunch != nil {
+		chromeLaunchOpts.ProfileCrypto = profileLaunch.Manifest // os_crypt identity comes from the profile, not the mode
+	}
+	chromeArgs := browser.BuildDetachedChromeArgs(chromeLaunchOpts)
 
 	// Mode-conditional Chrome launch (DDC-I-21, BRR-12, BRR-MODE-1):
 	//   - visible → Workspace.LaunchChromeInSpace (D1 序列保证窗口绑定到隔离 Space)
@@ -2588,25 +2643,27 @@ func runOpenResult(args []string) (commandOutput CommandResult, resultErr error)
 	)
 	if mode == browser.ModeHeaded {
 		hostReq := browser.BrowserMuxHostRequest{
-			BrowserSessionID: browserSessionID,
-			SessionKind:      flags.sessionKind,
-			OwnerPID:         os.Getpid(),
-			Goal:             flags.goal,
-			Owner:            flags.owner,
-			Isolation:        flags.isolation,
-			ServiceName:      flags.serviceName,
-			AccountID:        flags.accountID,
-			ChromePath:       chromePath,
-			ProfileID:        profileID,
-			ProfileDir:       profileDir,
-			DebugPort:        port,
-			Mode:             mode,
-			PresetID:         sessionPresetID,
-			PersonaID:        sessionPersonaID,
-			Width:            width,
-			Height:           height,
-			UserAgent:        flags.userAgent,
-			Touch:            flags.personaTouch,
+			BrowserSessionID:  browserSessionID,
+			SessionKind:       flags.sessionKind,
+			OwnerPID:          os.Getpid(),
+			Goal:              flags.goal,
+			Owner:             flags.owner,
+			Isolation:         flags.isolation,
+			ServiceName:       flags.serviceName,
+			AccountID:         flags.accountID,
+			ChromePath:        chromePath,
+			ProfileID:         profileID,
+			ProfileDir:        profileDir,
+			DebugPort:         port,
+			Mode:              mode,
+			PresetID:          sessionPresetID,
+			PersonaID:         sessionPersonaID,
+			Width:             width,
+			Height:            height,
+			UserAgent:         flags.userAgent,
+			Touch:             flags.personaTouch,
+			ManagedProfile:    true,
+			PersistentProfile: persistentProfile,
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		var err error
@@ -2626,8 +2683,9 @@ func runOpenResult(args []string) (commandOutput CommandResult, resultErr error)
 		// closes *this* runtime, not the whole daemon or any other session
 		// attached to it.
 		cleanup = func() {
-			shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 8*time.Second)
-			_, _ = browser.ShutdownBrowserMuxHost(shutdownCtx, hostState)
+			// A failed open has nothing worth a graceful exit: force. The host still seals a persistent profile.
+			shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), browser.BrowserMuxHostShutdownCallerTimeout)
+			_, _ = browser.ShutdownBrowserMuxHostForce(shutdownCtx, hostState)
 			shutdownCancel()
 			removeEphemeralProfileDirIfNeeded()
 		}
@@ -2658,6 +2716,7 @@ func runOpenResult(args []string) (commandOutput CommandResult, resultErr error)
 		cleanup = func() {
 			prevCleanup()
 			browser.KillChromeProcessGroup(chromePID)
+			browser.WaitForProcessExit(chromePID, 5*time.Second) // sealing / removing a directory a live Chrome still writes is refused
 			removeEphemeralProfileDirIfNeeded()
 		}
 	} else {
@@ -2669,6 +2728,7 @@ func runOpenResult(args []string) (commandOutput CommandResult, resultErr error)
 		}
 		cleanup = func() {
 			browser.KillChromeProcessGroup(chromePID)
+			browser.WaitForProcessExit(chromePID, 5*time.Second)
 			removeEphemeralProfileDirIfNeeded()
 		}
 		wsURL, err = browser.WaitForChromeReady(port, 120*time.Second)
@@ -2680,6 +2740,7 @@ func runOpenResult(args []string) (commandOutput CommandResult, resultErr error)
 			chromePID = findChromePIDForDebugPort(port)
 		}
 	}
+	profileLaunch.Release() // Chrome is ready: the launch lease on the profile ends here
 	browserRunID := browser.NewBrowserRunID(browserSessionID, chromePID)
 	if hostState != nil {
 		browserRunID = hostState.BrowserRunID
@@ -2842,6 +2903,7 @@ func runOpenResult(args []string) (commandOutput CommandResult, resultErr error)
 	// Disarm cleanup so nothing below this point can ever tear down what we
 	// just successfully handed off.
 	cleanup = func() {}
+	settleProfile = func() {}
 
 	output := map[string]interface{}{
 		"session_id":         flags.sessionID,
@@ -2864,6 +2926,19 @@ func runOpenResult(args []string) (commandOutput CommandResult, resultErr error)
 		output["browser_mux_host_pid"] = hostState.MuxHostPID
 		output["display_backend"] = hostState.DisplayBackend
 		output["display_verified"] = hostState.DisplayVerified
+	}
+	// Profile encryption identity and vault state (os_crypt / vault / protection). The BrowserMuxHost reports it for
+	// headed sessions; for the other modes this process prepared the profile itself.
+	switch {
+	case hostState != nil && hostState.Profile != nil:
+		output["profile"] = hostState.Profile
+	case hostState != nil:
+		output["profile"] = browser.ProfileCryptoReceipt{
+			ProfileState: browser.ProfileState{Note: "the running BrowserMuxHost predates profile management (restart it); the profile is not managed this session and is classified from evidence when it is closed"},
+			Persistent:   persistentProfile,
+		}
+	case profileLaunch != nil:
+		output["profile"] = profileLaunch.Receipt
 	}
 	// [P0-α user_state] open 命令也提供结构化 UX 状态，便于 Agent 验证初始页面可交互性。
 	if openSnap != nil {
@@ -2903,7 +2978,26 @@ func runOpenResult(args []string) (commandOutput CommandResult, resultErr error)
 
 }
 
-// runClose 关闭 session（杀 Chrome 进程，删 session 文件）。
+// closeProfileReport 是 close 回执里 "profile" 一节：封存回执 + 临时 profile 的删除结果。
+type closeProfileReport struct {
+	browser.ProfileCryptoReceipt
+	Removed     *bool  `json:"removed,omitempty"`      // 临时 profile 目录是否已删除
+	RemoveError string `json:"remove_error,omitempty"` //
+}
+
+// legacyHostChromeExitWait 是旧版 BrowserMuxHost（先回响应、后台关闭，不回传回执）关闭会话之后，CLI 等 Chrome 消失的上限。
+// 是 var 只为测试能缩短它。
+var legacyHostChromeExitWait = 15 * time.Second
+
+// runClose 关闭 session：让 Chrome 消失、封存持久 profile、删 session 文件、删临时 profile。
+//
+// Chrome 怎么消失由"有没有要保留的状态"决定：
+//   - 持久 profile（会话之后还要用）：CDP Browser.close → SIGTERM → SIGKILL，回执写明是哪一步；
+//     只有 shutdown=graceful 才承诺 Cookie 等状态已经落盘。随后封存 profile 目录。
+//   - 临时 profile（会随会话删除）与 --force：直接 SIGKILL；--force 对持久 profile 照样尽力封存。
+//
+// BrowserMuxHost 持有的会话由 host 同步完成"关闭 + 封存"并回传回执；host 不可用（或是旧版、不回传回执）时
+// 由本进程按同一套策略自己执行。封存失败不吞：回执里写明原因，明文原样保留，下一次 close 再试。
 func runCloseResult(args []string) (commandOutput CommandResult, resultErr error) {
 	_, flags, parseErr := parseCommonFlagsE(args, "close")
 	if parseErr != nil {
@@ -2920,6 +3014,18 @@ func runCloseResult(args []string) (commandOutput CommandResult, resultErr error
 		return finishCommand(commandOutput, exitRunErr)
 	}
 
+	// Driven by SessionInfo.Ephemeral, not by directory-name prefix: the default "task" session kind is
+	// policy-classified ephemeral (session_contract.go) but its profile dir is named "task-<id>".
+	ephemeralProfile := sessionInfo.Ephemeral || flags.ephemeral
+	persistentProfile := !ephemeralProfile
+	force := flags.force
+
+	var (
+		shutdown     browser.ShutdownReceipt
+		haveShutdown bool
+		profile      *browser.ProfileCryptoReceipt
+	)
+	hostHandled := false // BrowserMuxHost 已同步完成关闭（带回执）
 	hostShutdown := false
 	runtimeID := strings.TrimSpace(sessionInfo.RuntimeID)
 	if runtimeID == "" && strings.TrimSpace(sessionInfo.BrowserSessionID) != "" {
@@ -2927,29 +3033,79 @@ func runCloseResult(args []string) (commandOutput CommandResult, resultErr error
 	}
 	if runtimeID != "" {
 		if state, loadErr := browser.LoadBrowserRuntimeState(runtimeID); loadErr == nil {
-			ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
-			if _, shutdownErr := browser.ShutdownBrowserMuxHost(ctx, state); shutdownErr == nil {
+			// The host closes synchronously: normal exit + seal can take far longer than an ordinary control call.
+			ctx, cancel := context.WithTimeout(context.Background(), browser.BrowserMuxHostShutdownCallerTimeout)
+			var out *browser.BrowserMuxHostState
+			var shutdownErr error
+			if force {
+				out, shutdownErr = browser.ShutdownBrowserMuxHostForce(ctx, state)
+			} else {
+				out, shutdownErr = browser.ShutdownBrowserMuxHost(ctx, state)
+			}
+			cancel()
+			if shutdownErr == nil {
 				hostShutdown = true
+				if out != nil && out.Closed != nil {
+					hostHandled = true
+					shutdown, haveShutdown, profile = out.Closed.Shutdown, true, out.Closed.Profile
+				} else if sessionInfo.ChromePID > 0 {
+					// Host predates synchronous shutdown: it answered first and is killing Chrome in the background.
+					// Wait for Chrome to be gone (no signals of our own), then seal below.
+					start := time.Now()
+					gone := browser.WaitForProcessExit(sessionInfo.ChromePID, legacyHostChromeExitWait)
+					shutdown = browser.ShutdownReceipt{Mode: "unknown", Ms: time.Since(start).Milliseconds(),
+						Reason: "the running BrowserMuxHost predates synchronous shutdown; it closed Chrome in the background and reported no exit mode"}
+					if !gone {
+						shutdown.Error = fmt.Sprintf("chrome pid=%d still alive after %s", sessionInfo.ChromePID, legacyHostChromeExitWait)
+					}
+					haveShutdown = true
+				}
 			} else {
 				commandOutput.note("dw-browser close: BrowserMuxHost shutdown fallback: %v\n", shutdownErr)
 			}
-			cancel()
 		} else if sessionInfo.BrowserMuxHostID != "" {
 			commandOutput.note("dw-browser close: BrowserMuxHost state not found: %v\n", loadErr)
 		}
 	}
 
-	// Kill Chrome process when the session is not BrowserMuxHost-owned, or when
-	// BrowserMuxHost shutdown was unavailable and we must fail closed.
-	// Whole-process-group kill (see KillChromeProcessGroup doc): a plain
-	// single-PID kill leaves zygote/renderer/gpu-process/crashpad_handler
-	// alive, which keep writing into the profile dir and undo the cleanup
-	// below moments later.
-	if !hostShutdown && sessionInfo.ChromePID > 0 {
-		browser.KillChromeProcessGroup(sessionInfo.ChromePID)
+	// Not BrowserMuxHost-owned (headless / visible), or the host was unavailable and we must fail closed:
+	// run the same policy here. Whole-process-group signals (see ShutdownChrome / KillChromeProcessGroup): a plain
+	// single-PID kill leaves zygote/renderer/gpu-process/crashpad_handler alive, which keep writing into the
+	// profile dir and undo the cleanup below moments later.
+	if !hostShutdown && sessionInfo.ChromePID > 0 && !browser.PIDIsDebuggableChrome(sessionInfo.ChromePID) {
+		// The session file's PID is stale: that process is gone, or the number now belongs to something else. Never signal
+		// a process we cannot identify as the Chrome this session launched.
+		shutdown = browser.ShutdownReceipt{Mode: browser.ShutdownGone,
+			Reason: fmt.Sprintf("pid %d is not a dw-browser-launched Chrome (stale session file or reused pid): nothing was signalled", sessionInfo.ChromePID)}
+		haveShutdown = true
+	} else if !hostShutdown && sessionInfo.ChromePID > 0 {
+		policy := browser.ChromeShutdownPolicy{Graceful: persistentProfile && !force}
+		switch {
+		case force:
+			policy.Reason = "forced"
+		case ephemeralProfile:
+			policy.Reason = "ephemeral-profile"
+		}
+		shutdown = browser.ShutdownChrome(browser.ChromeShutdownTarget{PID: sessionInfo.ChromePID, WSURL: sessionInfo.WSURL}, policy)
+		haveShutdown = true
 	}
 	if !hostShutdown && sessionInfo.ProfileDir != "" {
 		browser.RemoveProfileOwnerMarker(sessionInfo.ProfileDir, browser.IdentityKey("dw-cli-"+sessionInfo.BrowserSessionID))
+	}
+
+	// A persistent profile is sealed here unless the host already did it — and only once Chrome is confirmed gone:
+	// sealing a directory a live process still writes would read an inconsistent profile or delete one in use.
+	if !hostHandled && persistentProfile && sessionInfo.ProfileDir != "" {
+		if haveShutdown && shutdown.Error != "" {
+			rc := browser.ProfileNotSealedChromeAlive(sessionInfo.ProfileDir, shutdown.Error)
+			profile = &rc
+		} else {
+			rc := browser.SealPersistentProfile(sessionInfo.ProfileDir)
+			profile = &rc
+		}
+	}
+	if profile != nil && profile.Error != "" {
+		commandOutput.note("dw-browser close: WARNING profile %s was not sealed (%s): %s\n", sessionInfo.ProfileID, profile.ErrorKind, profile.Error)
 	}
 
 	// Kill Xvfb process (human mode cleanup)
@@ -2965,25 +3121,48 @@ func runCloseResult(args []string) (commandOutput CommandResult, resultErr error
 		commandOutput.note("dw-browser close: delete session: %v\n", err)
 	}
 
-	// Clean up profile dir if ephemeral (from session info or close flag).
-	// Driven by SessionInfo.Ephemeral, not by directory-name prefix: the
-	// default "task" session kind is policy-classified ephemeral
-	// (session_contract.go) but its profile dir is named "task-<id>", so a
-	// prefix check here would silently never delete it.
-	if sessionInfo.Ephemeral || flags.ephemeral {
+	// A temporary profile goes with its session, through the list → validate → delete funnel (bounded to the
+	// CLI profile root). A failure is reported, not swallowed: the leftover is reclaimed by `profile prune`.
+	report := closeProfileReport{}
+	if profile != nil {
+		report.ProfileCryptoReceipt = *profile
+	}
+	report.Persistent = persistentProfile
+	if ephemeralProfile {
+		var removeErr error
 		if sessionInfo.ProfileDir != "" {
-			_ = os.RemoveAll(sessionInfo.ProfileDir)
+			removeErr = browser.RemoveCLIProfileDir(sessionInfo.ProfileDir)
 		}
 		if sessionInfo.ProfileID != "" {
-			_ = browser.RemoveBrowserCLIProfileByID(sessionInfo.ProfileID)
+			if err := browser.RemoveBrowserCLIProfileByID(sessionInfo.ProfileID); err != nil && removeErr == nil {
+				removeErr = err
+			}
+		}
+		removed := removeErr == nil
+		report.Removed = &removed
+		if removeErr != nil {
+			report.RemoveError = removeErr.Error()
+			commandOutput.note("dw-browser close: could not remove temporary profile: %v\n", removeErr)
 		}
 	}
 
-	enc, _ := json.MarshalIndent(map[string]interface{}{
+	output := map[string]interface{}{
 		"session_id":         flags.sessionID,
 		"browser_session_id": sessionInfo.BrowserSessionID,
 		"closed":             true,
-	}, "", "  ")
+		"profile":            report,
+	}
+	if haveShutdown {
+		output["shutdown"] = shutdown.Mode
+		output["shutdown_ms"] = shutdown.Ms
+		if shutdown.Reason != "" {
+			output["shutdown_reason"] = shutdown.Reason
+		}
+		if shutdown.Error != "" {
+			output["shutdown_error"] = shutdown.Error
+		}
+	}
+	enc, _ := json.MarshalIndent(output, "", "  ")
 	commandOutput.Payload = json.RawMessage(enc)
 	return finishCommand(commandOutput, exitOK)
 

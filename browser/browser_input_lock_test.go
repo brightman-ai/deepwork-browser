@@ -22,6 +22,7 @@ func inputLockTestKey(t *testing.T) string {
 	key := "ws://test-" + t.Name() + "-" + time.Now().Format("150405.000000000")
 	t.Cleanup(func() {
 		_ = os.Remove(browserInputLockPath(key))
+		_ = os.Remove(browserInputOwnerPath(key))
 		_ = os.Remove(browserFrontLedgerPath(key))
 	})
 	return key
@@ -32,7 +33,7 @@ func inputLockTestKey(t *testing.T) string {
 func TestBrowserInputLockSerializesTheDispatchWindow(t *testing.T) {
 	key := inputLockTestKey(t)
 
-	first, err := AcquireBrowserInputLock(key, time.Second)
+	first, err := AcquireBrowserInputLock(key, "test", time.Second)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -41,7 +42,7 @@ func TestBrowserInputLockSerializesTheDispatchWindow(t *testing.T) {
 	}
 
 	started := time.Now()
-	second, err := AcquireBrowserInputLock(key, 300*time.Millisecond)
+	second, err := AcquireBrowserInputLock(key, "test.second", 300*time.Millisecond)
 	elapsed := time.Since(started)
 	if err == nil {
 		second.Release()
@@ -55,7 +56,7 @@ func TestBrowserInputLockSerializesTheDispatchWindow(t *testing.T) {
 	}
 
 	first.Release()
-	third, err := AcquireBrowserInputLock(key, time.Second)
+	third, err := AcquireBrowserInputLock(key, "test", time.Second)
 	if err != nil {
 		t.Fatalf("前一个派发窗口关闭后仍取不到锁: %v", err)
 	}
@@ -71,12 +72,12 @@ func TestBrowserInputLocksAreScopedPerBrowserInstance(t *testing.T) {
 		_ = os.Remove(browserFrontLedgerPath(b))
 	})
 
-	lockA, err := AcquireBrowserInputLock(a, time.Second)
+	lockA, err := AcquireBrowserInputLock(a, "test", time.Second)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer lockA.Release()
-	lockB, err := AcquireBrowserInputLock(b, 200*time.Millisecond)
+	lockB, err := AcquireBrowserInputLock(b, "test", 200*time.Millisecond)
 	if err != nil {
 		t.Fatalf("另一个浏览器实例的输入被挡住了: %v", err)
 	}
@@ -89,7 +90,7 @@ func TestEmptyBrowserKeyDoesNotBlockInput(t *testing.T) {
 	if BrowserInputKey("", 0) != "" {
 		t.Fatal("既没有 ws_url 也没有 pid 却构造出了键")
 	}
-	lock, err := AcquireBrowserInputLock("", time.Second)
+	lock, err := AcquireBrowserInputLock("", "test", time.Second)
 	if err != nil {
 		t.Fatalf("空 key 应当直接放行: %v", err)
 	}

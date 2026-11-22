@@ -125,6 +125,8 @@ func runCLI(argv []string) (code int) {
 		probe.Close()
 		os.Remove(probe.Name())
 	}
+	// 输入窗口的 .owner 要在别的进程的报错里原样出现:只登记命令路径与 --id。
+	registerInputWindowCommand(def, argv)
 	if e = acquireSessionOperatorLockE(argv); e != nil {
 		return emitCLIResult(CommandResult{}, commandError("validation", exitRunErr, e), "")
 	}

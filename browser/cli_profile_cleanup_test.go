@@ -182,24 +182,13 @@ func TestPruneBrowserCLIEphemeralProfilesReapsOrphanedLiveSession(t *testing.T) 
 	dir := filepath.Join(root, "task-orphaned")
 	writeProfileFile(t, dir, "payload")
 
-	cmd := exec.Command("sleep", "30")
-	if err := cmd.Start(); err != nil {
-		t.Skipf("sleep unavailable: %v", err)
-	}
-	pid := cmd.Process.Pid
-	// Reap promptly in the background: isPIDAlive's kill(pid, 0) still
-	// reports a killed-but-unwaited child as alive (zombie) until something
-	// calls Wait() on it — unlike a real orphan (reparented to init, which
-	// reaps automatically), this test's child is ours until we let it go.
-	waited := make(chan struct{})
-	go func() {
-		_, _ = cmd.Process.Wait()
-		close(waited)
-	}()
-	defer func() {
-		_ = cmd.Process.Kill()
-		<-waited
-	}()
+	// The orphan has to look like what it claims to be: reaping only signals a
+	// pid whose command line carries --user-data-dir=<this profile>, so a bare
+	// `sleep` (any unrelated process) is deliberately left alone. The look-alike
+	// is reaped promptly in the background (isPIDAlive's kill(pid, 0) still
+	// reports a killed-but-unwaited child as alive until something Waits on it)
+	// and group-killed on cleanup.
+	pid := spawnChromeLookalike(t, dir)
 	body := fmt.Sprintf(`{"chrome_pid":%d,"identity_key":"test-orphan"}`, pid)
 	if err := os.WriteFile(filepath.Join(dir, deepworkProfileOwnerFile), []byte(body), 0644); err != nil {
 		t.Fatal(err)

@@ -209,6 +209,23 @@ func cleanDeepworkProfileOwner(profileDir string, identityKey IdentityKey) error
 	chromeAlive := marker.ChromePID > 0 && marker.ChromePID != os.Getpid() && isPIDAlive(marker.ChromePID)
 	hostMarker := strings.TrimSpace(marker.BrowserMuxHostID) != "" || marker.BrowserMuxHostPID > 0
 	hostAlive := marker.BrowserMuxHostPID > 0 && marker.BrowserMuxHostPID != os.Getpid() && isPIDAlive(marker.BrowserMuxHostPID)
+
+	// marker 里的 PID 可能是陈旧的（重启之后被系统分给了不相干的程序，例如用户正在用的别的守护进程）。
+	// 对任何 PID 发信号、或把它当作"仍有主人"之前，先核对它的命令行确实是我们自己启动的那种进程；
+	// 对不上就把它当作"这个 PID 不属于我们"：一个信号都不发、也不因此把 profile 判为被占用而永久卡死，
+	// 并留下审计日志（不是悄悄跳过）。marker 里没有 host id 时无从核对，同样按"不属于我们"处理。
+	if hostAlive {
+		if err := requireBrowserMuxHostPID(marker.BrowserMuxHostPID, strings.TrimSpace(marker.BrowserMuxHostID)); err != nil {
+			log.Printf("[BROWSER-RECOVERY] AUDIT: startup_recovery_owner_marker_host_pid_not_ours identity=%s browser_mux_host_id=%q pid=%d profile_dir=%s err=%v",
+				identityKey, marker.BrowserMuxHostID, marker.BrowserMuxHostPID, profileDir, err)
+			hostAlive = false
+		}
+	}
+	if chromeAlive && !pidIsChromeOfProfile(marker.ChromePID, profileDir) {
+		log.Printf("[BROWSER-RECOVERY] AUDIT: startup_recovery_owner_marker_chrome_pid_not_ours identity=%s pid=%d cmdline=%q profile_dir=%s",
+			identityKey, marker.ChromePID, summarizeCommandLine(processCommandLine(marker.ChromePID)), profileDir)
+		chromeAlive = false
+	}
 	if hostMarker && hostAlive && !chromeAlive {
 		log.Printf("[BROWSER-RECOVERY] AUDIT: startup_recovery_stale_browser_mux_host_killed identity=%s browser_mux_host_id=%s browser_mux_host_pid=%d chrome_pid=%d profile_dir=%s",
 			identityKey, marker.BrowserMuxHostID, marker.BrowserMuxHostPID, marker.ChromePID, profileDir)
@@ -336,9 +353,15 @@ func cleanSingletonLocks(profileDir string, identityKey IdentityKey) error {
 	// 仅当 SingletonLock 存在时尝试解析 PID
 	if pid, err := readSingletonLockPID(lockPath); err == nil {
 		if isPIDAlive(pid) {
-			log.Printf("[BROWSER-RECOVERY] AUDIT: startup_recovery_orphan_killed identity=%s pid=%d", identityKey, pid)
-			// SIGTERM → 短等 → SIGKILL (与 GracefulShutdown 双阶段对齐, 但 grace 短: 1s)
-			killAndWait(pid, ProfileOwnerChromeKillGrace)
+			if !pidIsChromeOfProfile(pid, profileDir) {
+				// SingletonLock 是陈旧的：这个 PID 现在属于别的程序。不发信号，留审计日志，继续清掉 Singleton* 残留。
+				log.Printf("[BROWSER-RECOVERY] AUDIT: startup_recovery_singleton_pid_not_ours_skipped identity=%s pid=%d cmdline=%q profile_dir=%s",
+					identityKey, pid, summarizeCommandLine(processCommandLine(pid)), profileDir)
+			} else {
+				log.Printf("[BROWSER-RECOVERY] AUDIT: startup_recovery_orphan_killed identity=%s pid=%d", identityKey, pid)
+				// SIGTERM → 短等 → SIGKILL (与 GracefulShutdown 双阶段对齐, 但 grace 短: 1s)
+				killAndWait(pid, ProfileOwnerChromeKillGrace)
+			}
 		} else {
 			log.Printf("[BROWSER-RECOVERY] AUDIT: startup_recovery_lock_cleaned identity=%s stale_pid=%d", identityKey, pid)
 		}

@@ -142,7 +142,7 @@ func commandDefinitions() []CommandDefinition {
 	add("record start", "Start a structured action trace", runRecordStartResult, id(nil), []string{"--id"}, 0, 0, false)
 	add("record stop", "Stop and return the trace", runRecordStopResult, id(nil), []string{"--id"}, 0, 0, false)
 	add("record export", "Return the current trace", runRecordExportResult, id(nil), []string{"--id"}, 0, 0, true)
-	infra := flags("muxhost-id runtime-id browser-session-id kind profile-id profile-dir chrome-path debug-port owner-pid owner isolation mode goal idle-ttl persona preset width height user-agent service account identity-key", "touch")
+	infra := flags("muxhost-id runtime-id browser-session-id kind profile-id profile-dir chrome-path debug-port owner-pid owner isolation mode goal idle-ttl persona preset width height user-agent service account identity-key", "touch managed-profile persistent-profile")
 	add("muxhost serve", "Run the existing headed host infrastructure", runMuxHostServeResult, infra, nil, 0, 0, false)
 	add("muxhost ensure", "Ensure an explicitly named headed host", runMuxHostEnsureResult, infra, nil, 0, 0, false)
 	add("muxhost status", "Inspect an existing headed host", runMuxHostStatusResult, flags("muxhost-id runtime-id browser-session-id", ""), nil, 0, 0, true)

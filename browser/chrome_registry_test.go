@@ -37,7 +37,26 @@ type sleeper struct {
 
 func startSleeper(t *testing.T) *sleeper {
 	t.Helper()
-	cmd := exec.Command("/bin/sh", "-c", "trap '' TERM; while :; do sleep 0.05; done")
+	return startSleeperWithArgs(t)
+}
+
+// startChromeSleeper is a sleeper whose command line says it is the Chrome of
+// profileDir. The reaper only signals a registered pid whose command line
+// matches the note (see verifyChromeRecordProcess), so a test that expects a
+// kill has to hand it something that looks like the Chrome it registered.
+func startChromeSleeper(t *testing.T, profileDir string) *sleeper {
+	t.Helper()
+	return startSleeperWithArgs(t, "--remote-debugging-port=0", "--user-data-dir="+profileDir)
+}
+
+func startSleeperWithArgs(t *testing.T, args ...string) *sleeper {
+	t.Helper()
+	argv := []string{"-c", "trap '' TERM; while :; do sleep 0.05; done"}
+	if len(args) > 0 {
+		argv = append(argv, "--")
+		argv = append(argv, args...)
+	}
+	cmd := exec.Command("/bin/sh", argv...)
 	ApplyOwnedChromeProcAttr(cmd)
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("start sleeper: %v", err)
@@ -85,12 +104,13 @@ func TestKillChromeProcessTreeKillsGroupLeader(t *testing.T) {
 
 func TestReapAbandonedChromeProcessesKillsWhenOwnerIsGone(t *testing.T) {
 	useTempChromeRegistry(t)
-	sleeper := startSleeper(t)
+	profileDir := t.TempDir()
+	sleeper := startChromeSleeper(t, profileDir)
 	pid := sleeper.pid
 
 	// owner_pid 1 is init: alive, but its start token cannot match ours, and
 	// more to the point it is not this process — so the record is abandoned.
-	token, err := RegisterChromeProcess(ChromeOwnedByPool, pid, t.TempDir(), false)
+	token, err := RegisterChromeProcess(ChromeOwnedByPool, pid, profileDir, false)
 	if err != nil {
 		t.Fatalf("RegisterChromeProcess: %v", err)
 	}

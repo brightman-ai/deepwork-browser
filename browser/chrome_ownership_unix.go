@@ -105,3 +105,13 @@ func KillChromeProcessTree(pid int) {
 	}
 	_ = syscall.Kill(pid, syscall.SIGKILL)
 }
+
+// TerminateChromeProcessGroupID 对整个进程组发 SIGTERM（Chrome 把它当作"正常退出"处理：
+// 提交 Cookie、写 Local State）。和 KillChromeProcessGroupID 一样拒绝我们自己的进程组。
+// 返回是否真的发出了信号。
+func TerminateChromeProcessGroupID(pgid int) bool {
+	if pgid <= 1 || pgid == syscall.Getpgrp() {
+		return false
+	}
+	return syscall.Kill(-pgid, syscall.SIGTERM) == nil
+}

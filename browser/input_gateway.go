@@ -277,7 +277,7 @@ func (g *InputGateway) HandleInput(connID string, msg *InputMessage) *InputAck {
 
 	// A target-context selection and its input ACK share the runtime window
 	// with AI input and target activation; Human input keeps lease semantics.
-	lock, err := g.acquireRuntimeInputLock()
+	lock, err := g.acquireRuntimeInputLock("gateway.input")
 	if err != nil {
 		return &InputAck{Type: "input-ack", Seq: msg.Seq, Status: "error", Reason: err.Error()}
 	}
@@ -582,7 +582,7 @@ func (g *InputGateway) releaseAllLocked() {
 	// 异步 CDP dispatch（锁外执行）
 	if len(keysToRelease) > 0 || len(btnsToRelease) > 0 {
 		go func() {
-			lock, err := g.acquireRuntimeInputLock()
+			lock, err := g.acquireRuntimeInputLock("gateway.release-held")
 			if err != nil {
 				logger.Warn(inputLogContext(), "release input runtime lock failed", "error", err)
 				return
@@ -1015,7 +1015,7 @@ func (g *InputGateway) SetBrowserInputKeyProvider(provider func() string) {
 	g.inputKeyProvider = provider
 }
 
-func (g *InputGateway) acquireRuntimeInputLock() (*BrowserInputLock, error) {
+func (g *InputGateway) acquireRuntimeInputLock(op string) (*BrowserInputLock, error) {
 	g.mu.Lock()
 	provider := g.inputKeyProvider
 	g.mu.Unlock()
@@ -1023,5 +1023,5 @@ func (g *InputGateway) acquireRuntimeInputLock() (*BrowserInputLock, error) {
 	if provider != nil {
 		key = provider()
 	}
-	return AcquireBrowserInputLock(key, DefaultBrowserInputLockWait)
+	return AcquireBrowserInputLock(key, op, DefaultBrowserInputLockWait)
 }

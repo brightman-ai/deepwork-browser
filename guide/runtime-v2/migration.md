@@ -2,6 +2,63 @@
 
 The runtime uses one typed Action kernel, one canonical observation contract and one typed journey runner. Historical evidence/reports are preserved. Installing a built binary is an explicit delivery action; external callers migrate using this contract.
 
+In 0.20.0-v2, `close` changes meaning and its receipt grows. A profile that
+outlives the session (an explicit `--profile`, or dedicated isolation) is no
+longer killed: Chrome is asked to exit (CDP `Browser.close`, then SIGTERM after
+8s, then SIGKILL after 2s more) so cookies and local state reach disk, and the
+receipt reports how it went away as `shutdown` = `graceful` | `terminated` |
+`killed` | `gone` plus `shutdown_ms` and, when it was not graceful,
+`shutdown_reason`. Only `graceful` promises the profile state is fully on disk.
+A temporary profile (deleted with its session) and `--force` still kill at once.
+The BrowserMuxHost `/shutdown` call is now synchronous: it answers after Chrome is
+gone and the profile is sealed, so callers must allow for that wait.
+Every CLI profile now carries `.dw-profile.json`; its `os_crypt` identity
+(`mock` or `system`) is fixed by the profile, not by the launch mode, which ends
+"logged in under headed, logged out under headless". An existing profile without
+a manifest is classified from evidence the first time it is opened: cookies that
+the public mock password decrypts make it `mock`, cookies it cannot decrypt keep
+it on the system keychain (`system`, never sealed). A persistent `mock` profile
+is sealed into one encrypted `profile.vault` when the session closes and
+unsealed when it is opened again; while sealed the directory holds exactly two
+files. The `open`, `close` and `profile list` receipts carry a `profile` section
+(`os_crypt`, `vault` = `none` | `open` | `sealed`, `protection` = `keychain` |
+`file`, and `error` / `error_kind` / `note` when something did not go to plan).
+A seal that fails is reported, never hidden: the plaintext profile is left intact
+and sealing is retried on the next close. Temporary profile directories are now
+removed through a list-validate-delete funnel bounded to the CLI profile root.
+
+Process records are never trusted blindly in 0.20.0-v2. Everything that signals a
+process it only remembers by pid first checks the command line: the BrowserMuxHost
+must be `dw-browser muxhost serve --muxhost-id <its id>`, a recorded Chrome must
+carry `--user-data-dir=<its profile>` (`--remote-debugging-port` when the record
+has no profile directory). A pid that no longer matches is a stale record: nothing
+is signalled and the record is dropped (registry reaper: `record_removed` /
+`pid_not_ours: ...`). A recorded process group is killed only when it is read
+live off the verified pid and equals the recorded one. `profile prune --ephemeral
+--reap-orphaned` follows the same rule and, in addition, no longer kills the
+BrowserMuxHost or the owner process named in a profile's marker (the host is
+shared by every session; close it with `muxhost shutdown`): it kills only
+processes whose command line is that profile's own Chrome, and lists every pid it
+refused in the entry's `notes`.
+
+Also in 0.20.0-v2, headed input is fixed. Input actions against an attached
+headed session (`act click` was reproduced 3/3; the other input verbs share the
+same critical section) used to fail after about 8s with "another operator holds
+the input window": the target-activation hook ran inside the
+input critical section and asked for the same lock again, so the process waited
+for itself. The critical section is now an explicit credential: code that runs
+inside the window receives the `*BrowserInputLock` it was handed and checks it
+with `Covers(key)` (`ErrInputWindowNotHeld` when it is nil, released or for
+another browser instance) and never acquires the lock itself. Library callers
+see two signature changes: `AcquireBrowserInputLock(key, op, wait)` takes a
+diagnostic `op` (for example `action.dispatch`, `tracker.activate`), and the
+activation hooks take the credential (`func(ctx, *BrowserInputLock)`). A lock
+wait that runs out now says who holds it: another process is named by pid,
+command and operation with how long it has held the window; a holder inside the
+same process is reported as "held in this process" (a suspected re-entry, or a
+holder that is stuck past the wait limit; Go cannot tell which) instead of being
+disguised as another operator.
+
 In 0.19.0-v2, cross-process headed session attach restores target tracking and
 no-front activation. Input now requires a live, identity-matched mux-host
 containment check and uses target activation without `Page.bringToFront`.

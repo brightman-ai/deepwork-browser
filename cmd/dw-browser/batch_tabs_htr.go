@@ -85,7 +85,7 @@ func prepareTabsMutation(args []string, cmd string) (*browser.SessionInfo, *brow
 		cancel()
 		return nil, nil, nil, nil, e
 	}
-	lock, e := acquireSessionRuntimeInputLock(info)
+	lock, e := acquireSessionRuntimeInputLock(info, "cli."+strings.ReplaceAll(cmd, " ", "."))
 	if e != nil {
 		cancel()
 		return nil, nil, nil, nil, e
@@ -275,7 +275,7 @@ func runHTRSetAuthorityResult(args []string, authority, cmd string) (CommandResu
 	if e != nil {
 		return CommandResult{}, commandError("validation", exitRunErr, e)
 	}
-	lock, e := acquireSessionRuntimeInputLock(info)
+	lock, e := acquireSessionRuntimeInputLock(info, "cli.htr.set-authority")
 	if e != nil {
 		return CommandResult{}, commandError("validation", exitRunErr, e)
 	}
@@ -407,7 +407,10 @@ func validateAttachedRuntimeIdentity(info *browser.SessionInfo, state *browser.B
 	}
 	return nil
 }
-func acquireSessionRuntimeInputLock(info *browser.SessionInfo) (*browser.BrowserInputLock, error) {
-	return browser.AcquireBrowserInputLock(browser.BrowserInputKey(info.WSURL, info.ChromePID), browser.DefaultBrowserInputLockWait)
+
+// acquireSessionRuntimeInputLock 是 CLI 的窗口外入口;op 只用于诊断(.owner 与超时报错)。
+// 持锁期间调用的 browser 函数都不再取同一把锁(见各调用点的审计注释)。
+func acquireSessionRuntimeInputLock(info *browser.SessionInfo, op string) (*browser.BrowserInputLock, error) {
+	return browser.AcquireBrowserInputLock(browser.BrowserInputKey(info.WSURL, info.ChromePID), op, browser.DefaultBrowserInputLockWait)
 }
 func stringFromMap(m map[string]interface{}, key string) string { s, _ := m[key].(string); return s }

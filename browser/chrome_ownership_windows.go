@@ -37,3 +37,7 @@ func KillChromeProcessGroupID(pgid int) {
 		_ = proc.Kill()
 	}
 }
+
+// TerminateChromeProcessGroupID 在 Windows 上没有 SIGTERM 的对应物：返回 false，
+// 调用方（ShutdownChrome）随后会回落到 killPIDGraceful / 强杀。
+func TerminateChromeProcessGroupID(pgid int) bool { return false }

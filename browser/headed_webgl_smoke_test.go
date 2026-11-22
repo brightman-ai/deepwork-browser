@@ -24,9 +24,7 @@ func TestHeadedWebGLSmoke(t *testing.T) {
 	}
 	defer func() {
 		_ = bc.Close(context.Background())
-		if home, err := os.UserHomeDir(); err == nil {
-			_ = os.RemoveAll(filepath.Join(home, ".deepwork", "browser-cli", profileID))
-		}
+		_ = RemoveCLIProfileDir(filepath.Join(browserCLIDefaultBase(), profileID))
 	}()
 
 	if _, err := bc.Navigate(ctx, "about:blank"); err != nil {

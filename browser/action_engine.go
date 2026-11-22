@@ -65,7 +65,10 @@ type actionEngine struct {
 	authorityCheck  func(context.Context, bool, string) error
 	// targetActivation is injectable for attached headed sessions. Those
 	// sessions must validate display containment but never call Page.bringToFront.
-	targetActivation func(context.Context) (bool, error)
+	//
+	// 它在输入窗口内执行:w 是 enterInputDispatchWindowForRequest 刚取得的持有凭证。
+	// 实现只许接收并 Covers 它,绝不能再取同一个 key 的锁(同进程重入会自己等自己)。
+	targetActivation func(ctx context.Context, w *BrowserInputLock) (bool, error)
 	operationID      string
 }
 
@@ -1977,7 +1980,7 @@ func (e *actionEngine) enterInputDispatchWindow(ctx context.Context) (release fu
 }
 
 func (e *actionEngine) enterInputDispatchWindowForRequest(ctx context.Context, needsGeometry bool, captureID string, activate bool) (release func(), brought bool, contention string, err error) {
-	lock, lockErr := AcquireBrowserInputLock(e.browserInputKey, DefaultBrowserInputLockWait)
+	lock, lockErr := AcquireBrowserInputLock(e.browserInputKey, "action.dispatch", DefaultBrowserInputLockWait)
 	if lockErr != nil {
 		return func() {}, false, "", fmt.Errorf("%w: %v", ErrActFailed, lockErr)
 	}
@@ -2001,9 +2004,10 @@ func (e *actionEngine) enterInputDispatchWindowForRequest(ctx context.Context, n
 	}
 	activationFn := e.targetActivation
 	if activationFn == nil {
-		activationFn = ensureTargetFrontmost
+		activationFn = e.activateFrontmostIn
 	}
-	brought, err = activationFn(ctx)
+	// 凭证显式传入钩子:钩子在窗口内,只能接收、不能再取锁。
+	brought, err = activationFn(ctx, lock)
 	if err != nil {
 		release()
 		return func() {}, false, "", err

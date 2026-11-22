@@ -70,6 +70,22 @@ func redactCLIArguments(args []string) []string {
 	return result
 }
 
+// inputWindowCommandSummary 生成写进输入窗口 .owner 的命令摘要:只含命令路径(来自静态
+// 命令声明,如 "act fill")与 --id,刻意不含任何位置参数或 flag 值 —— 那里可能有
+// 用户文本(act fill --text、eval 表达式、fillsecret 的值)。与会话锁的 .owner 不同,
+// 这里用白名单而不是脱敏:漏脱敏一个新 flag 不会泄露。
+func inputWindowCommandSummary(def CommandDefinition, argv []string) string {
+	summary := def.Path
+	if sid := scanSessionIDArg(argv); sid != "" {
+		summary += " --id " + sid
+	}
+	return summary
+}
+
+func registerInputWindowCommand(def CommandDefinition, argv []string) {
+	browser.SetInputWindowCommand(inputWindowCommandSummary(def, argv))
+}
+
 func isSessionBusy(err error) bool {
 	var busy *browser.SessionBusyError
 	return errors.As(err, &busy)

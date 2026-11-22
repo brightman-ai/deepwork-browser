@@ -212,9 +212,11 @@ type ChromeReapOptions struct {
 }
 
 // ReapAbandonedChromeProcesses kills the process group of every registered
-// Chrome whose owner is gone, and deletes the note. This is the fallback that
-// makes `kill -9 <dw-browser>` survivable: the note outlives the owner, and the
-// next dw-browser process (or gc) settles the debt.
+// Chrome whose owner is gone, and deletes the note — after confirming the
+// recorded pid is still that Chrome (see verifyChromeRecordProcess); a note
+// whose pid now belongs to something else is only dropped, never signalled.
+// This is the fallback that makes `kill -9 <dw-browser>` survivable: the note
+// outlives the owner, and the next dw-browser process (or gc) settles the debt.
 func ReapAbandonedChromeProcesses(opts ChromeReapOptions) []ChromeReapAction {
 	now := opts.Now
 	if now.IsZero() {
@@ -276,6 +278,20 @@ func ReapAbandonedChromeProcesses(opts ChromeReapOptions) []ChromeReapAction {
 			continue
 		}
 
+		// 发信号前最后一道：登记表可能在崩溃或重启之后残留，记着的 pid 早就被系统分给了别的进程
+		// （可能是 other-muxd 这类和浏览器毫无关系的程序）。pid 必须仍是登记时的那种 Chrome——
+		// 命令行带这个 profile 目录的 --user-data-dir（登记里没有目录时退而要求带 --remote-debugging-port）。
+		// 对不上就是陈旧记录：不发任何信号，只把记录清掉。
+		if err := verifyChromeRecordProcess(rec); err != nil {
+			act.Action, act.Reason = "record_removed", "pid_not_ours: "+err.Error()
+			if !opts.DryRun {
+				log.Printf("[CHROME-REAP] record %s: not signalling pid %d, dropping the stale record: %v", rec.Token, rec.ChromePID, err)
+				UnregisterChromeProcess(rec.Token)
+			}
+			actions = append(actions, act)
+			continue
+		}
+
 		act.Action, act.Reason = "killed", "owner_gone"
 		if opts.DryRun {
 			act.Action = "would_kill"
@@ -290,12 +306,30 @@ func ReapAbandonedChromeProcesses(opts ChromeReapOptions) []ChromeReapAction {
 	return actions
 }
 
-// killChromeRecord kills the recorded Chrome's whole process group. Both the
-// recorded pgid and a live re-read are tried: the recorded one still reaches
-// surviving children after the leader has exited, the live one covers a note
-// written before Setpgid could be observed.
+// verifyChromeRecordProcess confirms that the pid in an ownership note is still
+// the Chrome the note was written for. It returns nil only when it is; the caller
+// must not signal the pid otherwise. The note's profile dir is the primary key
+// (RegisterChromeProcess runs it through filepath.Clean, so a launch with no
+// profile dir is recorded as "."); only when there is none does the weaker
+// "is a CDP Chrome" check stand in.
+func verifyChromeRecordProcess(rec ChromeProcessRecord) error {
+	dir := strings.TrimSpace(rec.ProfileDir)
+	if dir == "" || dir == "." {
+		return requireDebuggableChromePID(rec.ChromePID)
+	}
+	return requireChromeOfProfilePID(rec.ChromePID, dir)
+}
+
+// killChromeRecord kills the recorded Chrome. Callers have already verified the
+// pid's identity (verifyChromeRecordProcess); the recorded pgid is not trusted
+// on its own. A note can outlive its Chrome by days, and a stale pgid number may
+// since have been handed to an unrelated process group, so the whole group is
+// signalled only when it is read live off the verified pid, still equals the
+// recorded one, and the pid leads that group (what ApplyOwnedChromeProcAttr /
+// ApplyDetachedProcAttr always produce). In every other case — group shared with
+// the launcher, pgid unreadable — only the verified pid's own process tree dies.
 func killChromeRecord(rec ChromeProcessRecord) {
-	if rec.PGID > 0 {
+	if rec.PGID > 1 && rec.PGID == rec.ChromePID && ChromeProcessGroupID(rec.ChromePID) == rec.PGID {
 		KillChromeProcessGroupID(rec.PGID)
 	}
 	KillChromeProcessTree(rec.ChromePID)

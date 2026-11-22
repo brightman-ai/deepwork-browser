@@ -142,12 +142,8 @@ func TestDocumentLive(t *testing.T) {
 			return (&net.Dialer{}).DialContext(ctx, network, address)
 		},
 	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		t.Fatal(err)
-	}
 	profiles := func() map[string]bool {
-		paths, err := filepath.Glob(filepath.Join(home, ".deepwork", "browser-cli", "document-*"))
+		paths, err := filepath.Glob(filepath.Join(browserCLIDefaultBase(), "document-*"))
 		if err != nil {
 			t.Fatal(err)
 		}

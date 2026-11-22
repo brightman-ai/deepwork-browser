@@ -49,7 +49,7 @@ func runSessionViewportResult(args []string) (CommandResult, error) {
 		return CommandResult{}, commandError("connect", exitRunErr, e)
 	}
 	defer closeSessionCore(core)
-	lock, e := acquireSessionRuntimeInputLock(info)
+	lock, e := acquireSessionRuntimeInputLock(info, "cli.session.viewport")
 	if e != nil {
 		return CommandResult{}, commandError("validation", exitRunErr, e)
 	}

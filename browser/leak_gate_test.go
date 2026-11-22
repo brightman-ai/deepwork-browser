@@ -48,8 +48,10 @@ func TestMain(m *testing.M) {
 	}
 	os.Setenv("TMPDIR", tmpDir)
 	os.Setenv(EnvChromeProcRegistryDir, regDir)
+	cleanupProfiles := useHermeticProfileEnv() // 在 TMPDIR 之后：profile 根落在本次运行的目录里
 
 	code := m.Run()
+	cleanupProfiles()
 
 	leaks := findLeakedChromeProcesses(tmpDir, regDir)
 	if len(leaks) > 0 {

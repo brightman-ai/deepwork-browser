@@ -174,7 +174,7 @@ func TestJourneyActionTerminalCommitPreservesNewerControlAndFence(t *testing.T) 
 		t.Run(change, func(t *testing.T) {
 			info := persistedActionFixture(t)
 			out, err := executePersistedSessionAction(info, browser.Action{Verb: "click", Target: browser.Target{Kind: "locator", Locator: "css=#button"}}, func(string) {}, func() (*browser.Snapshot, browser.Outcome, browser.ActionFidelityReport, error) {
-				lock, err := acquireSessionRuntimeInputLock(info)
+				lock, err := acquireSessionRuntimeInputLock(info, "test")
 				if err != nil {
 					t.Fatal(err)
 				}

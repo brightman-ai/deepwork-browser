@@ -25,8 +25,8 @@ _dw_browser_v2() {
  'record start') choices='--id --output --lock-wait --verbose ';;
  'record stop') choices='--id --output --lock-wait --verbose ';;
  'record export') choices='--id --output --lock-wait --verbose ';;
- 'muxhost serve') choices='--muxhost-id --runtime-id --browser-session-id --kind --profile-id --profile-dir --chrome-path --debug-port --owner-pid --owner --isolation --mode --goal --idle-ttl --persona --preset --width --height --user-agent --service --account --identity-key --touch --output --lock-wait --verbose ';;
- 'muxhost ensure') choices='--muxhost-id --runtime-id --browser-session-id --kind --profile-id --profile-dir --chrome-path --debug-port --owner-pid --owner --isolation --mode --goal --idle-ttl --persona --preset --width --height --user-agent --service --account --identity-key --touch --output --lock-wait --verbose ';;
+ 'muxhost serve') choices='--muxhost-id --runtime-id --browser-session-id --kind --profile-id --profile-dir --chrome-path --debug-port --owner-pid --owner --isolation --mode --goal --idle-ttl --persona --preset --width --height --user-agent --service --account --identity-key --touch --managed-profile --persistent-profile --output --lock-wait --verbose ';;
+ 'muxhost ensure') choices='--muxhost-id --runtime-id --browser-session-id --kind --profile-id --profile-dir --chrome-path --debug-port --owner-pid --owner --isolation --mode --goal --idle-ttl --persona --preset --width --height --user-agent --service --account --identity-key --touch --managed-profile --persistent-profile --output --lock-wait --verbose ';;
  'muxhost status') choices='--muxhost-id --runtime-id --browser-session-id --output --lock-wait --verbose ';;
  'muxhost release') choices='--muxhost-id --runtime-id --browser-session-id --output --lock-wait --verbose ';;
  'muxhost shutdown') choices='--muxhost-id --runtime-id --browser-session-id --output --lock-wait --verbose ';;

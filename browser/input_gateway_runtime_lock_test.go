@@ -9,7 +9,7 @@ import (
 
 func TestHumanInputRechecksLeaseAfterRuntimeLockWait(t *testing.T) {
 	key := BrowserInputKey(fmt.Sprintf("human-lock-test-%d-%d", os.Getpid(), time.Now().UnixNano()), 0)
-	held, err := AcquireBrowserInputLock(key, 0)
+	held, err := AcquireBrowserInputLock(key, "test", 0)
 	if err != nil {
 		t.Fatal(err)
 	}

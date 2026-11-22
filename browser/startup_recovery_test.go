@@ -135,22 +135,17 @@ func TestRecovery_LegacyLiveOwnerDeadChromeMarkerCleaned(t *testing.T) {
 func TestRecovery_LegacyLiveOwnerLiveChromeBlocks(t *testing.T) {
 	dir := t.TempDir()
 	owner := exec.Command("sleep", "30")
-	chrome := exec.Command("sleep", "30")
 	if err := owner.Start(); err != nil {
 		t.Fatalf("start owner process: %v", err)
-	}
-	if err := chrome.Start(); err != nil {
-		_ = owner.Process.Kill()
-		_, _ = owner.Process.Wait()
-		t.Fatalf("start chrome process: %v", err)
 	}
 	t.Cleanup(func() {
 		_ = owner.Process.Kill()
 		_, _ = owner.Process.Wait()
-		_ = chrome.Process.Kill()
-		_, _ = chrome.Process.Wait()
 	})
-	body := fmt.Sprintf(`{"owner_pid":%d,"chrome_pid":%d,"identity_key":"k-owner"}`, owner.Process.Pid, chrome.Process.Pid)
+	// 活着的 Chrome 必须真的是这个 profile 的 Chrome（命令行带 --user-data-dir=<dir>）：marker 里的 PID 可能是陈旧的，
+	// 对不上的进程既不会被当作"仍有主人"，也不会被发信号（见 startup_recovery_identity_test.go）。
+	chromePID := spawnChromeLookalike(t, dir)
+	body := fmt.Sprintf(`{"owner_pid":%d,"chrome_pid":%d,"identity_key":"k-owner"}`, owner.Process.Pid, chromePID)
 	if err := os.WriteFile(filepath.Join(dir, deepworkProfileOwnerFile), []byte(body), 0644); err != nil {
 		t.Fatal(err)
 	}
@@ -167,31 +162,14 @@ func TestRecoverySweep_DeadBrowserMuxHostKillsOrphanChrome(t *testing.T) {
 	if err := os.MkdirAll(profileDir, 0755); err != nil {
 		t.Fatal(err)
 	}
-	chrome := exec.Command("sleep", "30")
-	if err := chrome.Start(); err != nil {
-		t.Fatalf("start chrome process: %v", err)
-	}
-	chromeDone := make(chan error, 1)
-	go func() {
-		chromeDone <- chrome.Wait()
-		close(chromeDone)
-	}()
-	t.Cleanup(func() {
-		if isPIDAlive(chrome.Process.Pid) {
-			_ = chrome.Process.Kill()
-		}
-		select {
-		case <-chromeDone:
-		case <-time.After(2 * time.Second):
-		}
-	})
+	chromePID := spawnChromeLookalike(t, profileDir) // 这个 profile 自己的 Chrome：命令行带 --user-data-dir=<profileDir>
 	body := fmt.Sprintf(`{
 		"owner_pid": 9999998,
 		"chrome_pid": %d,
 		"identity_key": "k-muxhost-orphan",
 		"browser_mux_host_id": "browser-mux-host-test",
 		"browser_mux_host_pid": 9999997
-	}`, chrome.Process.Pid)
+	}`, chromePID)
 	if err := os.WriteFile(filepath.Join(profileDir, deepworkProfileOwnerFile), []byte(body), 0644); err != nil {
 		t.Fatal(err)
 	}
@@ -199,10 +177,8 @@ func TestRecoverySweep_DeadBrowserMuxHostKillsOrphanChrome(t *testing.T) {
 	if err := RecoverBrowserRuntimeState(dataDir); err != nil {
 		t.Fatalf("sweep recovery: %v", err)
 	}
-	select {
-	case <-chromeDone:
-	case <-time.After(2 * time.Second):
-		t.Fatalf("orphan chrome pid %d should exit after recovery", chrome.Process.Pid)
+	if !WaitForProcessExit(chromePID, 2*time.Second) {
+		t.Fatalf("orphan chrome pid %d should exit after recovery", chromePID)
 	}
 	if _, err := os.Stat(filepath.Join(profileDir, deepworkProfileOwnerFile)); !os.IsNotExist(err) {
 		t.Fatalf("owner marker should be removed, got stat err=%v", err)
@@ -215,29 +191,16 @@ func TestRecoverySweep_LiveBrowserMuxHostSkipped(t *testing.T) {
 	if err := os.MkdirAll(profileDir, 0755); err != nil {
 		t.Fatal(err)
 	}
-	host := exec.Command("sleep", "30")
-	chrome := exec.Command("sleep", "30")
-	if err := host.Start(); err != nil {
-		t.Fatalf("start host process: %v", err)
-	}
-	if err := chrome.Start(); err != nil {
-		_ = host.Process.Kill()
-		_, _ = host.Process.Wait()
-		t.Fatalf("start chrome process: %v", err)
-	}
-	t.Cleanup(func() {
-		_ = host.Process.Kill()
-		_, _ = host.Process.Wait()
-		_ = chrome.Process.Kill()
-		_, _ = chrome.Process.Wait()
-	})
+	// 活着的 host 必须真的是 `dw-browser muxhost serve --muxhost-id <id>`，活着的 Chrome 必须真的是这个 profile 的 Chrome。
+	hostPID := spawnMuxHostLookalike(t, "browser-mux-host-test-live")
+	chromePID := spawnChromeLookalike(t, profileDir)
 	body := fmt.Sprintf(`{
 		"owner_pid": %d,
 		"chrome_pid": %d,
 		"identity_key": "k-live-muxhost",
 		"browser_mux_host_id": "browser-mux-host-test-live",
 		"browser_mux_host_pid": %d
-	}`, host.Process.Pid, chrome.Process.Pid, host.Process.Pid)
+	}`, hostPID, chromePID, hostPID)
 	if err := os.WriteFile(filepath.Join(profileDir, deepworkProfileOwnerFile), []byte(body), 0644); err != nil {
 		t.Fatal(err)
 	}
@@ -245,11 +208,11 @@ func TestRecoverySweep_LiveBrowserMuxHostSkipped(t *testing.T) {
 	if err := RecoverBrowserRuntimeState(dataDir); err != nil {
 		t.Fatalf("sweep should skip live muxhost without failing, got: %v", err)
 	}
-	if !isPIDAlive(host.Process.Pid) {
-		t.Fatalf("live muxhost pid %d should not be killed", host.Process.Pid)
+	if !isPIDAlive(hostPID) {
+		t.Fatalf("live muxhost pid %d should not be killed", hostPID)
 	}
-	if !isPIDAlive(chrome.Process.Pid) {
-		t.Fatalf("live chrome pid %d should not be killed", chrome.Process.Pid)
+	if !isPIDAlive(chromePID) {
+		t.Fatalf("live chrome pid %d should not be killed", chromePID)
 	}
 	if _, err := os.Stat(filepath.Join(profileDir, deepworkProfileOwnerFile)); err != nil {
 		t.Fatalf("live owner marker should remain, got stat err=%v", err)

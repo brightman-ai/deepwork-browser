@@ -146,6 +146,11 @@ type DetachedChromeLaunchOptions struct {
 	// Stealth 只在 ModeHeadless 下生效：注入额外的反检测参数和真实 UA。
 	// headed/visible Chrome 使用 CGVirtualDisplay + 真实指纹，不需要此选项。
 	Stealth bool
+	// ProfileCrypto 非 nil 时（CLI profile，见 profile_manifest.go）：加密相关启动参数只由清单决定，
+	// 与启动模式无关——mock → 任何模式都加 --use-mock-keychain --password-store=basic；
+	// system → 任何模式都不加。nil 时保持旧行为（headless 加 mock、其余不加）：BrowserPool 等
+	// 非 CLI profile 走这条。
+	ProfileCrypto *ProfileManifest
 }
 
 // BuildDetachedChromeArgs 生成 detached Chrome 的启动参数。
@@ -213,8 +218,6 @@ func BuildDetachedChromeArgs(opts DetachedChromeLaunchOptions) []string {
 			"--disable-sync",
 			"--metrics-recording-only",
 			"--safebrowsing-disable-auto-update",
-			"--password-store=basic",
-			"--use-mock-keychain",
 		)
 		if opts.Stealth {
 			args = append(args, "--disable-infobars")
@@ -240,6 +243,13 @@ func BuildDetachedChromeArgs(opts DetachedChromeLaunchOptions) []string {
 		case "windows":
 			args = append(args, "--use-angle=d3d11")
 		}
+	}
+
+	// 加密身份：有清单就只看清单（任何模式一致）；没有清单保持旧行为（只有 headless 用模拟钥匙串）。
+	if opts.ProfileCrypto != nil {
+		args = append(args, opts.ProfileCrypto.CryptoLaunchArgs()...)
+	} else if mode == ModeHeadless {
+		args = append(args, "--password-store=basic", "--use-mock-keychain")
 	}
 
 	if effectiveUA != "" {

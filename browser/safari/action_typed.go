@@ -75,7 +75,7 @@ func (c *SafariBrowserCore) ExecuteAction(ctx context.Context, a browser.Action,
 	if c.wdc == nil {
 		return nil, out, fmt.Errorf("Safari runtime unavailable")
 	}
-	lock, err := browser.AcquireBrowserInputLock("safari:"+c.wdc.baseURL, browser.DefaultBrowserInputLockWait)
+	lock, err := browser.AcquireBrowserInputLock("safari:"+c.wdc.baseURL, "safari.action", browser.DefaultBrowserInputLockWait)
 	if err != nil {
 		return nil, out, err
 	}

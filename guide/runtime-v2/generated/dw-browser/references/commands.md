@@ -1,4 +1,4 @@
-# DW-Browser 0.19.0-v2 command contract
+# DW-Browser 0.20.0-v2 command contract
 
 Generated from executable declarations. Flags on attached sessions inherit creation environment. `--output` is JSON; `--screenshot` is PNG. Absolute and locator-relative points require `--observation-id` from the exact capture; opaque ref-relative points supply capture identity in the token. Gesture endpoints share that identity.
 
@@ -57,7 +57,7 @@ Close only the named session. Positional arguments: 0..0. Required flags: --id.
 Usage: `close --id NAME [--force]`
 
 
-Closes exactly the named session you created and tears down its runtime. --force is the escape hatch for a wedged close; normal flow never needs it. Other sessions are untouched. Deeper semantics, byte budgets and the journey YAML shape: `dw-browser protocol`.
+Closes exactly the named session you created and tears down its runtime. A profile that outlives the session (an explicit --profile or dedicated isolation) is exited normally so cookies reach disk, then sealed into one encrypted file; the receipt says how Chrome went away (shutdown=graceful|terminated|killed|gone — only graceful promises the profile state is fully on disk) and what happened to the profile (profile.vault, profile.seal, profile.error). A temporary profile is killed at once and deleted. A seal failure is reported, never hidden: the plaintext profile is left intact and sealing is retried on the next close. --force kills Chrome at once (a persistent profile is still sealed, best effort) and skips the session lock: it is the escape hatch for a wedged close; normal flow never needs it. Other sessions are untouched. Deeper semantics, byte budgets and the journey YAML shape: `dw-browser protocol`.
 
 Example: `dw-browser close --id chat1`
 
@@ -786,6 +786,8 @@ Example: `dw-browser muxhost serve`
 - `--account` VALUE (string)
 - `--identity-key` VALUE (string)
 - `--touch`
+- `--managed-profile`
+- `--persistent-profile`
 - `--output` VALUE (string)
 - `--lock-wait` VALUE (lock-duration)
 - `--verbose`
@@ -824,6 +826,8 @@ Example: `dw-browser muxhost ensure`
 - `--account` VALUE (string)
 - `--identity-key` VALUE (string)
 - `--touch`
+- `--managed-profile`
+- `--persistent-profile`
 - `--output` VALUE (string)
 - `--lock-wait` VALUE (lock-duration)
 - `--verbose`

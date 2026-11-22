@@ -24,6 +24,8 @@ func parseBrowserMuxHostFlagsE(args []string, cmd string) (browser.BrowserMuxHos
 	req.ServiceName, req.AccountID = opts["--service"], opts["--account"]
 	req.IdentityKey = browser.IdentityKey(opts["--identity-key"])
 	req.Touch = opts["--touch"] != ""
+	req.ManagedProfile = opts["--managed-profile"] != "" || opts["--persistent-profile"] != ""
+	req.PersistentProfile = opts["--persistent-profile"] != ""
 	if raw := opts["--kind"]; raw != "" {
 		kind, ok := parseBrowserSessionKind(raw)
 		if !ok {

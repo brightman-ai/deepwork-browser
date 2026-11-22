@@ -22,3 +22,6 @@ evolve_history
 .DS_Store
 .idea/
 .vscode/
+
+# Runtime observation/screenshot evidence written by `open` into the working directory.
+/evidence/

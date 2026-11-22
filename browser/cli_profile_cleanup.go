@@ -3,6 +3,7 @@ package browser
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -14,7 +15,21 @@ import (
 const (
 	BrowserCLIEphemeralProfilePrefix = "ephemeral-"
 	DefaultCLIEphemeralPruneMinAge   = 30 * time.Minute
+
+	// EnvBrowserCLIProfileRoot 把 CLI profile 根整体改到另一个目录（唯一的一个根）。
+	// 测试靠它不去碰真实的 ~/.deepwork/browser-cli；运维也可以用它把 profile 放到别的盘。
+	// 它同时是 profile 删除的边界（RemoveCLIProfileDir 只认这些根的直接子级）。
+	EnvBrowserCLIProfileRoot = "DW_BROWSER_CLI_PROFILE_ROOT"
 )
+
+// browserCLIProfileRootOverride 返回 EnvBrowserCLIProfileRoot 指定的根（已清理）；未设置返回空串。
+func browserCLIProfileRootOverride() string {
+	raw := strings.TrimSpace(os.Getenv(EnvBrowserCLIProfileRoot))
+	if raw == "" {
+		return ""
+	}
+	return filepath.Clean(raw)
+}
 
 type BrowserCLIEphemeralPruneOptions struct {
 	ChromePath string
@@ -23,7 +38,9 @@ type BrowserCLIEphemeralPruneOptions struct {
 	DryRun     bool
 	Now        time.Time
 	// ReapOrphaned additionally kills any still-alive Chrome process backing
-	// an ephemeral-kind (task-/test-/ephemeral-) profile once it's past
+	// an ephemeral-kind (task-/test-/ephemeral-) profile (only a process whose
+	// command line carries --user-data-dir=<that profile> — see
+	// reapBrowserCLIProfileLiveProcesses) once it's past
 	// MinAge, instead of leaving the profile protected forever. Safe because
 	// eligibility here already means SessionIsolationEphemeral
 	// (session_contract.go): these are agent-owned, single-run profiles by
@@ -43,6 +60,9 @@ type BrowserCLIEphemeralPruneEntry struct {
 	Reason    string `json:"reason,omitempty"`
 	SizeBytes int64  `json:"size_bytes,omitempty"`
 	AgeSec    int64  `json:"age_sec,omitempty"`
+	// Notes lists pids that --reap-orphaned deliberately did not signal because
+	// they are not this profile's Chrome (stale marker, pid reused by another program).
+	Notes []string `json:"notes,omitempty"`
 }
 
 type BrowserCLIEphemeralPruneResult struct {
@@ -60,6 +80,16 @@ func NewBrowserCLIEphemeralProfileID() string {
 	return fmt.Sprintf("%s%d-%d", BrowserCLIEphemeralProfilePrefix, os.Getpid(), time.Now().UnixNano())
 }
 
+// browserCLIDefaultBase 是 NewBrowserCore / document 落 profile 的目录：~/.deepwork/browser-cli，
+// 或 EnvBrowserCLIProfileRoot 指定的根。不含 BrowserCLIProfileRoots 里的 snap 特判。
+func browserCLIDefaultBase() string {
+	if override := browserCLIProfileRootOverride(); override != "" {
+		return override
+	}
+	homeDir, _ := os.UserHomeDir()
+	return filepath.Join(homeDir, ".deepwork", "browser-cli")
+}
+
 func BrowserCLIProfileDir(chromePath string, profileID string) string {
 	return filepath.Join(BrowserCLIProfileRoot(chromePath), profileID)
 }
@@ -73,6 +103,9 @@ func BrowserCLIProfileRoot(chromePath string) string {
 }
 
 func BrowserCLIProfileRoots(chromePath string) []string {
+	if override := browserCLIProfileRootOverride(); override != "" {
+		return []string{override}
+	}
 	homeDir, _ := os.UserHomeDir()
 	var roots []string
 	if runtime.GOOS == "linux" && UsesSnapSandboxChrome(chromePath) && homeDir != "" {
@@ -119,13 +152,17 @@ func RemoveBrowserCLIEphemeralProfile(profileID string) error {
 // "ephemeral-" prefix requirement). Callers must already know from
 // authoritative session metadata (SessionInfo.Ephemeral) that the profile is
 // safe to delete — this is intentionally not a blind-sweep-safe primitive.
+//
+// The deletion itself goes through the list → validate → delete funnel
+// (profile_vault_delete.go), bounded to the CLI profile root: an ID that is not
+// a plain directory name is refused instead of being joined into a path.
 func RemoveBrowserCLIProfileByID(profileID string) error {
 	if strings.TrimSpace(profileID) == "" {
 		return nil
 	}
 	var firstErr error
 	for _, root := range BrowserCLIProfileRoots("") {
-		if err := os.RemoveAll(filepath.Join(root, profileID)); err != nil && firstErr == nil {
+		if err := removeProfileDirUnderRoot(root, profileID); err != nil && firstErr == nil {
 			firstErr = err
 		}
 	}
@@ -231,7 +268,9 @@ func PruneBrowserCLIEphemeralProfiles(opts BrowserCLIEphemeralPruneOptions) (Bro
 				result.Entries = append(result.Entries, pruneEntry)
 				continue
 			}
-			if protected, reason := browserCLIProfileProtected(path, opts.ReapOrphaned && !opts.DryRun); protected {
+			protected, reason, notes := browserCLIProfileProtected(path, opts.ReapOrphaned && !opts.DryRun)
+			pruneEntry.Notes = notes
+			if protected {
 				result.Protected++
 				pruneEntry.Action = "protected"
 				pruneEntry.Reason = reason
@@ -246,7 +285,7 @@ func PruneBrowserCLIEphemeralProfiles(opts BrowserCLIEphemeralPruneOptions) (Bro
 				result.Bytes += size
 				result.Entries = append(result.Entries, pruneEntry)
 				continue
-			} else if err := os.RemoveAll(path); err != nil {
+			} else if err := removeProfileDirUnderRoot(root, entry.Name()); err != nil {
 				result.Skipped++
 				pruneEntry.Action = "skipped"
 				pruneEntry.Reason = "remove_failed"
@@ -265,40 +304,54 @@ func PruneBrowserCLIEphemeralProfiles(opts BrowserCLIEphemeralPruneOptions) (Bro
 	return result, nil
 }
 
-func browserCLIProfileProtected(profileDir string, reapOrphaned bool) (bool, string) {
+func browserCLIProfileProtected(profileDir string, reapOrphaned bool) (bool, string, []string) {
 	liveSession := browserCLIProfileReferencedByLiveSession(profileDir)
 	liveOwner := browserCLIProfileHasLiveOwnerMarker(profileDir)
 	livePIDs := platformFindChromePIDsByProfileDir(profileDir)
 	if !liveSession && !liveOwner && len(livePIDs) == 0 {
-		return false, ""
+		return false, "", nil
 	}
 
-	if reapOrphaned && reapBrowserCLIProfileLiveProcesses(profileDir) {
-		return false, ""
+	if reapOrphaned {
+		reaped, notes := reapBrowserCLIProfileLiveProcesses(profileDir)
+		if reaped {
+			return false, "", notes
+		}
+		return true, browserCLIProfileProtectionReason(liveSession, liveOwner), notes
 	}
+	return true, browserCLIProfileProtectionReason(liveSession, liveOwner), nil
+}
 
+func browserCLIProfileProtectionReason(liveSession, liveOwner bool) string {
 	switch {
 	case liveSession:
-		return true, "live_session"
+		return "live_session"
 	case liveOwner:
-		return true, "live_owner_marker"
+		return "live_owner_marker"
 	default:
-		return true, "live_chrome_user_data_dir"
+		return "live_chrome_user_data_dir"
 	}
 }
 
 // browserCLIProfileLivePIDs collects every PID any tracking mechanism (a
 // live session file, an owner marker, or a ps scan for --user-data-dir=)
-// claims is still using profileDir. Reaping must kill all of them — a PID
-// tracked by only one source would keep the directory non-removable
-// (zygote/renderer/gpu-process/crashpad_handler children resurrect files
-// RemoveAll already reported removing, same reason KillChromeProcessGroup
-// targets the whole pgid instead of a single PID).
+// claims is still using profileDir. These are claims, not facts: a marker can
+// outlive its process by days and the pid can since belong to any program. The
+// reaper therefore verifies each one before signalling it
+// (reapBrowserCLIProfileLiveProcesses).
+//
+// Reaping must cover all verified Chrome processes — a PID tracked by only one
+// source would keep the directory non-removable (zygote/renderer/gpu-process/
+// crashpad_handler children resurrect files RemoveAll already reported
+// removing, same reason KillChromeProcessGroup targets the whole pgid instead
+// of a single PID).
 func browserCLIProfileLivePIDs(profileDir string) []int {
 	self := os.Getpid()
 	var pids []int
+	seen := map[int]bool{}
 	add := func(pid int) {
-		if pid > 0 && pid != self {
+		if pid > 0 && pid != self && !seen[pid] {
+			seen[pid] = true
 			pids = append(pids, pid)
 		}
 	}
@@ -334,13 +387,37 @@ func browserCLIProfileLivePIDs(profileDir string) []int {
 }
 
 // reapBrowserCLIProfileLiveProcesses kills every PID browserCLIProfileLivePIDs
-// finds for profileDir and waits briefly for them to actually exit. Reports
-// true only if nothing is left alive — a genuinely stuck process (e.g. D
-// state) must keep the profile protected, not be treated as reaped.
-func reapBrowserCLIProfileLiveProcesses(profileDir string) bool {
-	pids := browserCLIProfileLivePIDs(profileDir)
+// finds for profileDir that is really that profile's Chrome, and waits briefly
+// for them to actually exit. Reports true only if nothing of ours is left alive
+// — a genuinely stuck process (e.g. D state) must keep the profile protected,
+// not be treated as reaped.
+//
+// Identity first: before any signal, the pid's command line must carry
+// `--user-data-dir=<profileDir>` (requireChromeOfProfilePID). Everything else
+// the tracking sources named — a recycled pid now running an unrelated program
+// (other-muxd included), the owner CLI, the shared BrowserMuxHost, or the
+// Chrome of a sibling profile whose directory name merely starts the same
+// (task-1 vs task-10, which the ps scan's substring match cannot tell apart) —
+// is not signalled and not counted as using the profile; each is returned as a
+// note instead. The mux host in particular serves every session, so one orphaned
+// profile must not take it down; it is closed through `muxhost shutdown`.
+func reapBrowserCLIProfileLiveProcesses(profileDir string) (bool, []string) {
+	var ours []int
+	var notes []string
+	for _, pid := range browserCLIProfileLivePIDs(profileDir) {
+		if !isPIDAlive(pid) {
+			continue
+		}
+		if err := requireChromeOfProfilePID(pid, profileDir); err != nil {
+			note := fmt.Sprintf("pid %d not signalled: %v", pid, err)
+			log.Printf("[PROFILE-PRUNE] profile %s: %s", profileDir, note)
+			notes = append(notes, note)
+			continue
+		}
+		ours = append(ours, pid)
+	}
 	anyAlive := func() bool {
-		for _, pid := range pids {
+		for _, pid := range ours {
 			if isPIDAlive(pid) {
 				return true
 			}
@@ -348,19 +425,19 @@ func reapBrowserCLIProfileLiveProcesses(profileDir string) bool {
 		return false
 	}
 	if !anyAlive() {
-		return true
+		return true, notes
 	}
-	for _, pid := range pids {
+	for _, pid := range ours {
 		KillChromeProcessGroup(pid)
 	}
 	deadline := time.Now().Add(ProfileOwnerChromeKillGrace)
 	for time.Now().Before(deadline) {
 		if !anyAlive() {
-			return true
+			return true, notes
 		}
 		time.Sleep(ProcessExitPollInterval)
 	}
-	return !anyAlive()
+	return !anyAlive(), notes
 }
 
 func browserCLIProfileReferencedByLiveSession(profileDir string) bool {
