@@ -185,10 +185,15 @@ func TestInputDispatchOpsCoverEveryRealInputVerb(t *testing.T) {
 
 // 上提之后滚轮路径不该再各自调一次 bringToFront:单一调用点是这次重构的重点,
 // 双调会让同一次动作发两条 Page.bringToFront,也让"发生了切换"这个事实变成两次。
+// [ARCH-INPUT-FRONTMOST] 重构后单一公共入口是 enterInputDispatchWindowForRequest:
+// 前台确保收口在输入派发窗口内,action_engine.go 不再出现裸 ensureTargetFrontmost(ctx)。
 func TestWheelPathsNoLongerCallEnsureTargetFrontmostThemselves(t *testing.T) {
 	source := readPackageSource(t, "action_engine.go")
-	calls := strings.Count(source, "ensureTargetFrontmost(ctx)")
-	if calls != 1 {
-		t.Fatalf("ensureTargetFrontmost(ctx) 在 action_engine.go 里出现 %d 次, want 1(公共入口单一调用点)", calls)
+	if direct := strings.Count(source, "ensureTargetFrontmost(ctx)"); direct != 0 {
+		t.Fatalf("ensureTargetFrontmost(ctx) 在 action_engine.go 里裸调用 %d 次, want 0(必须走输入派发窗口)", direct)
+	}
+	windowCalls := strings.Count(source, "enterInputDispatchWindowForRequest(ctx, actionRequiresObservation")
+	if windowCalls != 1 {
+		t.Fatalf("输入派发窗口主入口在 action_engine.go 里出现 %d 次, want 1(单一调用点; enterInputDispatchWindow 便捷封装的转调除外)", windowCalls)
 	}
 }
